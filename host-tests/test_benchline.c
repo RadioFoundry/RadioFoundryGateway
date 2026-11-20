@@ -1010,11 +1010,13 @@ static double iq_hz(char *all, size_t total, long a, long b, long *n_out)
 static size_t track_run(rdof_bl_t *bl, int c, double *now, double ms, double off_hz, bool fsk, bool on, char *all,
                         size_t total, size_t cap);
 
-static void test_chan(void)
+/* run: read as even runs (ch_read_run, the W12's) */
+static void test_chan(bool run)
 {
     rdof_bl_platform_t pl = PLAT;
     pl.iq_read = NULL, pl.iq_filled = NULL;
     pl.ch_open = fchs_open, pl.ch_read = fchs_read, pl.ch_close = fchs_close;
+    pl.ch_read_run = run ? fchs_read_run : NULL;
     rdof_bl_t *bl = rdof_bl_new(&pl);
     double now = 2500;
     static char all[1 << 21];
@@ -3678,7 +3680,8 @@ int main(int argc, char **argv)
     test_ramp();
     test_raw_capture();
     test_raw_bursts();
-    test_chan();
+    test_chan(false);
+    test_chan(true);
     test_xtal();
     test_track();
     test_filler();

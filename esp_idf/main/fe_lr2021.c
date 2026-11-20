@@ -665,7 +665,12 @@ static void report(void *arg)
 #define TX_FDEV 2048     /* 32 Hz a count (R3.10) */
 #define TX_STAGE 8192    /* staged samples (170 ms), a power of 2 */
 #define TX_LOOK 1920     /* pulled this far ahead of now (40 ms) */
-#define TX_BLOCK 96      /* samples a pull (2 ms, about 150 us of the reader) */
+/* samples a pull (2 ms). Keyed blocks are costly: FM 96 in 475-613 us, a DMR modem's 48 in up to 535. A continuous
+ * source (one long key-up, its start caught up if late) is pulled in halves: whole ones with the read before them
+ * lost the RX FIFO 5-7 times before its key-up (R2.41). A slotted one keeps whole blocks: halves left 5 of a DMR
+ * call's 47 bursts late. A turn pulls blocks until TX_PULL_US has passed */
+#define TX_BLOCK 96
+#define TX_PULL_US 120
 #define TX_MAX_RUN 4096  /* the longest span sent as one run (85 ms): a longer one is cut there */
 #define TX_MERGE 192     /* keyed spans this close (4 ms) go out as one run */
 /* The switch to TX starts this long before a run's time: from a running session it takes about 2.8 ms to a filled
@@ -693,10 +698,12 @@ static struct {
     int64_t pos;               /* the next sample to pull (0: none pulled yet) */
     int64_t key;               /* the first keyed sample staged and not sent yet, or -1 */
     bool hold;                 /* the anchor held: a transmission on */
+    bool slow;                 /* a continuous source: half blocks, its turns after reads (TX_BLOCK) */
+    int blk_us;                /* the slowest keyed block, for the log */
     int64_t a_pos, a_us;       /* the anchor: stream sample a_pos (48 kS/s) at esp_timer a_us */
     int64_t last_us;           /* the last run's end */
     /* this transmission's, for its log line */
-    unsigned runs, late, early, failed, cut, underflows, calibrated;
+    unsigned runs, late, early, failed, cut, underflows, calibrated, late_turn;
     int err_min, err_max;      /* key-up's time against the run's, us */
     int64_t zeros;             /* samples filled in */
     double sent_dbm;           /* the power the last run went out at, at the antenna */
@@ -728,6 +735,12 @@ static int64_t native_at(int64_t pos48) { return pos48 * (int64_t)st.native_num 
 /* Pull the source up to sample upto, a block at a time, at most blocks of them, into the stage;
  * note the first keyed sample. */
 /* wait: for the source's lock (inside a run being built); else a busy source ends this turn's fill */
+static void tx_block_cost(int us)
+{
+    if (us > tx.blk_us)
+        tx.blk_us = us;
+}
+
 static void tx_fill(int64_t upto, int blocks, bool wait)
 {
     EXT_RAM_BSS_ATTR static float hz[TX_BLOCK], env[TX_BLOCK];
@@ -735,15 +748,18 @@ static void tx_fill(int64_t upto, int blocks, bool wait)
     EXT_RAM_BSS_ATTR static int8_t q[2 * TX_BLOCK];
     const rdof_fe_tx_source_t *src = tx.src;
     while (src && tx.pos < upto && blocks-- > 0) {
+        tx.slow = src->continuous && src->continuous(src->ctx);
+        const int n = tx.slow ? TX_BLOCK / 2 : TX_BLOCK;
+        const int64_t t0 = esp_timer_get_time();
         if (src->iq_now && src->iq_now(src->ctx)) { /* polar I/Q */
-            const int got = src->try_pull_iq && !wait ? src->try_pull_iq(src->ctx, tx.pos, x, TX_BLOCK)
-                                                      : src->pull_iq(src->ctx, tx.pos, x, TX_BLOCK);
+            const int got = src->try_pull_iq && !wait ? src->try_pull_iq(src->ctx, tx.pos, x, n)
+                                                      : src->pull_iq(src->ctx, tx.pos, x, n);
             if (got < 0) {
                 tx_busy++;
                 return;
             }
-            lr2021_polar_iq8((const float *)x, TX_BLOCK, 1.0f, 0, &lr2021_am_w12_920, q);
-            for (int i = 0; i < TX_BLOCK; i++) {
+            lr2021_polar_iq8((const float *)x, n, 1.0f, 0, &lr2021_am_w12_920, q);
+            for (int i = 0; i < n; i++) {
                 const int64_t p = tx.pos + i;
                 const size_t at = (size_t)(p & (TX_STAGE - 1));
                 const bool k = got > 0 && (x[i].re != 0 || x[i].im != 0);
@@ -754,32 +770,34 @@ static void tx_fill(int64_t upto, int blocks, bool wait)
                 if (k && tx.key < 0)
                     tx.key = p;
             }
-            tx.pos += TX_BLOCK;
+            tx.pos += n;
+            if (!wait && got > 0)
+                tx_block_cost((int)(esp_timer_get_time() - t0));
             continue;
         }
-        const int got = src->try_pull_freq && !wait ? src->try_pull_freq(src->ctx, tx.pos, hz, env, TX_BLOCK)
-                                           : src->pull_freq(src->ctx, tx.pos, hz, env, TX_BLOCK);
+        const int got = src->try_pull_freq && !wait ? src->try_pull_freq(src->ctx, tx.pos, hz, env, n)
+                                           : src->pull_freq(src->ctx, tx.pos, hz, env, n);
         if (got < 0) {
             tx_busy++;
             return; /* staged TX_LOOK ahead: the next turn catches up */
         }
         const bool keyed = got > 0;
-        if (!keyed && (tx.pos & (TX_STAGE - 1)) + TX_BLOCK <= TX_STAGE && hz[0] == hz[TX_BLOCK - 1]) {
+        if (!keyed && (tx.pos & (TX_STAGE - 1)) + n <= TX_STAGE && hz[0] == hz[n - 1]) {
             /* idle, the bare carrier: one conversion for the block (the reader's turn while nothing is sent was
              * about a ninth of core 0, and cost the RX FIFO samples) */
             const int8_t c = lr2021_raw_freq_sample(hz[0], TX_FDEV);
             const size_t at = (size_t)(tx.pos & (TX_STAGE - 1));
-            memset(&stage.s[at], (uint8_t)c, sizeof stage.s[0] * TX_BLOCK);
-            memset(&stage.k[at], 0, sizeof stage.k[0] * TX_BLOCK);
-            memset(&stage.off[at], 0, sizeof stage.off[0] * TX_BLOCK);
-            tx.pos += TX_BLOCK;
+            memset(&stage.s[at], (uint8_t)c, sizeof stage.s[0] * n);
+            memset(&stage.k[at], 0, sizeof stage.k[0] * n);
+            memset(&stage.off[at], 0, sizeof stage.off[0] * n);
+            tx.pos += n;
             continue;
         }
         /* a sweep's carrier offset moves the run's carrier rather than spend the samples' +-4064 Hz (a DMR burst
          * peaks near 3.7 kHz) */
         const float co = src->carrier_off ? src->carrier_off(src->ctx) : 0.0f;
         const int16_t coi = (int16_t)lrintf(co);
-        for (int i = 0; i < TX_BLOCK; i++) {
+        for (int i = 0; i < n; i++) {
             const int64_t p = tx.pos + i;
             const bool k = keyed && env[i] > 0;
             stage.s[p & (TX_STAGE - 1)] = lr2021_raw_freq_sample(hz[i] - (float)coi, TX_FDEV);
@@ -788,7 +806,9 @@ static void tx_fill(int64_t upto, int blocks, bool wait)
             if (k && tx.key < 0)
                 tx.key = p;
         }
-        tx.pos += TX_BLOCK;
+        tx.pos += n;
+        if (!wait && keyed) /* a wait is not its cost */
+            tx_block_cost((int)(esp_timer_get_time() - t0));
     }
 }
 
@@ -1109,6 +1129,11 @@ static void tx_said(void)
             tx.hz / 1e6, tx.sent_dbm, tx.sent_chip, tx.sent_pa ? "PA" : "bypass", tx.runs, tx.polar, tx.late, tx.early, tx.failed, tx.failed ? ": " : "",
             tx.failed ? esp_err_to_name(tx.last_err) : "", tx.cut, tx.underflows, tx.calibrated, tx.err_min,
             tx.err_max, (long long)tx.zeros);
+    if (tx.runs || tx.late)
+        say("TX: %u late at the turn (under TX_LATE_US before its time); blocks of %d, a keyed one %d us at most",
+            tx.late_turn, tx.slow ? TX_BLOCK / 2 : TX_BLOCK, tx.blk_us);
+    tx.late_turn = 0;
+    tx.blk_us = 0;
     tx.polar = 0;
     if (tx.long_runs)
         say("TX: %u long key-ups, %.2f s, %u seams, %lld samples skipped (%d us a seam); %u started late, %lld "
@@ -1158,7 +1183,14 @@ static bool tx_service(void)
     /* a block a turn: after a run the source is a run's length behind, and pulling all of it at once held the reader
      * 2.8 ms, past the RX FIFO (1.3 ms at 384 kS/s): about 2.5 FIFO losses a burst. 5 ms blocks still lost about
      * one a burst; 2 ms blocks none */
-    tx_fill(n48 + TX_LOOK, 1, false);
+    /* blocks while the turn is short: after a burst a voice call's source is a run behind and the next key-up 32 ms
+     * on, about twice real time to pull (one block a turn left every other burst late); a keyed FM block alone can
+     * take 300 us, so none starts past TX_PULL_US */
+    for (int64_t was = -1; tx.src && tx.pos < n48 + TX_LOOK && tx.pos != was &&
+                           esp_timer_get_time() - now < TX_PULL_US;) {
+        was = tx.pos;
+        tx_fill(n48 + TX_LOOK, 1, false);
+    }
     if (tx.key < 0) {
         if (tx.hold && now - tx.last_us > TX_HOLD_US) {
             tx.hold = false;
@@ -1212,6 +1244,7 @@ static bool tx_service(void)
     }
     if (t_go - esp_timer_get_time() < TX_LATE_US) {
         tx.late++;
+        tx.late_turn++;
     } else {
         lock();
         if (iq.in_session && !st.held) {
@@ -1261,13 +1294,16 @@ static void rx_mark_before(void)
 {
     if (iq.mark_armed)
         return;
-    double us;
-    edge_time_last(EDGE_FIFO, &us, &mark_edges);
     const int64_t now = esp_timer_get_time();
     if (now >= mark_next) {
         iq.mark_want = true;
         mark_next = now + 100000;
     }
+    /* the edges so far, while a mark may be armed in this pass's poll (not every pass: the log's lock cost the
+     * reader about 5%) */
+    double us;
+    if (iq.mark_want)
+        edge_time_last(EDGE_FIFO, &us, &mark_edges);
 }
 
 static void rx_mark_after(void)
@@ -1291,6 +1327,7 @@ static void rx_mark_after(void)
 static void reader_task(void *arg)
 {
     int64_t last_poll = 0;
+    bool slept = false; /* the last poll read nothing (it waited for the FIFO) */
     hang_watch_me();
     for (;;) {
         hang_watch_feed();
@@ -1310,7 +1347,16 @@ static void reader_task(void *arg)
             continue;
         }
         const int64_t t_tx = esp_timer_get_time();
-        if (tx.src || tx.hold)
+        /* the transmit turn right after a read, when the FIFO is at its lowest: after a poll that slept the FIFO
+         * stands at the read's target, and the turn (about 340 us while a modem looks ahead) put the read that
+         * many bytes nearer a full FIFO (750 of 1024 at 384 k; a slow transfer then lost it, R2.41). A key-up staged
+         * gets its turn every pass only once its run is due to be built (rendering a keyed block costs 370-640 us).
+         * A slotted source held (a call: the receiver goes off for it) gets every pass, as the look-ahead must stage
+         * a burst before its run is built: a turn only after a read left every other burst of a DMR call late (23
+         * of 47), every pass only once the next was staged still 12. */
+        if ((tx.src || tx.hold) &&
+            (!slept || (tx.hold && !tx.slow) ||
+             (tx.key >= 0 && tx_at_us(tx.key) - esp_timer_get_time() <= TX_PREP_US + 1000)))
             tx_service();
         const int64_t t_lock = esp_timer_get_time();
         lock();
@@ -1331,6 +1377,7 @@ static void reader_task(void *arg)
         rx_mark_before();
         const int64_t t_poll = esp_timer_get_time();
         const int got = lr2021_iq_poll(&iq, sink, NULL, 2);
+        slept = got == 0;
         const int64_t t_end = esp_timer_get_time();
         rx_mark_after();
         const int spi_us = (int)lr2021_hal_esp_worst_us(&st.hal), sink_us = sink_worst_us;

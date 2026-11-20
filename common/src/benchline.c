@@ -88,15 +88,24 @@ typedef struct {
     int h;                    /* ch_open's handle, -1 none */
     double off_hz;            /* where the carrier truly at freq shows: wideband offset from the center */
     double fs, bw;            /* the wideband rate; the channel's passband */
-    double ph;                /* the mixer's phase at last_sc */
+    double ph;                /* the mixer's phase at last_sc, less k steps (exact: the steps are added at a resync) */
     uint64_t last_sc;
     bool started;
+    /* between resyncs a float phasor turns by a cached step: a double cos and sin each instant took a third of a W12's
+     * core 0 at 48 kS/s (doubles are software there), and an FM rx with audio fell out of the history */
+    uint64_t dsc;             /* the step's spacing in wideband samples */
+    float nco_hz;             /* and its channelizer offset */
+    double step;              /* its phase */
+    int k;                    /* steps since the resync */
+    float pr, pq, rr, rq;     /* the phasor, and the step's rotation */
     rdof_bl_chs_t *in;        /* a read, as it came */
     float *y;                 /* and mixed, [n][2]; each one's wideband sample, whether it's filler */
     uint64_t *at;
     bool *fill;
 } chsrc_t;
 #define CHS_MAX (RDOF_BL_IQ_CHUNK / 8) /* instants a read: a chunk's at the least decimation */
+#define CHAN_B 128             /* inputs a channel mixes at a time */
+#define CHS_RESYNC 256        /* phasor steps between exact phases (float error about 1e-5 rad) */
 
 typedef struct {
     int d, ntaps;             /* decimation, filter length (odd) */
@@ -490,16 +499,17 @@ rdof_bl_t *rdof_bl_new(const rdof_bl_platform_t *p)
 /* ── a channel's own outputs (chsrc_t) ── */
 
 /* Opens the channel freq_hz is in, off_hz where its carrier truly shows: false when there's none (or no memory) */
-static bool chsrc_open(rdof_bl_t *bl, chsrc_t *s, double freq_hz, double off_hz, double fs, double seconds)
+static bool chsrc_open(rdof_bl_t *bl, chsrc_t *s, double freq_hz, double off_hz, double fs, double seconds,
+                       double bw)
 {
-    *s = (chsrc_t){.h = -1, .off_hz = off_hz, .fs = fs};
-    s->in = RDOF_BL_MALLOC(sizeof *s->in * CHS_MAX);
+    *s = (chsrc_t){.h = -1, .off_hz = off_hz, .fs = fs, .bw = bw};
+    s->in = bl->p.ch_read_run ? NULL : RDOF_BL_MALLOC(sizeof *s->in * CHS_MAX); /* the run comes straight into y */
     s->y = RDOF_BL_MALLOC(sizeof(float) * 2 * CHS_MAX);
     s->at = RDOF_BL_MALLOC(sizeof(uint64_t) * CHS_MAX);
     s->fill = RDOF_BL_MALLOC(sizeof(bool) * CHS_MAX);
-    if (!s->in || !s->y || !s->at || !s->fill)
+    if ((!s->in && !bl->p.ch_read_run) || !s->y || !s->at || !s->fill)
         return false;
-    s->h = bl->p.ch_open(bl->p.ctx, freq_hz, seconds, &s->bw);
+    s->h = bl->p.ch_open(bl->p.ctx, freq_hz, off_hz, seconds, &s->bw);
     return s->h >= 0;
 }
 
@@ -517,6 +527,27 @@ static void chsrc_span(rdof_bl_t *bl, const chsrc_t *s, uint64_t *oldest, uint64
     bl->p.ch_read(bl->p.ctx, s->h, UINT64_MAX, &probe, 0, oldest, next);
 }
 
+/* The mixer's phasor for the instant at wideband sample sc, its channelizer at nco_hz: the carrier at off_hz shows at
+ * off_hz - nco_hz, back to 0 Hz, the phase carried over the time between. */
+static inline void chs_turn(chsrc_t *s, uint64_t sc, float nco_hz)
+{
+    const uint64_t dsc = s->started ? sc - s->last_sc : 0;
+    if (s->started && dsc == s->dsc && nco_hz == s->nco_hz && s->k < CHS_RESYNC) {
+        const float r = s->pr * s->rr - s->pq * s->rq, q = s->pr * s->rq + s->pq * s->rr;
+        s->pr = r, s->pq = q, s->k++;
+    } else { /* the exact phase: the steps so far, then this one */
+        if (s->started) {
+            s->ph = fmod(s->ph + s->k * s->step, 2 * M_PI);
+            s->step = -2 * M_PI * (s->off_hz - nco_hz) * (double)dsc / s->fs;
+            s->ph = fmod(s->ph + s->step, 2 * M_PI);
+        }
+        s->dsc = dsc, s->nco_hz = nco_hz, s->k = 0;
+        s->pr = (float)cos(s->ph), s->pq = (float)sin(s->ph);
+        s->rr = (float)cos(s->step), s->rq = (float)sin(s->step);
+    }
+    s->started = true, s->last_sc = sc;
+}
+
 /* Its instants from wideband sample sc on, up to n (at most CHS_MAX), into s->y mixed to the true frequency, s->at
  * and s->fill; *filler: how many are filler. How many (0 none yet). */
 static long chsrc_read(rdof_bl_t *bl, chsrc_t *s, uint64_t sc, long n, long *filler, uint64_t *oldest,
@@ -524,15 +555,34 @@ static long chsrc_read(rdof_bl_t *bl, chsrc_t *s, uint64_t sc, long n, long *fil
 {
     float *y = s->y;
     uint64_t *at = s->at;
-    const long got = bl->p.ch_read(bl->p.ctx, s->h, sc, s->in, n < CHS_MAX ? n : CHS_MAX, oldest, next);
+    n = n < CHS_MAX ? n : CHS_MAX;
     *filler = 0;
+    if (bl->p.ch_read_run) { /* one even run, straight into y */
+        uint64_t sc0 = 0;
+        uint32_t step = 1;
+        float nco = 0;
+        long nf = 0;
+        const long got = bl->p.ch_read_run(bl->p.ctx, s->h, sc, y, s->fill, n, &sc0, &step, &nco, &nf, oldest, next);
+        if (got <= 0)
+            return got;
+        if (!nf)
+            memset(s->fill, 0, (size_t)got);
+        *filler = nf;
+        uint64_t x = sc0;
+        for (long i = 0; i < got; i++, x += step) {
+            chs_turn(s, x, nco);
+            const float pr = s->pr, pq = s->pq, xi = y[2 * i], xq = y[2 * i + 1];
+            y[2 * i] = xi * pr - xq * pq;
+            y[2 * i + 1] = xi * pq + xq * pr;
+            at[i] = x;
+        }
+        return got;
+    }
+    const long got = bl->p.ch_read(bl->p.ctx, s->h, sc, s->in, n, oldest, next);
     for (long i = 0; i < got; i++) {
         const rdof_bl_chs_t *x = &s->in[i];
-        /* the carrier at off_hz shows at off_hz - nco_hz: back to 0 Hz, the phase carried over the time between */
-        if (s->started)
-            s->ph = fmod(s->ph - 2 * M_PI * (s->off_hz - x->nco_hz) * (double)(x->sc - s->last_sc) / s->fs, 2 * M_PI);
-        s->started = true, s->last_sc = x->sc;
-        const float pr = (float)cos(s->ph), pq = (float)sin(s->ph);
+        chs_turn(s, x->sc, x->nco_hz);
+        const float pr = s->pr, pq = s->pq;
         y[2 * i] = x->i * pr - x->q * pq;
         y[2 * i + 1] = x->i * pq + x->q * pr;
         at[i] = x->sc;
@@ -1623,7 +1673,7 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     }
     /* the pre-roll kept from now, and as much again for a reader behind */
     t->corr_hz = rdof_bl_seen_hz(&w, mhz * 1e6) - (mhz * 1e6 - w.center_hz);
-    if (chan && !chsrc_open(bl, &t->cs, mhz * 1e6, rdof_bl_seen_hz(&w, mhz * 1e6), w.fs, 2 * pre + 2)) {
+    if (chan && !chsrc_open(bl, &t->cs, mhz * 1e6, rdof_bl_seen_hz(&w, mhz * 1e6), w.fs, 2 * pre + 2, bw)) {
         trig_end(bl, t);
         no_channel(bl, c, mhz);
         return;
@@ -1696,7 +1746,7 @@ static void op_capture_chan(rdof_bl_t *bl, conn_t *c, int root, double now, doub
     double pre = jnum(bl, root, "pre_s", 2.0);
     if (pre < 0)
         pre = 0;
-    if (!chsrc_open(bl, &t->cs, mhz * 1e6, rdof_bl_seen_hz(w, mhz * 1e6), w->fs, pre + 1)) {
+    if (!chsrc_open(bl, &t->cs, mhz * 1e6, rdof_bl_seen_hz(w, mhz * 1e6), w->fs, pre + 1, 0)) {
         trig_end(bl, t);
         no_channel(bl, c, mhz);
         return;
@@ -2985,14 +3035,20 @@ typedef struct sigtx {
 } sigtx_t;
 
 /* A channel cut from the wideband history: mixed down, a Hamming-windowed sinc low-pass, decimated to about
- * 48 kS/s (the trigger's, on its own). */
+ * 48 kS/s (the trigger's, on its own). Inputs are mixed a block at a time into z, then filtered at the outputs
+ * only: a W12's rx at 384 kS/s spent a quarter of core 0 here when each input went through the delay line on its own
+ * (the struct read again each time), and an FM rx with audio fell out of the history. */
 typedef struct {
     int d, ntaps;
-    float *taps, *dl;         /* dl: each sample twice, so a window is contiguous */
-    int di;
+    float *taps, *dl;         /* taps: over 127 (the input's scale); dl: chan_none's only */
+    float *z;                 /* the ntaps - 1 inputs before sc mixed, then a block's: [ntaps - 1 + CHAN_B][2] */
     double step;
     uint64_t sc, next_out;    /* the next input to take; the input that completes the next output */
 } chan_t;
+
+/* An rx job's CPU time by part, for the done record: what a heavy job costs a W12's core 0, and where. */
+enum { SRX_READ, SRX_CHAN, SRX_DEMOD, SRX_PCM, SRX_RECORDS, SRX_OTHER, SRX_CPU_N };
+static const char *const srx_cpu_names[SRX_CPU_N] = {"read", "chan", "demod", "pcm", "records", "other"};
 
 typedef struct sigrx {
     const rdof_sig_mode_t *m;
@@ -3015,19 +3071,21 @@ typedef struct sigrx {
     uint64_t start_sc, end_sc;
     long gaps, filled, samples;
     char *rec;                /* a record or the summary, SRX_REC (emit's is bl->tmp) */
+    uint32_t cpu_at;          /* this task's run time at the last lap, us (job_cpu_us) */
+    double cpu[SRX_CPU_N];    /* the job's own CPU time, s, by part (the done record's cpu_s) */
 } sigrx_t;
 
 static void chan_free(chan_t *h)
 {
-    free(h->taps), free(h->dl);
-    h->taps = h->dl = NULL;
+    free(h->taps), free(h->dl), free(h->z);
+    h->taps = h->dl = h->z = NULL;
 }
 
 static void chan_restart(chan_t *h, uint64_t first)
 {
     const int g = (h->ntaps - 1) / 2;
-    memset(h->dl, 0, sizeof(float) * 4 * (size_t)h->ntaps);
-    h->di = 0;
+    if (h->z)
+        memset(h->z, 0, sizeof(float) * 2 * (size_t)(h->ntaps - 1));
     h->sc = first >= (uint64_t)g ? first - (uint64_t)g : 0;
     h->next_out = first + (uint64_t)g;
 }
@@ -3038,9 +3096,9 @@ static bool chan_init(chan_t *h, double fs, double offset_hz, double bw)
     if (h->d < 1)
         h->d = 1;
     h->ntaps = 8 * h->d + 1;
-    h->taps = RDOF_BL_MALLOC(sizeof(float) * (size_t)h->ntaps);
-    h->dl = RDOF_BL_MALLOC(sizeof(float) * 4 * (size_t)h->ntaps);
-    if (!h->taps || !h->dl) {
+    h->taps = RDOF_BL_MALLOC_FAST(sizeof(float) * (size_t)h->ntaps);
+    h->z = RDOF_BL_MALLOC_FAST(sizeof(float) * 2 * (size_t)(h->ntaps - 1 + CHAN_B));
+    if (!h->taps || !h->z) {
         chan_free(h);
         return false;
     }
@@ -3054,8 +3112,9 @@ static bool chan_init(chan_t *h, double fs, double offset_hz, double bw)
         sum += v;
     }
     for (int i = 0; i < h->ntaps; i++)
-        h->taps[i] = (float)(h->taps[i] / sum);
+        h->taps[i] = (float)(h->taps[i] / sum / 127);
     h->step = -2 * M_PI * offset_hz / fs;
+    memset(h->z, 0, sizeof(float) * 2 * (size_t)(h->ntaps - 1));
     return true;
 }
 
@@ -3083,32 +3142,42 @@ static void srx_span(rdof_bl_t *bl, const sigrx_t *r, uint64_t *oldest, uint64_t
 /* got history samples from h->sc in: the outputs into y ([n][2]), how many; *first: the first one's center. */
 static int chan_run(chan_t *h, const int8_t *in, long got, float *y, uint64_t *first)
 {
-    const uint64_t g = (uint64_t)(h->ntaps - 1) / 2;
-    const double ph = fmod(h->step * (double)h->sc, 2 * M_PI); /* in float after (an ESP32's FPU has no double) */
+    const int T = h->ntaps, d = h->d;
+    const uint64_t sc = h->sc, g = (uint64_t)(T - 1) / 2;
+    const double ph = fmod(h->step * (double)sc, 2 * M_PI); /* in float after (an ESP32's FPU has no double) */
     float pr = (float)cos(ph), pq = (float)sin(ph);
-    const float rr = (float)cos(h->step), rq = (float)sin(h->step), k127 = 1.0f / 127;
+    const float rr = (float)cos(h->step), rq = (float)sin(h->step);
+    const float *taps = h->taps;
+    float *const z = h->z, *const zb = z + 2 * (T - 1); /* z[j]: input sc + i0 - (T - 1) + j */
+    long nx = (long)(h->next_out - sc);                 /* the input completing the next output */
     int n = 0;
-    for (long i = 0; i < got; i++) {
-        const float xi = in[2 * i] * k127, xq = in[2 * i + 1] * k127;
-        float *a = h->dl + 2 * h->di, *b = a + 2 * h->ntaps;
-        a[0] = b[0] = xi * pr - xq * pq;
-        a[1] = b[1] = xi * pq + xq * pr;
-        const float npr = pr * rr - pq * rq;
-        pq = pr * rq + pq * rr, pr = npr;
-        if (++h->di == h->ntaps)
-            h->di = 0;
-        if (h->sc + (uint64_t)i != h->next_out)
-            continue;
-        if (!n)
-            *first = h->next_out - g;
-        h->next_out += (uint64_t)h->d;
-        const float *x = h->dl + 2 * h->di;
-        float yi = 0, yq = 0;
-        for (int k = 0; k < h->ntaps; k++)
-            yi += h->taps[k] * x[2 * k], yq += h->taps[k] * x[2 * k + 1];
-        y[2 * n] = yi, y[2 * n + 1] = yq, n++;
+    for (long i0 = 0; i0 < got; i0 += CHAN_B) {
+        const int m = got - i0 < CHAN_B ? (int)(got - i0) : CHAN_B;
+        const int8_t *x = in + 2 * i0;
+        for (int j = 0; j < m; j++) {
+            const float xi = x[2 * j], xq = x[2 * j + 1];
+            zb[2 * j] = xi * pr - xq * pq;
+            zb[2 * j + 1] = xi * pq + xq * pr;
+            const float npr = pr * rr - pq * rq;
+            pq = pr * rq + pq * rr, pr = npr;
+        }
+        for (; nx < i0 + m; nx += d) { /* its window: z[nx - i0 .. nx - i0 + T - 1] */
+            const float *w = z + 2 * (nx - i0);
+            float a0 = 0, b0 = 0, a1 = 0, b1 = 0; /* two sums each, so the adds don't wait on each other */
+            int k = 0;
+            for (; k + 1 < T; k += 2) {
+                a0 += taps[k] * w[2 * k], b0 += taps[k] * w[2 * k + 1];
+                a1 += taps[k + 1] * w[2 * k + 2], b1 += taps[k + 1] * w[2 * k + 3];
+            }
+            if (k < T)
+                a0 += taps[k] * w[2 * k], b0 += taps[k] * w[2 * k + 1];
+            if (!n)
+                *first = sc + (uint64_t)nx - g;
+            y[2 * n] = a0 + a1, y[2 * n + 1] = b0 + b1, n++;
+        }
+        memmove(z, z + 2 * m, sizeof(float) * 2 * (size_t)(T - 1)); /* the last T - 1, for the next block */
     }
-    h->sc += (uint64_t)got;
+    h->next_out = sc + (uint64_t)nx, h->sc = sc + (uint64_t)got;
     return n;
 }
 
@@ -3356,7 +3425,9 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
     const rdof_sig_mode_t *m = sig_mode(bl, c, root, false);
     if (!m)
         return;
-    const bool chan = !bl->p.iq_read && bl->p.ch_open; /* no wideband history: its channel's own outputs */
+    /* a channel's own outputs: where there's no wideband history, or the platform makes one anywhere (ch_any: none
+       cut from the history on the bench's core, a quarter of a W12's core 0 at 384 kS/s) */
+    bool chan = bl->p.ch_open && (!bl->p.iq_read || bl->p.ch_any);
     if (!bl->p.iq_read && !chan) {
         fail(bl, c, "unsupported", "this bench keeps no I/Q");
         return;
@@ -3383,14 +3454,21 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
     sigrx_t *r = calloc(1, sizeof *r);
     if (r)
         r->cs.h = -1;
-    if (!r || (chan ? !chan_none(&r->ch, w.fs) : !chan_init(&r->ch, w.fs, rdof_bl_seen_hz(&w, mhz * 1e6), bw))) {
-        free(r); /* the channel where its carrier truly shows */
-        fail(bl, c, "unavailable", "no memory for a channel");
-        return;
+    if (r && chan &&
+        !chsrc_open(bl, &r->cs, mhz * 1e6, rdof_bl_seen_hz(&w, mhz * 1e6), w.fs, 2 * SRX_FLOOR_S + 2, bw)) {
+        chsrc_close(bl, &r->cs);
+        if (!bl->p.iq_read) {
+            free(r);
+            no_channel(bl, c, mhz);
+            return;
+        }
+        chan = false; /* none free: cut from the history */
     }
-    if (chan && !chsrc_open(bl, &r->cs, mhz * 1e6, rdof_bl_seen_hz(&w, mhz * 1e6), w.fs, 2 * SRX_FLOOR_S + 2)) {
-        chan_free(&r->ch), chsrc_close(bl, &r->cs), free(r);
-        no_channel(bl, c, mhz);
+    if (!r || (chan ? !chan_none(&r->ch, w.fs) : !chan_init(&r->ch, w.fs, rdof_bl_seen_hz(&w, mhz * 1e6), bw))) {
+        if (r) /* the channel where its carrier truly shows */
+            chsrc_close(bl, &r->cs);
+        free(r);
+        fail(bl, c, "unavailable", "no memory for a channel");
         return;
     }
     r->m = m;
@@ -3399,7 +3477,7 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
     r->rate = w.fs / r->ch.d;
     if (bw > 0.9 * r->rate) {
         const double most = 0.9 * r->rate;
-        chan_free(&r->ch), free(r);
+        chan_free(&r->ch), chsrc_close(bl, &r->cs), free(r);
         fail(bl, c, "bad_request", "bw is at most %.0f Hz here", most);
         return;
     }
@@ -3436,7 +3514,7 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
     c->freq_hz = mhz * 1e6;
     c->state = C_ACTIVE;
     bl->n_iq++;
-    if (bl->p.iq_warm)
+    if (bl->p.iq_warm && r->cs.h < 0) /* the history only for a channel cut from it */
         bl->p.iq_warm(bl->p.ctx);
     uint64_t oldest = 0, next = 0;
     srx_span(bl, r, &oldest, &next);
@@ -3504,9 +3582,53 @@ static void srx_records(rdof_bl_t *bl, conn_t *c)
     }
 }
 
+/* s at p (no terminator): the end */
+static char *cat(char *p, const char *s)
+{
+    const size_t n = strlen(s);
+    memcpy(p, s, n);
+    return p + n;
+}
+
+/* v in decimal at p: the end */
+static char *cat_u(char *p, unsigned long v)
+{
+    char d[24];
+    int k = 0;
+    do
+        d[k++] = (char)('0' + v % 10), v /= 10;
+    while (v);
+    while (k)
+        *p++ = d[--k];
+    return p;
+}
+
+/* This task's run time, us (wraps): the platform's (a W12's FreeRTOS counter), else the thread's CPU clock. */
+static uint32_t job_cpu_us(const rdof_bl_t *bl)
+{
+    if (bl->p.cpu_us)
+        return bl->p.cpu_us(bl->p.ctx);
+    struct timespec ts;
+#ifdef CLOCK_THREAD_CPUTIME_ID
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+#else
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u);
+}
+
+/* The run time since the last lap to part k. */
+static void srx_lap(const rdof_bl_t *bl, sigrx_t *r, int k)
+{
+    const uint32_t t = job_cpu_us(bl);
+    r->cpu[k] += (uint32_t)(t - r->cpu_at) * 1e-6;
+    r->cpu_at = t;
+}
+
 static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
 {
     sigrx_t *r = c->srx;
+    r->cpu_at = job_cpu_us(bl); /* between ticks: other jobs' */
     rdof_bl_window_t w;
     get_window(bl, &w);
     const uint64_t g = (uint64_t)(r->ch.ntaps - 1) / 2, d = (uint64_t)r->ch.d;
@@ -3527,9 +3649,13 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
                 strcpy(r->rec, "null"), n = 4;
             r->rec[n] = 0;
             const long gaps = r->gaps + (r->filled + (long)d - 1) / (long)d;
+            char cpu[160], *q = cpu;
+            for (int k = 0; k < SRX_CPU_N; k++)
+                q += snprintf(q, sizeof cpu - (size_t)(q - cpu), "%s\"%s\":%.3f", k ? "," : "", srx_cpu_names[k],
+                              r->cpu[k]);
             emit(bl, c, "{\"done\":{\"mode\":\"%s\",\"freq\":%.6f,\"seconds\":%.3f,\"samples\":%ld,\"gap_samples\":%ld,"
-                        "\"summary\":%s}}",
-                 r->m->name, c->freq_hz / 1e6, r->samples / r->rate, r->samples, gaps, r->rec);
+                        "\"cpu_s\":{%s},\"summary\":%s}}",
+                 r->m->name, c->freq_hz / 1e6, r->samples / r->rate, r->samples, gaps, cpu, r->rec);
             c->state = C_DONE;
             return;
         }
@@ -3539,6 +3665,7 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
         uint64_t oldest = 0, next = 0, first = 0;
         long got, fill = 0;
         int n = 0;
+        srx_lap(bl, r, SRX_OTHER);
         if (r->cs.h >= 0) { /* the channel's own outputs: each one at its wideband sample */
             got = chsrc_read(bl, &r->cs, r->ch.sc, RDOF_BL_IQ_CHUNK / r->ch.d + 1, &fill, &oldest, &next);
             if (got > 0) {
@@ -3558,6 +3685,7 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
         } else {
             got = bl->p.iq_read(bl->p.ctx, r->ch.sc, bl->iq, RDOF_BL_IQ_CHUNK, &oldest, &next);
         }
+        srx_lap(bl, r, SRX_READ);
         if (got <= 0 && r->ch.sc < oldest) { /* overwritten before it went: on from the oldest, what's between lost */
             const uint64_t want = oldest + g, first = r->ch.next_out - g;
             const uint64_t k = want > first ? (want - first + d - 1) / d : 0;
@@ -3575,6 +3703,7 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
         if (r->cs.h < 0) {
             fill = bl->p.iq_filled ? bl->p.iq_filled(bl->p.ctx, r->ch.sc, got) : 0;
             n = chan_run(&r->ch, bl->iq, got, r->y, &first);
+            srx_lap(bl, r, SRX_CHAN);
         }
         if (!n)
             continue;
@@ -3609,7 +3738,9 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
         if (!keep)
             continue;
         int nout[RDOF_SIG_STREAMS] = {0};
+        srx_lap(bl, r, SRX_OTHER);
         r->m->rx_feed(r->rx, r->y, keep, r->out, nout);
+        srx_lap(bl, r, SRX_DEMOD);
         r->samples += keep;
         for (int s = 0; s < r->nst; s++) {
             if (nout[s] <= 0)
@@ -3619,13 +3750,19 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
                 const float v = r->out[s][i] * k;
                 r->pcm[i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : rdof_bl_round(v));
             }
-            char hdr[160];
-            const int hn = snprintf(hdr, sizeof hdr, "{\"pcm\":{\"stream\":\"%s\",\"seq\":%lu,\"n\":%d},\"bytes\":%d}\n",
-                                    r->st[s].name, r->seq++, nout[s], 2 * nout[s]);
-            put_bytes(c, hdr, (size_t)hn);
+            /* the header without printf: a W12 formats one each few ms, and newlib's is slow there */
+            char hdr[160], *h = hdr;
+            h = cat(h, "{\"pcm\":{\"stream\":\"");
+            h = cat(h, r->st[s].name);
+            h = cat_u(cat(h, "\",\"seq\":"), r->seq++);
+            h = cat_u(cat(h, ",\"n\":"), (unsigned long)nout[s]);
+            h = cat(cat_u(cat(h, "},\"bytes\":"), 2ul * (unsigned long)nout[s]), "}\n");
+            put_bytes(c, hdr, (size_t)(h - hdr));
             put_bytes(c, r->pcm, (size_t)(2 * nout[s]));
         }
+        srx_lap(bl, r, SRX_PCM);
         srx_records(bl, c);
+        srx_lap(bl, r, SRX_RECORDS);
     }
 }
 
@@ -4018,7 +4155,7 @@ static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t 
     }
     const double hz = c->freq_hz;
     t->corr_hz = rdof_bl_seen_hz(w, hz) - (hz - w->center_hz);
-    if (chan && !chsrc_open(bl, &t->cs, hz, rdof_bl_seen_hz(w, hz), w->fs, floor_s + 1)) {
+    if (chan && !chsrc_open(bl, &t->cs, hz, rdof_bl_seen_hz(w, hz), w->fs, floor_s + 1, bw)) {
         trig_end(bl, t);
         free(x);
         no_channel(bl, c, hz / 1e6);

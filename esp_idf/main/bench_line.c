@@ -19,6 +19,8 @@
 #include "esp_log.h"
 #include "esp_pthread.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "netclock.h"
 #include "rdof/benchline.h"
 #include "rdof/benchnet.h"
@@ -99,6 +101,31 @@ static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *ol
 static long bl_iq_filled(void *ctx, uint64_t sc, long n) { return bench_wide_filled(sc, n); }
 
 static void bl_iq_warm(void *ctx) { bench_wide_warm(); }
+
+static int bl_ch_open(void *ctx, double freq_hz, double off_hz, double seconds, double *bw_hz)
+{
+    return bench_chtap_open(freq_hz, off_hz, seconds, bw_hz);
+}
+
+static long bl_ch_read(void *ctx, int h, uint64_t sc, rdof_bl_chs_t *out, long n, uint64_t *oldest, uint64_t *next)
+{
+    return bench_chtap_read(h, sc, out, n, oldest, next);
+}
+
+static long bl_ch_read_run(void *ctx, int h, uint64_t sc, float *iq, bool *fill, long n, uint64_t *sc0, uint32_t *step,
+                           float *nco_hz, long *filler, uint64_t *oldest, uint64_t *next)
+{
+    return bench_chtap_read_run(h, sc, iq, fill, n, sc0, step, nco_hz, filler, oldest, next);
+}
+
+static void bl_ch_close(void *ctx, int h) { bench_chtap_close(h); }
+
+static uint32_t bl_cpu_us(void *ctx) /* the run-time counter is esp_timer's us */
+{
+    TaskStatus_t ts;
+    vTaskGetInfo(NULL, &ts, pdFALSE, eRunning);
+    return (uint32_t)ts.ulRunTimeCounter;
+}
 static void bl_ppm_hold(void *ctx) { sdr_ppm_hold(); }
 
 static double bl_utc(void *ctx)
@@ -259,7 +286,8 @@ void bench_line_start(void)
     static const rdof_bl_platform_t pf = {.device = bl_device, .window = bl_window, .freqs = bl_freqs,
                                           .tx_bands = bl_tx_bands,
                                           .iq_read = bl_iq_read, .iq_filled = bl_iq_filled,
-                                          .iq_warm = bl_iq_warm, .ppm_hold = bl_ppm_hold, .utc = bl_utc,
+                                          .iq_warm = bl_iq_warm, .ch_open = bl_ch_open, .ch_read = bl_ch_read,
+                                          .ch_close = bl_ch_close, .ch_read_run = bl_ch_read_run, .cpu_us = bl_cpu_us, .ch_any = true, .ppm_hold = bl_ppm_hold, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc, .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_limits = bl_tx_limits,
                                           .tx_open = bl_tx_open, .tx_space = bl_tx_space, .tx_push = bl_tx_push,
                                           .tx_unkey = bl_tx_unkey, .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .tx_event = bl_tx_event,
@@ -278,9 +306,11 @@ void bench_line_start(void)
     /* the server's thread: its stack in PSRAM, internal RAM being the scarce one */
     esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
     cfg.thread_name = "bench_line";
-    /* 7: over ipgw (6), under gnss, lwIP, Wi-Fi and the front end. At 3 a trigger at 384 kS/s didn't get enough of core
-     * 0 and its history moved on under it */
-    cfg.prio = 7;
+    /* 5: the web server's and MQTT's, so the three share core 0 by turns; under ipgw (6), gnss, lwIP, Wi-Fi and the
+     * front end. At 3 a trigger at 384 kS/s didn't get enough of core 0 and its history moved on under it; at 7 a
+     * heavy job (an FM receiver with audio at 10 ms blocks) left the web server and MQTT nothing (a request took
+     * 23 s) */
+    cfg.prio = 5;
     cfg.pin_to_core = 0;
     cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     esp_pthread_set_cfg(&cfg);

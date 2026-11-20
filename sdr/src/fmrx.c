@@ -169,36 +169,44 @@ int rdof_dcs_lookup(uint32_t word, bool *inv)
  * this project's transmitter). */
 static void ctcss_window(rdof_fmrx_t *r)
 {
+    /* In float, the ring in its two runs: on an ESP32 a double op is a library call, and this runs every rlen / 8
+       subaudio samples over rlen of them (it was a third of the FM receiver's time). */
     const int L = r->dc_words ? r->rlen / 2 : r->rlen;
-    double p = 0, mean = 0;
-    for (int i = 0; i < L; i++)
-        mean += r->ring[(r->rw - L + i + RING) % RING];
-    mean /= L;
-    double first = -1, last = -1;
+    const int s0 = (r->rw - L + RING) % RING, n0 = s0 + L <= RING ? L : RING - s0;
+    const float *a = r->ring + s0, *b = r->ring - n0; /* sample i: a[i] for i < n0, else b[i] */
+#define CT_X(i) ((i) < n0 ? a[i] : b[i])
+    float sum = 0;
+    for (int i = 0; i < n0; i++)
+        sum += a[i];
+    for (int i = n0; i < L; i++)
+        sum += b[i];
+    const float mean = sum / (float)L;
+    float pf = 0, first = -1, last = -1, prev = 0;
     long cross = 0;
-    float prev = 0;
     for (int i = 0; i < L; i++) {
-        const float x = r->ring[(r->rw - L + i + RING) % RING] - (float)mean;
-        p += (double)x * x;
+        const float x = CT_X(i) - mean;
+        pf += x * x;
         if (i && prev < 0 && x >= 0) {
-            const double t = i - 1 + prev / (prev - x);
+            const float t = (float)(i - 1) + prev / (prev - x);
             if (first < 0)
                 first = t;
             last = t, cross++;
         }
         prev = x;
     }
-    p /= L;
+    const double p = pf / (double)L;
     if (cross < 3 || !(p > 0))
         return;
-    const double f = (cross - 1) / (last - first) * r->sr;
-    const double w = 2 * M_PI * f / r->sr, k = 2 * cos(w);
-    double s1 = 0, s2 = 0;
+    const double f = (cross - 1) / ((double)last - first) * r->sr;
+    const double w = 2 * M_PI * f / r->sr;
+    const float k = (float)(2 * cos(w));
+    float s1 = 0, s2 = 0;
     for (int i = 0; i < L; i++) {
-        const double s = (r->ring[(r->rw - L + i + RING) % RING] - mean) + k * s1 - s2;
+        const float s = (CT_X(i) - mean) + k * s1 - s2;
         s2 = s1, s1 = s;
     }
-    const double g2 = s1 * s1 + s2 * s2 - k * s1 * s2, tone = 2 * g2 / ((double)L * L);
+#undef CT_X
+    const double g2 = (double)s1 * s1 + (double)s2 * s2 - k * (double)s1 * s2, tone = 2 * g2 / ((double)L * L);
     if (tone / p < 0.7)
         return; /* not one tone */
     if (r->dc_words && fabs(f - RDOF_FMG_DCS_OFF_HZ) < 1.5) {
@@ -684,15 +692,69 @@ size_t rdof_fmrx_summary_json(rdof_fmrx_t *r, const rdof_fmrx_summary_t *s, char
     return at;
 }
 
+/* v with dp decimals (at most 4), as %.*f gives it but for exact ties, at p: the end. JSON's null when not finite.
+ * newlib's %f works in software doubles: a block's record a 10 ms block cost a W12's core 0 about 5%. */
+static char *fx(char *p, double v, int dp)
+{
+    static const double ten[] = {1, 10, 100, 1000, 10000};
+    if (!isfinite(v)) {
+        memcpy(p, "null", 4);
+        return p + 4;
+    }
+    if (v < 0)
+        *p++ = '-', v = -v;
+    const double m = round(v * ten[dp]);
+    char d[24];
+    int k = 0;
+    if (m < 4e9) {
+        uint32_t u = (uint32_t)m;
+        do
+            d[k++] = (char)('0' + u % 10), u /= 10;
+        while (u || k <= dp);
+    } else {
+        uint64_t u = (uint64_t)m;
+        do
+            d[k++] = (char)('0' + u % 10), u /= 10;
+        while ((u || k <= dp) && k < (int)sizeof d);
+    }
+    for (int i = k - 1; i >= 0; i--) {
+        *p++ = d[i];
+        if (i == dp && dp)
+            *p++ = '.';
+    }
+    return p;
+}
+
+/* a key and its value, at p */
+static char *kv(char *p, const char *key, double v, int dp)
+{
+    const size_t n = strlen(key);
+    memcpy(p, key, n);
+    return fx(p + n, v, dp);
+}
+
 size_t rdof_fmrx_block_json(const rdof_fmrx_block_t *b, char *out, size_t cap)
 {
-    size_t at = 0;
-    char c[24];
-    PUT("{\"t\":%.3f,\"carrier\":%s,\"power_dbfs\":%.1f,\"env_min\":%.4f,\"env_max\":%.4f,\"cfo_hz\":%s,"
-        "\"dev_pos_hz\":%.0f,\"dev_neg_hz\":%.0f,\"audio_rms_hz\":%.1f,\"sub_rms_hz\":%.1f}",
-        b->t, b->carrier ? "true" : "false", b->power_dbfs, b->env_min, b->env_max, jf(c, sizeof c, b->cfo_hz, 1),
-        b->dev_pos_hz, b->dev_neg_hz, b->audio_rms_hz, b->sub_rms_hz);
-    return at;
+    char buf[400], *p = buf;
+    p = kv(p, "{\"t\":", b->t, 3);
+    const char *on = b->carrier ? ",\"carrier\":true" : ",\"carrier\":false";
+    memcpy(p, on, strlen(on));
+    p += strlen(on);
+    p = kv(p, ",\"power_dbfs\":", b->power_dbfs, 1);
+    p = kv(p, ",\"env_min\":", b->env_min, 4);
+    p = kv(p, ",\"env_max\":", b->env_max, 4);
+    p = kv(p, ",\"cfo_hz\":", b->cfo_hz, 1);
+    p = kv(p, ",\"dev_pos_hz\":", b->dev_pos_hz, 0);
+    p = kv(p, ",\"dev_neg_hz\":", b->dev_neg_hz, 0);
+    p = kv(p, ",\"audio_rms_hz\":", b->audio_rms_hz, 1);
+    p = kv(p, ",\"sub_rms_hz\":", b->sub_rms_hz, 1);
+    *p++ = '}';
+    const size_t n = (size_t)(p - buf);
+    if (n + 1 > cap)
+        return 0;
+    memcpy(out, buf, n);
+    out[n] = 0;
+    return n;
 }
 
 #endif

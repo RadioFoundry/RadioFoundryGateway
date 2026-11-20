@@ -219,15 +219,21 @@ static long pcm(const char *stream, int *peak)
     return n;
 }
 
-/* FM both ways: with chan, the receiver on the channel's own outputs (fake_chs.h: no wideband history), its NCO
- * stepped 300 Hz mid-signal as the AFC would */
-static void test_loop(bool chan)
+/* FM both ways. LOOP_CHAN: the receiver on the channel's own outputs (fake_chs.h: no wideband history), its NCO
+ * stepped 300 Hz mid-signal as the AFC would; LOOP_ANY: the same with the wideband history there too (ch_any: the
+ * rx takes the channel); LOOP_NONE_FREE: ch_any, but no channel there: the rx cuts its own from the history;
+ * LOOP_RUN: LOOP_ANY read as even runs (ch_read_run, the W12's). */
+enum { LOOP_HIST, LOOP_CHAN, LOOP_ANY, LOOP_NONE_FREE, LOOP_RUN };
+static void test_loop(int how)
 {
     rdof_bl_platform_t pl = PLAT;
-    if (chan) {
-        static const double f[] = {FREQ};
-        pl.iq_read = NULL, pl.ch_open = fchs_open, pl.ch_read = fchs_read, pl.ch_close = fchs_close;
-        fchs_init(&ring, FS, CENTER, f, 1);
+    if (how != LOOP_HIST) {
+        static const double f[] = {FREQ}, elsewhere[] = {FREQ + 50000};
+        pl.ch_open = fchs_open, pl.ch_read = fchs_read, pl.ch_close = fchs_close;
+        pl.ch_read_run = how == LOOP_RUN ? fchs_read_run : NULL;
+        pl.iq_read = how == LOOP_CHAN ? NULL : pl.iq_read;
+        pl.ch_any = how != LOOP_CHAN;
+        fchs_init(&ring, FS, CENTER, how == LOOP_NONE_FREE ? elsewhere : f, 1);
         fchs.step_hz[0] = 300, fchs.step_sc[0] = ring.w + (uint64_t)(FS * 1.5);
     }
     rdof_bl_t *bl = rdof_bl_new(&pl);
@@ -275,6 +281,10 @@ static void test_loop(bool chan)
     CHECK(num(l, "gap_samples") == 0, "%s", l);
     CHECK(rdof_bl_finished(bl, rx), "rx not finished");
     rdof_bl_closed(bl, rx, clock_s);
+    CHECK(how == LOOP_HIST || fchs.opened == (how != LOOP_NONE_FREE), "loop %d: the channel opened %d times", how,
+          fchs.opened);
+    CHECK(how == LOOP_HIST || fchs.closed == fchs.opened, "loop %d: opened %d, closed %d", how, fchs.opened,
+          fchs.closed);
 
     ntext = 0;
     rdof_bl_tick(bl, clock_s);
@@ -395,6 +405,7 @@ static void test_fsk4_stream(void)
     char l[2048];
     ntext = 0;
     tx = (typeof(tx)){0};
+    const double t0 = clock_s;
     const int c = ask(bl, "{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"stream\":true,\"seconds\":20,"
                           "\"ahead_s\":0.05,\"idle_hex\":\"55ff\"}");
     static uint8_t buf[2400];
@@ -420,7 +431,7 @@ static void test_fsk4_stream(void)
     CHECK(lines("{\"underrun\":", l, sizeof l) == 1 && strstr(l, "\"fill\":\"idle\""), "underrun: %.400s", text);
     CHECK(lines("{\"done\":", l, sizeof l) == 1, "no done: %.400s", text);
     CHECK(num(l, "symbols_in") == 4 * sizeof buf && num(l, "underruns") == 1 && num(l, "idle_symbols") > 0, "%s", l);
-    CHECK(clock_s < 30, "ended at the stream's end, not at seconds");
+    CHECK(clock_s - t0 < 20, "ended at the stream's end, not at seconds (%.1f s)", clock_s - t0);
     CHECK(rdof_bl_input_room(bl, c) == 0, "nothing more read after the half-close");
     rdof_bl_closed(bl, c, clock_s);
 
@@ -491,8 +502,11 @@ int main(void)
         printf("no memory\n");
         return 1;
     }
-    test_loop(false);
-    test_loop(true);
+    test_loop(LOOP_HIST);
+    test_loop(LOOP_CHAN);
+    test_loop(LOOP_ANY);
+    test_loop(LOOP_NONE_FREE);
+    test_loop(LOOP_RUN);
     test_pcm();
     test_fsk4_stream();
     test_refusals();

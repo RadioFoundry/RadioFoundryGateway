@@ -39,7 +39,13 @@ before touching the LR2021 front end.
 cmake -S host-tests -B build/host && cmake --build build/host && ctest --test-dir build/host
 cmake -S . -B build/linux -DRADIOFOUNDRY_DIR=/path/to/radiofoundry && cmake --build build/linux && ctest --test-dir build/linux
 RDOF_BOARD=<board ip> python -m pytest -q hil-tests        # against a running board; RDOF_BOARD_MUTATE=1 adds the refused-POST checks
+RDOF_BOARD=<board ip> RDOF_BOARD_PERF=1 python -m pytest -q -s hil-tests/test_perf.py   # the performance gate
 ```
+
+A firmware change that touches the receiver, the bench, the web server, tasks or memory passes the performance gate
+on a W12 before it goes to the boards: heavy jobs with no lost samples, real time, the web server answering and the
+internal heap over its floor. A loss shows where it went: the job's `cpu_s`, `/api/status` `sdr.fifo_losses`, and
+`/api/prof` named by `tools/prof_sym.py`.
 
 The host tests are offline and take about 2 minutes (`-E 'e2e|mmdvm_bench'` leaves out the slow end-to-end ones). The golden fixtures in `host-tests/` (`vectors.h`, `scenarios.h`,
 `fixtures/`) are committed; the C must reproduce them byte for byte. New behavior gets a host test; driver code gets
@@ -63,6 +69,10 @@ the Rust, and its C twin while it's kept ([rust/README.md](rust/README.md)).
 
 Overlays: `.roamer` / `.sdr` (one role), `.c` (the C modules, no Rust toolchain needed), `.hub`, `.dspfast`. Run
 `idf.py size` after a change that adds code or RAM and keep docs/reference.md "Size" current.
+
+The build checks internal RAM against `tools/ram_budget.json` after each link (`tools/ram_budget.py`) and fails
+over it, naming the archives that grew. Move the growth to PSRAM or out of IRAM; raise the budget (`--update`) only
+in the same commit, saying why.
 
 Memory: internal RAM is the tight resource (about 10 KB free on the W12 while streaming). Buffers go in PSRAM
 (`EXT_RAM_BSS_ATTR`) unless they need speed or DMA. SPI DMA transfers need a 4-aligned buffer and length, or

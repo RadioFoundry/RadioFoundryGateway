@@ -646,6 +646,86 @@ static void test_chz_set_offset(void)
     rdof_chz_free(&z);
 }
 
+/* A tap: a tone 1 kHz over it comes out at 1 kHz, at the tone's level, with the channels running beside it and
+ * the same in both forms (process, forward + channels); its instants run every D samples with no seam between
+ * blocks; an impulse comes out at the instant that stands for its sample; a filter past the out rate is refused,
+ * and out NULL stops it. */
+static uint64_t tap_sc[4000];
+static rdof_cf_t tap_v[4000];
+static int tap_n;
+static void tap_out(void *ctx, uint64_t sc, const rdof_cf_t *y, int n)
+{
+    for (int i = 0; i < n && tap_n < 4000; i++, tap_n++)
+        tap_sc[tap_n] = sc + (uint64_t)i * 8, tap_v[tap_n] = y[i];
+}
+
+static void test_chz_tap(void)
+{
+    for (int form = 0; form < 2; form++) {
+        rdof_chz_t z;
+        const double off[2] = {-50000.0, 30000.0};
+        CHECK(rdof_chz_init(&z, 384e3, off, 2, 8, 64, 7500) == 0, "init");
+        CHECK(!form || rdof_chz_reserve(&z, 4096) == 0, "reserve");
+        static rdof_cf_t H[64], wide[64];
+        CHECK(rdof_chz_tap_filter(&z, 30000, wide) != 0, "a cutoff past the out rate's half refused");
+        CHECK(rdof_chz_tap_filter(&z, 8000, H) == 0, "filter");
+        CHECK(rdof_chz_tap_set(&z, RDOF_CHZ_TAPS, 0, H, tap_out, NULL) != 0, "no such tap");
+        const double at = 123456.0; /* not on a bin (750 Hz): the residual's NCO too */
+        CHECK(rdof_chz_tap_set(&z, 1, at, H, tap_out, NULL) == 0, "set");
+        enum { N = 24000 };
+        static rdof_cf_t in[N], out[2 * 4096];
+        for (int i = 0; i < N; i++) {
+            const double ph = 2 * M_PI * (at + 1000.0) * i / 384e3;
+            in[i].re = (float)(0.5 * cos(ph)), in[i].im = (float)(0.5 * sin(ph));
+        }
+        tap_n = 0;
+        for (int i = 0; i < N; i += 4096) {
+            const int n = N - i < 4096 ? N - i : 4096;
+            if (form) {
+                rdof_chz_forward(&z, in + i, n);
+                rdof_chz_channels(&z, 0, 2, 0, out, 4096);
+            } else {
+                rdof_chz_process(&z, in + i, n, out, 4096);
+            }
+        }
+        bool even = tap_n > 2000 && tap_sc[0] < 8;
+        for (int i = 1; i < tap_n; i++)
+            even &= tap_sc[i] == tap_sc[i - 1] + 8;
+        CHECK(even, "form %d: %d instants every 8 samples from %llu", form, tap_n, (unsigned long long)tap_sc[0]);
+        double p = 0, ph = 0;
+        int k = 0;
+        for (int i = tap_n / 4; i < tap_n - 1; i++, k++) {
+            const rdof_cf_t a = tap_v[i], b = tap_v[i + 1];
+            p += a.re * a.re + a.im * a.im;
+            ph += atan2(a.re * b.im - a.im * b.re, a.re * b.re + a.im * b.im);
+        }
+        const double hz = ph / k * 48000.0 / (2 * M_PI), lvl = sqrt(p / k);
+        CHECK(fabs(hz - 1000.0) < 1 && fabs(lvl - 0.5) < 0.01, "form %d: the tone at %.2f Hz, level %.4f", form, hz,
+              lvl);
+        /* an impulse at sample 17000: the instant nearest it the largest */
+        for (int i = 0; i < N; i++)
+            in[i] = (rdof_cf_t){i == 17000 ? 1.0f : 0.0f, 0};
+        rdof_chz_free(&z);
+        CHECK(rdof_chz_init(&z, 384e3, off, 2, 8, 64, 7500) == 0 && rdof_chz_tap_set(&z, 0, at, H, tap_out, NULL) == 0,
+              "again");
+        tap_n = 0;
+        for (int i = 0; i < N; i += 2048)
+            rdof_chz_process(&z, in + i, N - i < 2048 ? N - i : 2048, out, 4096);
+        int best = 0;
+        for (int i = 1; i < tap_n; i++)
+            if (tap_v[i].re * tap_v[i].re + tap_v[i].im * tap_v[i].im >
+                tap_v[best].re * tap_v[best].re + tap_v[best].im * tap_v[best].im)
+                best = i;
+        CHECK(tap_sc[best] + 4 >= 17000 && tap_sc[best] <= 17000 + 4, "the impulse at %llu",
+              (unsigned long long)tap_sc[best]);
+        rdof_chz_tap_set(&z, 0, 0, NULL, NULL, NULL);
+        tap_n = 0;
+        rdof_chz_process(&z, in, 2048, out, 4096);
+        CHECK(tap_n == 0, "off: %d instants", tap_n);
+        rdof_chz_free(&z);
+    }
+}
+
 /* ── the FM stage ────────────────────────────────────────────────────────── */
 
 static void test_rrc(void)
@@ -2934,7 +3014,7 @@ int main(void)
     /* RDOF_EDGE_TIMES=1 prints the seconds each test takes */
     const bool times = getenv("RDOF_EDGE_TIMES") != NULL;
     static void (*const tests[])(void) = {
-        test_alloc, test_bench, test_rx_utc, test_bench_busy, test_chz_args, test_chz_odd, test_chz_clock, test_chz_level, test_chz_set_offset,
+        test_alloc, test_bench, test_rx_utc, test_bench_busy, test_chz_args, test_chz_odd, test_chz_clock, test_chz_level, test_chz_set_offset, test_chz_tap,
         test_rrc, test_fm_edges, test_plan_edges, test_scene, test_demod_edges, test_demod_bent, test_demod_small_feed, test_demod_weaker, test_voice, test_rx_edges, test_frontend_edges,
         test_mod_edges, test_resamp_edges, test_resamp_tones, test_fft_edges, test_rate_edges, test_ppm_edges, test_config_edges, test_config_board_keys, test_describe_edges,
         test_status_edges, test_agc_empty, test_txguard,

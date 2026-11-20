@@ -110,7 +110,7 @@ static void fchs_run(void)
     }
 }
 
-static int fchs_open(void *ctx, double hz, double seconds, double *bw)
+static int fchs_open(void *ctx, double hz, double off_hz, double seconds, double *bw)
 {
     fchs_run();
     for (int c = 0; c < fchs.nch; c++) {
@@ -136,6 +136,32 @@ static long fchs_read(void *ctx, int h, uint64_t sc, rdof_bl_chs_t *out, long n,
         i++;
     for (; k < n && i < kept; k++, i++)
         out[k] = x[i];
+    return k;
+}
+
+/* fchs_read as one even run (rdof_bl_platform_t.ch_read_run): it ends where the NCO steps or the spacing changes */
+static long fchs_read_run(void *ctx, int h, uint64_t sc, float *iq, bool *fill, long n, uint64_t *sc0, uint32_t *step,
+                          float *nco_hz, long *filler, uint64_t *oldest, uint64_t *next)
+{
+    fchs_run();
+    const long kept = fchs.h[h].n;
+    const rdof_bl_chs_t *x = fchs.h[h].x;
+    *next = fchs.ring->w;
+    *oldest = kept ? x[0].sc : fchs.ring->w;
+    *filler = 0;
+    long i = 0, k = 0;
+    while (i < kept && x[i].sc < sc)
+        i++;
+    if (i >= kept)
+        return 0;
+    *sc0 = x[i].sc, *nco_hz = x[i].nco_hz, *step = (uint32_t)fchs.d;
+    for (; k < n && i < kept; k++, i++) {
+        if (x[i].nco_hz != *nco_hz || x[i].sc != *sc0 + (uint64_t)k * *step)
+            break;
+        iq[2 * k] = x[i].i, iq[2 * k + 1] = x[i].q;
+        fill[k] = x[i].filler;
+        *filler += x[i].filler;
+    }
     return k;
 }
 

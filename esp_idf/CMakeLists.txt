@@ -22,3 +22,14 @@ if(CONFIG_RDOF_SDR AND CONFIG_RDOF_SDR_FAST)
         target_compile_options(${dsp_lib} PRIVATE -O2)
     endif()
 endif()
+
+# Internal RAM against its budget after each link (tools/ram_budget.py): a build that takes more fails. The budget's
+# name is the build dir's (build/w12: w12) unless RDOF_RAM_BUDGET names it; a name with no budget passes.
+if(NOT RDOF_RAM_BUDGET)
+    get_filename_component(RDOF_RAM_BUDGET "${CMAKE_BINARY_DIR}" NAME)
+endif()
+idf_build_get_property(rdof_python PYTHON)
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME}.elf POST_BUILD
+    COMMAND ${rdof_python} "${CMAKE_CURRENT_LIST_DIR}/../tools/ram_budget.py" "${CMAKE_BINARY_DIR}"
+            --profile "${RDOF_RAM_BUDGET}" --if-budgeted
+    VERBATIM)

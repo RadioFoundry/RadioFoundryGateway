@@ -6,7 +6,7 @@ and a client that stops reading cost the receiver.
     RDOF_BOARD=<board ip> RDOF_BOARD_STRESS=1 python -m pytest -q hil-tests/test_stress.py
 
 About two minutes. Nothing here transmits or changes settings. Each test reads the board's own counters before and
-after (`/api/status`): `stalls` (a core's tick stopped for over 5 ms: interrupts were off that long), `flash`
+after (`/api/status`): `stalls` (a core's tick stopped for over 2.5 ms: interrupts were off that long), `flash`
 (writes and erases, each stops both cores), and the SDR's `fifo_loss_n`, `ring_overflows` and `bytes_lost`. A stall
 or a flash write during a stream is a defect whatever it cost; a chip FIFO loss is the reader's; a ring overflow is
 the DSP not keeping up (docs/spec/lr2021-iq.md R3.58, R3.59).

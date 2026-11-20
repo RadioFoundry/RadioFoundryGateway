@@ -51,6 +51,9 @@ extern "C" {
 #define RDOF_BL_MALLOC(n) heap_caps_malloc_prefer((n), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
 #define RDOF_BL_REALLOC(p, n) \
     heap_caps_realloc_prefer((p), (n), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
+/* A hot loop's few KB: internal RAM where there's room (PSRAM goes through the cache both cores share) */
+#define RDOF_BL_MALLOC_FAST(n) \
+    heap_caps_malloc_prefer((n), 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 /* A trigger's output at most (its whole capture where it fits): 10.9 s of cs16 at 48 kS/s, which makes 192 KB/s. A
  * W12 at 384 kS/s sent 40-150 KB/s over its Wi-Fi: at 1 MB a 15 s trigger lost its last seconds. 2 MB is the largest
  * block a W12 has free in PSRAM; less is taken where it isn't. */
@@ -58,6 +61,7 @@ extern "C" {
 #else
 #define RDOF_BL_OUT_TRIG 4194304
 #define RDOF_BL_MALLOC(n) malloc(n)
+#define RDOF_BL_MALLOC_FAST(n) malloc(n)
 #define RDOF_BL_REALLOC(p, n) realloc((p), (n))
 #endif
 
@@ -194,7 +198,7 @@ typedef struct {
  * history's units (a cs8 sample over 127), the wideband offset from the window's center its channelizer mixed to
  * 0 Hz (the receiver's AFC moves it), and whether it's filler (the channelizer's output lost, zeros kept the
  * count). */
-typedef struct {
+typedef struct rdof_bl_chs {
     uint64_t sc;
     float i, q;
     float nco_hz;
@@ -218,16 +222,30 @@ typedef struct {
     long (*iq_filled)(void *ctx, uint64_t sc, long n);
     /* A capture is open: keep the history warm (optional). */
     void (*iq_warm)(void *ctx);
-    /* A channel's own outputs, where there's no wideband history (iq_read NULL; optional): a channelizer's (an
-     * FPGA's), one output instant every round(fs / 48000) wideband samples. The bench's I/Q ops (capture, trigger,
-     * track, rx) read them in place of the history. ch_open: the channel freq_hz is in, its recent outputs kept (as
-     * the wideband history is: an op's pre-roll and floor from before it), `seconds` of it needed: a handle, or -1
-     * (no channel there, or no room); *bw_hz its passband around freq_hz. ch_read:
-     * its instants from wideband sample sc on, up to n (0: none yet). *oldest: the first kept; *next: the next to
-     * come. */
-    int (*ch_open)(void *ctx, double freq_hz, double seconds, double *bw_hz);
+    /* A channel's own outputs (optional): a channelizer's (an FPGA's, or the receiver's own), one output instant
+     * every round(fs / 48000) wideband samples. Where there's no wideband history (iq_read NULL) the bench's I/Q ops
+     * (capture, trigger, track, rx) read them in place of it; with ch_any, an rx reads them even where there is one
+     * (no channel to cut from the history on the bench's core). ch_open: the channel freq_hz is in (off_hz: where a
+     * carrier truly at freq_hz shows, offset from the window's center), its recent outputs kept (as the wideband
+     * history is: an op's pre-roll and floor from before it), `seconds` of it needed: a handle, or -1 (no channel
+     * there, or no room); *bw_hz comes in as the passband wanted and goes out as the channel's around freq_hz.
+     * ch_read: its instants from wideband sample sc on, up to n (0: none yet). *oldest: the first kept; *next: the
+     * next to come. */
+    int (*ch_open)(void *ctx, double freq_hz, double off_hz, double seconds, double *bw_hz);
     long (*ch_read)(void *ctx, int h, uint64_t sc, rdof_bl_chs_t *out, long n, uint64_t *oldest, uint64_t *next);
     void (*ch_close)(void *ctx, int h);
+    /* Optional, beside ch_read: its instants from wideband sample sc on as one even run, up to n: I then Q straight
+     * into iq (history units), the first's wideband sample *sc0, each *step after the last, all at channelizer offset
+     * *nco_hz (a change ends the run); *filler how many are filler, and only when there are any fill[] marks which.
+     * Returns as ch_read. A struct an instant cost a W12's core 0 a fifth of an FM receiver's time. */
+    long (*ch_read_run)(void *ctx, int h, uint64_t sc, float *iq, bool *fill, long n, uint64_t *sc0, uint32_t *step,
+                        float *nco_hz, long *filler, uint64_t *oldest, uint64_t *next);
+    /* This task's run time in us, wrapping (optional: else the thread's CPU clock): an rx job's done record splits
+     * its CPU time by part (cpu_s). */
+    uint32_t (*cpu_us)(void *ctx);
+    /* ch_open opens a channel anywhere in the window, made from then on (no outputs from before it): an rx, which
+     * needs none, takes it over the history. */
+    bool ch_any;
     /* A measurement or a transmission is running (optional): called each tick while one is, so the platform holds
      * its frequency correction where it is (no chip move, no new estimate in the window) until they all end, a
      * frequency read over seconds showing no step that isn't the signal's. The platform bounds how long. */

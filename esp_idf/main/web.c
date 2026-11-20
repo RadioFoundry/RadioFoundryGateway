@@ -934,6 +934,26 @@ static esp_err_t post_spike(httpd_req_t *req)
 }
 #endif
 
+/* A profile: both cores' PCs at each tick for ms (?ms=, default 2000, at most 8000), counted by task and PC */
+static esp_err_t get_prof(httpd_req_t *req)
+{
+    char q[32], v[12];
+    int ms = 2000;
+    if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK && httpd_query_key_value(q, "ms", v, sizeof v) == ESP_OK)
+        ms = atoi(v);
+    size_t len = 0;
+    char *out = prof_run(ms, &len);
+    if (!out) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "a profile is already running, or no memory\n");
+    }
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t e = httpd_resp_send(req, out, (ssize_t)len);
+    free(out);
+    return e;
+}
+
 #if CONFIG_FREERTOS_USE_TRACE_FACILITY && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
 /* Each task's share of a core since the last ask, by its task number (the run-time counter is esp_timer us). */
 static esp_err_t get_tasks(httpd_req_t *req)
@@ -941,6 +961,17 @@ static esp_err_t get_tasks(httpd_req_t *req)
     enum { MAXT = 64 };
     static uint32_t last_run[MAXT], last_num[MAXT];
     static int64_t last_us;
+    /* uxTaskGetSystemState reads every task's stack high-water mark (a byte scan of each free stack, about 80 KB)
+       inside the kernel's lock: both cores stop about 5 ms, longer than the LR2021 FIFO lasts, so a bench job
+       measuring loses samples. Refused then, unless forced. */
+    char q[32], v[8];
+    const bool force = httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
+                       httpd_query_key_value(q, "force", v, sizeof v) == ESP_OK && v[0] == '1';
+    if (bench_line_measuring() && !force) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "a bench job is measuring: this stops both cores about 5 ms (its stack scan) "
+                                       "and loses samples; ?force=1 to ask anyway, or read cpu in /api/status\n");
+    }
     TaskStatus_t *ts = heap_caps_malloc(MAXT * sizeof *ts, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     char *buf = heap_caps_malloc(MAXT * 64 + 64, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!ts || !buf) {
@@ -1056,6 +1087,7 @@ void web_start(void)
     }
     const httpd_uri_t uris[] = {
         {.uri = "/", .method = HTTP_GET, .handler = get_page},
+        {.uri = "/api/prof", .method = HTTP_GET, .handler = get_prof},
 #if CONFIG_FREERTOS_USE_TRACE_FACILITY && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
         {.uri = "/api/tasks", .method = HTTP_GET, .handler = get_tasks},
 #endif

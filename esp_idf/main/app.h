@@ -569,6 +569,7 @@ void hang_watch_me(void);   /* the calling task is watched from now: it feeds wi
 void hang_watch_feed(void);
 void stall_watch_start(void); /* core 0's tick notes its running task (flash_watch.c) */
 int stall_watch_take(void); /* core 0's longest tick gap since the last call, us */
+char *prof_run(int ms, size_t *len); /* /api/prof: both cores' PCs at each tick for ms, as text (flash_watch.c) */
 void flash_watch_json(rdof_json_t *j); /* /api/status "flash": the flash operations (flash_watch.c) */
 void bench_line_start(void);
 #if CONFIG_RDOF_BENCH
@@ -582,6 +583,14 @@ void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t);
 long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
 long bench_wide_filled(uint64_t sc, long n); /* how many of the history's samples [sc, sc + n) are filler */
 void bench_wide_warm(void);
+/* A channel tap out of the DSP's channelizer (bench_api.c), as rdof_bl_platform_t's ch_open / ch_read / ch_close
+ * (ch_any): an rx's channel made on core 1, not cut from the history on core 0 */
+struct rdof_bl_chs;
+int bench_chtap_open(double freq_hz, double off_hz, double seconds, double *bw_hz);
+long bench_chtap_read(int h, uint64_t sc, struct rdof_bl_chs *out, long n, uint64_t *oldest, uint64_t *next);
+long bench_chtap_read_run(int h, uint64_t sc, float *iq, bool *fill, long n, uint64_t *sc0, uint32_t *step,
+                          float *nco_hz, long *filler, uint64_t *oldest, uint64_t *next);
+void bench_chtap_close(int h);
 /* The line protocol's tune (bench_api.c): PUT /sdr's retune for line session `who` until bench_retune_line_end;
  * busy while an HTTP session holds an exclusive lease. NULL when asked (bench_retune_line_state: applied yet), else an
  * error code with why. */

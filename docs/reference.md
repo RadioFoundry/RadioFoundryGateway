@@ -158,6 +158,13 @@ can't run (`web.c`, the bench API, `sdr_task.c`, netclock's and wifilist's handl
   stored and no restart. With `CONFIG_RDOF_CRASH_TEST` it also checks the core dump round trip ([Crashes](#crashes)).
 - `RDOF_BOARD_STRESS=1` runs `test_stress.py` too (about two minutes): long and parallel I/Q streams, status and log
   polling, a client that stops reading, each checked against the board's stall, flash and sample-loss counters.
+- `RDOF_BOARD_PERF=1` runs `test_perf.py`, the performance gate (about 75 s): the board at rest (core 0 at most
+  75% busy), then an FM `rx` with its audio for 30 s, a full-rate `capture` and a `trigger` beside the radio. Each
+  must lose nothing (`fifo_loss_n`, `ring_overflows`, `bytes_lost`, no stall, no flash write), keep real time (no
+  `gap`), answer `/api/status` within 2 s throughout, and keep the internal heap over 8 KB. `RDOF_PERF_TX=<MHz>` (a
+  leased frequency) adds an 8 s FM transmission (losing only its own time on air and its setup's reads, R2.41) and
+  a DMR voice call (47 bursts, every run on time). It prints each job's `cpu_s`, the cores' load and the worst
+  poll. Run it on a W12 before a firmware goes to the boards.
 - Skipped without `RDOF_BOARD`.
 
 ### Firmware builds
@@ -358,10 +365,13 @@ defaults. Core options (`common/Kconfig`, "RadioFoundry Gateway common (common)"
 
 ### Size
 
-From `idf.py size`. Run it after a change that adds code or RAM, and update this table.
+From `idf.py size`. Run it after a change that adds code or RAM, and update this table. The build itself fails when
+internal RAM (DIRAM and IRAM, statically) goes over the profile's budget in `tools/ram_budget.json`
+(`tools/ram_budget.py`, after each link): `w12`'s is 209,671 bytes, set 2026-11-19 at 208,647.
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
+| `16mb` + `w12` (the Rust modules) | 2026-11-19 | 2543 KB | 1.5 MB of 4 MB | 188 KB |
 | `16mb` + `w12` (the Rust modules) | 2026-11-18 | 2533 KB | 1.5 MB of 4 MB | 187 KB |
 | `16mb` + `w12` (the Rust modules) | 2026-11-16 | 2509 KB | 1.6 MB of 4 MB | 187 KB |
 | `16mb` + `w12` (the Rust modules) | 2026-11-13 | 2499 KB | 1.6 MB of 4 MB | 187 KB |
@@ -1690,6 +1700,19 @@ as they came, `raw` in PSRAM, and the hot arena grown from the spare as an elast
 ([memory.md](spec/fw/memory.md#5-the-sdrs-hot-arena)). On the W12 neither two cores nor a pipeline gains: both keep
 every block's spectrum in PSRAM (about 4 MB/s written by one core and read by the other), where one core reuses a
 spectrum buffer that stays in the cache.
+
+**The W12's core 0 with a bench job** (W12 #3, 384 kS/s, 2026-11-19; `hil-tests/test_perf.py`). At rest core 0 is
+about 55% busy: the LR2021 reader 43% (about 1,550 reads a second, about 280 us of CPU each), the rest Wi-Fi, the
+IP gateway, the GNSS and the OLED. A 30 s FM `rx` with its audio takes about 30% more of core 0 (`cpu_s`: 2.7 s
+reading the channel's outputs, 6.1 s in the FM receiver, 1.1 s on the PCM, the records and the rest), and the bench
+line, at priority 5 beside the web server and MQTT, takes what's left: `cpu` reads about 1.0 during the job while
+`/api/status` still answers within 0.6 s and nothing is lost. Before the changes the same job lost samples:
+`GET /api/tasks` stopped both cores about 5 ms; the transmit turn ran just before a read
+([lr2021-iq.md](spec/lr2021-iq.md) R2.41); `snprintf` built each record and PCM header (newlib's double
+formatting about 1.6 s of the job, now 0.6); the channel was read an instant at a time from a struct (now one run
+of floats); at priority 7 the bench line starved the web server (a request took 23 s). A transmission's turns are
+the exception: a DMR call's bursts keep their time at the cost of a few reads before each key-up, and an FM signal's
+setup may lose a read in the 0.5 s before its key-up (R2.41); the gate allows those and nothing else.
 
 ### Scope
 

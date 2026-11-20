@@ -1813,11 +1813,14 @@ typedef struct __attribute__((packed)) {
 } hist_marker_t;
 
 static void iq_frames(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n, long fill_n);
+static void chtap_apply(rdof_sdr_rx_t *rx);
 
 void bench_on_chunk(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
 {
     const long fill_n = chunk_fill < n ? chunk_fill : n; /* its first fill_n samples are filler */
     chunk_fill = 0;
+    if (rx == &g_rx)
+        chtap_apply(&g_rx); /* on or off from the next chunk */
     if (hist_mu) {
         const int64_t t0 = esp_timer_get_time();
         hist_write(rx, iq, n);
@@ -1828,6 +1831,220 @@ void bench_on_chunk(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
     const int64_t t_iq = esp_timer_get_time();
     iq_frames(rx, iq, n, fill_n);
     iq_us += esp_timer_get_time() - t_iq;
+}
+
+/* ── channel taps, for the line protocol's receivers (bench_line.c ch_open) ── */
+
+/* A tap is one more channel out of the DSP's channelizer (rdof_chz_tap_set), anywhere in the window, made on core 1
+ * for about 2% of it, in place of the bench's own channel cut from the wideband history on core 0 (a quarter of
+ * that core at 384 kS/s, and an FM rx with audio fell behind). Its outputs go to a ring in PSRAM, read by
+ * bench_line. bench_line opens (want) and closes; the DSP turns it on or off at the next chunk's end, on again
+ * after a retune (a new run, the same frequency), and frees the ring once off. */
+#define CHTAP_KEEP_FREE (1536 * 1024) /* PSRAM left when sizing a ring */
+enum { CHTAP_FREE, CHTAP_OPENING, CHTAP_ON, CHTAP_CLOSING }; /* FREE and ON to CLOSING bench_line's, the rest the DSP's */
+typedef struct {
+    int state;
+    bool set;               /* the DSP's: on in the channelizer, for set_run */
+    uint32_t set_run;
+    double freq, corr;      /* the true frequency, and where it shows less where it would at fs exact */
+    float nco;              /* the offset it's set at, from the center */
+    rdof_cf_t H[RDOF_CHZ_OUT_FFT];
+    float *ring;            /* [cap][2] */
+    uint32_t cap;
+    int d;
+    uint64_t sc0, w;        /* instant 0's wideband sample, instants written (under chtap_mux) */
+    bool started;
+} chtap_t;
+EXT_RAM_BSS_ATTR static chtap_t chtaps[RDOF_CHZ_TAPS];
+static portMUX_TYPE chtap_mux = portMUX_INITIALIZER_UNLOCKED;
+
+/* From the channelizer (the DSP), each block: its outputs into the ring */
+static void chtap_out(void *ctx, uint64_t sc, const rdof_cf_t *y, int n)
+{
+    chtap_t *t = ctx;
+    taskENTER_CRITICAL(&chtap_mux);
+    if (!t->started || sc != t->sc0 + t->w * (uint64_t)t->d) /* the first, or not where the last left off */
+        t->sc0 = sc, t->w = 0, t->started = true;
+    const uint64_t w = t->w;
+    taskEXIT_CRITICAL(&chtap_mux);
+    uint32_t at = (uint32_t)(w % t->cap);
+    for (int i = 0; i < n; i++) {
+        t->ring[2 * at] = y[i].re, t->ring[2 * at + 1] = y[i].im;
+        if (++at == t->cap)
+            at = 0;
+    }
+    taskENTER_CRITICAL(&chtap_mux);
+    t->w = w + (uint64_t)n;
+    taskEXIT_CRITICAL(&chtap_mux);
+}
+
+/* From the DSP after each chunk: each tap on or off as bench_line wants it */
+static void chtap_apply(rdof_sdr_rx_t *rx)
+{
+    for (int k = 0; k < RDOF_CHZ_TAPS; k++) {
+        chtap_t *t = &chtaps[k];
+        taskENTER_CRITICAL(&chtap_mux);
+        const int state = t->state;
+        const bool set = t->set, same = t->set_run == run_id;
+        taskEXIT_CRITICAL(&chtap_mux);
+        if (state == CHTAP_FREE || state == CHTAP_OPENING || (state == CHTAP_ON && set && same))
+            continue;
+        if (state == CHTAP_ON) { /* new, or a new run: the same frequency in this window */
+            const double off = t->freq - rx->center_hz + t->corr;
+            const bool ok = !rx->cfg.external && rdof_chz_tap_set(&rx->chz, k, off, t->H, chtap_out, t) == 0;
+            taskENTER_CRITICAL(&chtap_mux);
+            t->set = ok, t->set_run = run_id, t->nco = (float)off, t->started = false, t->w = 0;
+            t->d = rx->chz.D;
+            taskEXIT_CRITICAL(&chtap_mux);
+            ESP_LOGI(TAG, "channel tap %d at %.6f MHz (%+.0f Hz from the center): %s", k, t->freq / 1e6, off,
+                     ok ? "on" : "failed");
+            continue;
+        }
+        if (set && same)
+            rdof_chz_tap_set(&rx->chz, k, 0, NULL, NULL, NULL);
+        heap_caps_free(t->ring);
+        taskENTER_CRITICAL(&chtap_mux);
+        t->ring = NULL, t->set = false, t->state = CHTAP_FREE;
+        taskEXIT_CRITICAL(&chtap_mux);
+    }
+}
+
+int bench_chtap_open(double freq_hz, double off_hz, double seconds, double *bw_hz)
+{
+    if (!g_rx_ready || g_rx.cfg.external || !g_rx.chz.k)
+        return -1;
+    double cut = *bw_hz / 2;
+    const double most = 0.45 * g_rx.chz.out_rate;
+    cut = cut < 1000 ? 1000 : cut > most ? most : cut;
+    int k = -1;
+    taskENTER_CRITICAL(&chtap_mux);
+    for (int i = 0; i < RDOF_CHZ_TAPS && k < 0; i++)
+        if (chtaps[i].state == CHTAP_FREE)
+            k = i, chtaps[i].state = CHTAP_OPENING;
+    taskEXIT_CRITICAL(&chtap_mux);
+    if (k < 0)
+        return -1;
+    chtap_t *t = &chtaps[k];
+    const uint32_t cap = (uint32_t)(seconds * g_rx.chz.out_rate * 1.15) + 1024; /* a tenth kept back, and a chunk */
+    const size_t bytes = (size_t)cap * 8;
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < CHTAP_KEEP_FREE + bytes || rdof_chz_tap_filter(&g_rx.chz, cut, t->H) ||
+        !(t->ring = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))) {
+        heap_caps_free(t->ring);
+        taskENTER_CRITICAL(&chtap_mux);
+        t->ring = NULL, t->state = CHTAP_FREE;
+        taskEXIT_CRITICAL(&chtap_mux);
+        return -1;
+    }
+    taskENTER_CRITICAL(&chtap_mux);
+    t->cap = cap, t->freq = freq_hz, t->corr = off_hz - (freq_hz - g_rx.center_hz), t->set = false, t->started = false;
+    t->w = 0, t->state = CHTAP_ON;
+    taskEXIT_CRITICAL(&chtap_mux);
+    *bw_hz = 2 * cut;
+    ESP_LOGI(TAG, "channel tap %d opened: %.6f MHz, %.0f Hz wide, %u instants kept", k, freq_hz / 1e6, *bw_hz,
+             (unsigned)cap);
+    return k;
+}
+
+void bench_chtap_close(int h)
+{
+    if (h < 0 || h >= RDOF_CHZ_TAPS)
+        return;
+    taskENTER_CRITICAL(&chtap_mux);
+    if (chtaps[h].state == CHTAP_ON)
+        chtaps[h].state = CHTAP_CLOSING; /* the DSP turns it off and frees it */
+    taskEXIT_CRITICAL(&chtap_mux);
+}
+
+/* What a read from sc on can take of tap h: how many (k), the first's wideband sample (*s0), its place in the ring
+ * (*at), and whether any of them stands on filler in the history. 0 with *oldest, *next set when none. */
+typedef struct {
+    const float *ring;
+    uint32_t cap, at;
+    int d;
+    float nco;
+    uint64_t s0;
+    bool any_fill;
+} chtap_span_t;
+
+static long chtap_span(int h, uint64_t sc, long n, chtap_span_t *o, uint64_t *oldest, uint64_t *next)
+{
+    chtap_t *t = &chtaps[h];
+    taskENTER_CRITICAL(&chtap_mux);
+    const bool on = t->state == CHTAP_ON && t->set && t->set_run == run_id && t->started;
+    const uint64_t sc0 = t->sc0, w = t->w;
+    const uint32_t cap = t->cap;
+    const int d = t->d;
+    const float nco = t->nco;
+    taskEXIT_CRITICAL(&chtap_mux);
+    if (!on) { /* nothing yet: from about now */
+        *oldest = *next = g_rx_ready && g_rx.samples > 0 ? (uint64_t)g_rx.samples : 0;
+        return 0;
+    }
+    const uint64_t keep = cap - cap / 10, first = w > keep ? w - keep : 0; /* a tenth for the DSP writing on */
+    *oldest = sc0 + first * (uint64_t)d, *next = sc0 + w * (uint64_t)d;
+    if (n <= 0 || sc >= *next)
+        return 0;
+    if (sc < *oldest)
+        return 0; /* overwritten: the caller goes on from oldest */
+    const uint64_t i0 = (sc - sc0 + (uint64_t)d - 1) / (uint64_t)d;
+    const long k = (long)(w - i0) < n ? (long)(w - i0) : n;
+    *o = (chtap_span_t){.ring = t->ring, .cap = cap, .at = (uint32_t)(i0 % cap), .d = d, .nco = nco,
+                        .s0 = sc0 + i0 * (uint64_t)d};
+    o->any_fill = bench_wide_filled(o->s0 >= (uint64_t)d / 2 ? o->s0 - (uint64_t)d / 2 : 0, k * d) > 0;
+    return k;
+}
+
+/* Whether the instant at wideband sample x stands on filler: the history's d samples around it */
+static bool chtap_filler(uint64_t x, int d)
+{
+    return bench_wide_filled(x >= (uint64_t)d / 2 ? x - (uint64_t)d / 2 : 0, d) > 0;
+}
+
+long bench_chtap_read(int h, uint64_t sc, rdof_bl_chs_t *out, long n, uint64_t *oldest, uint64_t *next)
+{
+    chtap_span_t sp;
+    const long k = chtap_span(h, sc, n, &sp, oldest, next);
+    const float g = wide_k(); /* the history's units: a cs8 sample over 127 */
+    uint32_t at = sp.at;
+    uint64_t x = sp.s0;
+    for (long j = 0; j < k; j++) {
+        const bool f = sp.any_fill && chtap_filler(x, sp.d);
+        out[j] = (rdof_bl_chs_t){.sc = x, .i = f ? 0 : sp.ring[2 * at] * g, .q = f ? 0 : sp.ring[2 * at + 1] * g,
+                                 .nco_hz = sp.nco, .filler = f};
+        x += (uint64_t)sp.d;
+        if (++at == sp.cap)
+            at = 0;
+    }
+    return k;
+}
+
+/* bench_chtap_read as one even run (rdof_bl_platform_t.ch_read_run): the ring's floats scaled straight into iq, in
+ * its two pieces either side of the wrap. A tap's offset doesn't change while it's on. */
+long bench_chtap_read_run(int h, uint64_t sc, float *iq, bool *fill, long n, uint64_t *sc0, uint32_t *step,
+                          float *nco_hz, long *filler, uint64_t *oldest, uint64_t *next)
+{
+    chtap_span_t sp;
+    const long k = chtap_span(h, sc, n, &sp, oldest, next);
+    *filler = 0;
+    if (k <= 0)
+        return k;
+    *sc0 = sp.s0, *step = (uint32_t)sp.d, *nco_hz = sp.nco;
+    const float g = wide_k();
+    const long k1 = (long)(sp.cap - sp.at) < k ? (long)(sp.cap - sp.at) : k;
+    const float *a = sp.ring + 2 * (size_t)sp.at;
+    for (long j = 0; j < 2 * k1; j++)
+        iq[j] = a[j] * g;
+    for (long j = 2 * k1; j < 2 * k; j++)
+        iq[j] = sp.ring[j - 2 * k1] * g;
+    if (sp.any_fill) {
+        uint64_t x = sp.s0;
+        for (long j = 0; j < k; j++, x += (uint64_t)sp.d) {
+            fill[j] = chtap_filler(x, sp.d);
+            if (fill[j])
+                iq[2 * j] = iq[2 * j + 1] = 0, (*filler)++;
+        }
+    }
+    return k;
 }
 
 /* bench_on_chunk's I/Q streams: this chunk's frames into the ring */

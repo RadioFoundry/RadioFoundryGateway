@@ -691,7 +691,7 @@ async function loadLog() {
 async function tasks() {
   const r = await fetch('/api/tasks');
   $('tasks').hidden = false;
-  $('tasks').textContent = r.ok ? await r.text() : 'Not in this build (FreeRTOS run-time stats are off).';
+  $('tasks').textContent = r.ok || r.status == 409 ? await r.text() : 'Not in this build (FreeRTOS run-time stats are off).';
 }
 async function powerOff() { if (confirm('Turn the board off? Only its power key turns it on again.')) $('otamsg').textContent = await (await fetch('/api/power_off', {method: 'POST'})).text(); }
 async function restart() { if (confirm(has(S.s, 'coredump') ? 'Restart the board?' : 'Restart the program?')) $('otamsg').textContent = await (await fetch('/api/restart', {method: 'POST'})).text(); }

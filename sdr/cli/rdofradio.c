@@ -2288,7 +2288,7 @@ static struct {
     float *nco;       /* [cap][C]: each channel's NCO offset (wideband Hz from the center) */
 } BLH;
 
-static int bl_ch_open(void *ctx, double hz, double seconds, double *bw)
+static int bl_ch_open(void *ctx, double hz, double off_hz, double seconds, double *bw)
 {
     int c = -1;
     for (int k = 0; k < R.rx.C; k++)

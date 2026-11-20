@@ -831,7 +831,7 @@ after the op's own are the mode's.
 | op | request | replies |
 |---|---|---|
 | `tx` | `session`, `mode`, `freq`, `power_dbm` (or `power`), `max_s`, `wait_max`, the mode's fields; input bytes after the line | `{"tx": {"mode", "freq", "seconds", "input_bytes"}}`, queued / granted, `{"started": ID, "t"}`, `{"done": {"mode", "freq", "on_air_s", "input_bytes", "cut", ...}}` |
-| `rx` | `session`, `mode`, `freq`, `seconds`, `bw`, `squelch_dbfs`, `squelch_over_db`, the mode's fields | `{"rx": header}`, `{"rec": record}`, `{"pcm": {"stream", "seq", "n"}, "bytes": 2n}` + int16 LE, `{"gap": ...}`, `{"done": {"mode", "freq", "seconds", "samples", "gap_samples", "summary"}}` |
+| `rx` | `session`, `mode`, `freq`, `seconds`, `bw`, `squelch_dbfs`, `squelch_over_db`, the mode's fields | `{"rx": header}`, `{"rec": record}`, `{"pcm": {"stream", "seq", "n"}, "bytes": 2n}` + int16 LE, `{"gap": ...}`, `{"done": {"mode", "freq", "seconds", "samples", "gap_samples", "cpu_s", "summary"}}` |
 
 - `tx` is a transmit job: it waits for the modem as `run` does (`expect_s` its length plus 3 s), on a frequency of
   `bench.tx`, at `power_dbm` (or `power`) capped by its `max_dbm` or `rf_level`, for at most `max_key_s`. On a W12, while the gateway's own roamer is
@@ -851,6 +851,11 @@ after the op's own are the mode's.
   scale). A gap is `{"gap": {"sc", "samples"}}` (channel samples the history overwrote before they went: the
   client fills them) or `{"gap": {"sc", "filler"}}` (the front end's zeros, already in the stream). `seconds` is
   at most 3600.
+- `rx`'s `done` gives `cpu_s`, the job's own CPU time in seconds by part: `read` (the history or the channel's
+  outputs), `chan` (cutting the channel, when it isn't the receiver's), `demod` (the mode's receiver), `pcm` (the
+  streams), `records` and `other`. On a W12 it's the bench line's task's run time; on Linux, the thread's CPU
+  clock. A 30 s FM `rx` with its audio on a W12 took about 2.7 s reading, 5.9 s in the receiver, 0.9 s on the rest
+  (2026-11-19).
 - A half-duplex front end can't hear its own `tx`: the receiver stops while it transmits. Use a second board.
 - The source renders at the platform's rate for it (`sig_rate`): on rdofradio about 48 kS/s (the stream's rate
   divided, 864 kS/s by 18), each sample spread over the stream's linearly (`rdof_sdrmodem_signal_rate`); a 1 kHz

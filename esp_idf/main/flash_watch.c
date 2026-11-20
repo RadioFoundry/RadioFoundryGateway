@@ -6,13 +6,18 @@
  * time of the last one that took over a millisecond (a read is far shorter). The count is also how often the flash
  * is written: long_ops is the writes and erases. */
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_cpu_utils.h"
+#include "esp_debug_helpers.h"
+#include "esp_memory_utils.h"
 #include "xtensa_context.h"
 #include "esp_freertos_hooks.h"
 
@@ -22,6 +27,7 @@ void __real_spi_flash_disable_interrupts_caches_and_other_cpu(void);
 void __real_spi_flash_enable_interrupts_caches_and_other_cpu(void);
 
 static DRAM_ATTR struct {
+    volatile bool cache_off; /* a flash operation is on: PSRAM is out of reach (the profiler's ring is there) */
     uint32_t ops, long_ops;
     int64_t t0, last_at;
     uint32_t worst_us, last_us;
@@ -31,6 +37,7 @@ static DRAM_ATTR struct {
 void IRAM_ATTR __wrap_spi_flash_disable_interrupts_caches_and_other_cpu(void)
 {
     __real_spi_flash_disable_interrupts_caches_and_other_cpu();
+    fw.cache_off = true;
     fw.t0 = esp_timer_get_time();
 }
 
@@ -48,11 +55,14 @@ void IRAM_ATTR __wrap_spi_flash_enable_interrupts_caches_and_other_cpu(void)
         fw.last_by = xTaskGetCurrentTaskHandle();
     }
     __real_spi_flash_enable_interrupts_caches_and_other_cpu();
+    fw.cache_off = false;
 }
 
 
 /* Stalls: each core's tick notes a gap over 5 ms between two ticks (interrupts off, or the cache off, for that
  * long). /api/status "stalls" lists the last four on each core. */
+/* A stall worth noting: longer than the LR2021 FIFO rides through (about 2 ms), with room for one late tick. */
+#define STALL_US 2500
 static DRAM_ATTR uint32_t stall_tick_gap_us;
 static DRAM_ATTR int64_t stall_last_us;
 
@@ -88,20 +98,147 @@ static void IRAM_ATTR stall_note(int core, uint32_t us, int64_t now)
     }
 }
 
+/* The profiler: each core's tick (1 kHz) notes the PC its running task was interrupted at, and the task. In PSRAM
+ * (no internal RAM spent), skipped while a flash operation has the cache off. */
+#define PROF_N 16384
+#define PROF_DEPTH 4
+#define PROF_TASKS 48
+typedef struct {
+    uint32_t pc[PROF_DEPTH]; /* where it was, then its callers (0: not known) */
+    uint8_t task, core;      /* prof_task[task] (PROF_TASKS: not noted), the core it ran on */
+} prof_ev_t;
+/* The tasks seen this run, each name taken when first seen: a task may be gone by the output (PSRAM: the tick
+ * skips while the cache is off) */
+EXT_RAM_BSS_ATTR static struct {
+    TaskHandle_t h;
+    char name[configMAX_TASK_NAME_LEN];
+} prof_task[PROF_TASKS];
+static DRAM_ATTR uint32_t prof_tasks;
+static portMUX_TYPE prof_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static uint8_t IRAM_ATTR prof_task_of(TaskHandle_t me)
+{
+    uint8_t k = PROF_TASKS;
+    portENTER_CRITICAL_ISR(&prof_mux); /* both cores' ticks */
+    for (uint32_t i = 0; i < prof_tasks; i++)
+        if (prof_task[i].h == me) {
+            k = (uint8_t)i;
+            break;
+        }
+    if (k == PROF_TASKS && prof_tasks < PROF_TASKS) {
+        k = (uint8_t)prof_tasks++;
+        prof_task[k].h = me;
+        const char *nm = pcTaskGetName(me);
+        int j = 0;
+        for (; j < configMAX_TASK_NAME_LEN - 1 && nm[j]; j++)
+            prof_task[k].name[j] = nm[j];
+        prof_task[k].name[j] = 0;
+    }
+    portEXIT_CRITICAL_ISR(&prof_mux);
+    return k;
+}
+EXT_RAM_BSS_ATTR static prof_ev_t prof_ev[PROF_N];
+static DRAM_ATTR volatile uint32_t prof_n;
+static DRAM_ATTR volatile bool prof_on;
+
+static void IRAM_ATTR prof_note(int core)
+{
+    if (!prof_on || fw.cache_off)
+        return;
+    TaskHandle_t me = xTaskGetCurrentTaskHandleForCore(core);
+    const XtExcFrame *f = me ? *(XtExcFrame **)me : NULL; /* the TCB's first field: the saved stack top */
+    const uint32_t i = __atomic_fetch_add(&prof_n, 1, __ATOMIC_RELAXED);
+    if (i >= PROF_N)
+        return;
+    prof_ev_t e = {.task = me ? prof_task_of(me) : PROF_TASKS, .core = (uint8_t)core};
+    if (f) {
+        /* the callers from the stack's base save areas (the interrupt's entry spilled the register windows); each
+           step checked, so a bad frame ends the walk rather than faulting */
+        esp_backtrace_frame_t fr = {.pc = (uint32_t)f->pc, .sp = (uint32_t)f->a1, .next_pc = (uint32_t)f->a0};
+        e.pc[0] = fr.pc;
+        for (int d = 1; d < PROF_DEPTH && fr.next_pc && esp_stack_ptr_is_sane(fr.sp); d++) {
+            const bool more = esp_backtrace_get_next_frame(&fr);
+            const uint32_t pc = esp_cpu_process_stack_pc(fr.pc);
+            if (!esp_ptr_executable((void *)pc))
+                break;
+            e.pc[d] = pc;
+            if (!more)
+                break;
+        }
+    }
+    prof_ev[i] = e;
+}
+
+static int prof_cmp(const void *a, const void *b)
+{
+    const prof_ev_t *x = a, *y = b;
+    if (x->task != y->task)
+        return x->task < y->task ? -1 : 1;
+    if (x->core != y->core)
+        return x->core < y->core ? -1 : 1;
+    for (int d = 0; d < PROF_DEPTH; d++)
+        if (x->pc[d] != y->pc[d])
+            return x->pc[d] < y->pc[d] ? -1 : 1;
+    return 0;
+}
+
+/* Sample both cores for ms (at most 8 s: PROF_N ticks), then each task's samples and its PCs, grouped by task: "n
+ * task core pc" lines (the core it ran on then), for addr2line on the running image's ELF. NULL when one is already running. */
+char *prof_run(int ms, size_t *len)
+{
+    static bool busy;
+    if (busy)
+        return NULL;
+    busy = true;
+    if (ms < 100)
+        ms = 100;
+    if (ms > 8000)
+        ms = 8000;
+    prof_n = 0;
+    prof_tasks = 0;
+    prof_on = true;
+    vTaskDelay(pdMS_TO_TICKS(ms));
+    prof_on = false;
+    vTaskDelay(2); /* a tick still noting finishes */
+    const uint32_t n = prof_n < PROF_N ? prof_n : PROF_N;
+    qsort(prof_ev, n, sizeof prof_ev[0], prof_cmp);
+    const size_t cap = 160 * 1024;
+    char *out = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t o = 0;
+    if (out) {
+        o += (size_t)snprintf(out, cap, "%u samples in %d ms (both cores' ticks): n task core pc caller caller caller\n", (unsigned)n, ms);
+        for (uint32_t i = 0; i < n && o + 80 < cap;) {
+            uint32_t j = i;
+            while (j < n && !prof_cmp(&prof_ev[j], &prof_ev[i]))
+                j++;
+            const prof_ev_t *e = &prof_ev[i];
+            o += (size_t)snprintf(out + o, cap - o, "%u %s %u %08x %08x %08x %08x\n", (unsigned)(j - i),
+                                  e->task < PROF_TASKS ? prof_task[e->task].name : "?", (unsigned)e->core, (unsigned)e->pc[0],
+                                  (unsigned)e->pc[1], (unsigned)e->pc[2], (unsigned)e->pc[3]);
+            i = j;
+        }
+    }
+    busy = false;
+    *len = o;
+    return out;
+}
+
 static void IRAM_ATTR stall_tick1(void)
 {
+    prof_note(1);
     const int64_t now = esp_timer_get_time();
-    if (stall_last1_us && now - stall_last1_us > 5000)
+    if (stall_last1_us && now - stall_last1_us > STALL_US)
         stall_note(1, (uint32_t)(now - stall_last1_us), now);
     stall_last1_us = now;
 }
 
 static void IRAM_ATTR stall_tick(void)
 {
+    prof_note(0);
     const int64_t now = esp_timer_get_time();
     if (stall_last_us && now - stall_last_us > stall_tick_gap_us)
         stall_tick_gap_us = (uint32_t)(now - stall_last_us);
-    if (stall_last_us && now - stall_last_us > 5000)
+    if (stall_last_us && now - stall_last_us > STALL_US)
         stall_note(0, (uint32_t)(now - stall_last_us), now);
     stall_last_us = now;
 }

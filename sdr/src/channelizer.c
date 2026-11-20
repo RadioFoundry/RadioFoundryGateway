@@ -71,6 +71,9 @@ void rdof_chz_free(rdof_chz_t *s)
     rdof_sdr_free(s->y2);
     rdof_sdr_free(s->Xs);
     rdof_sdr_free(s->xs_boff);
+    for (int t = 0; t < RDOF_CHZ_TAPS; t++)
+        rdof_sdr_free(s->tap[t].H);
+    rdof_sdr_free(s->tap_y);
     memset(s, 0, sizeof *s);
 }
 
@@ -91,6 +94,37 @@ void rdof_chz_set_offset(rdof_chz_t *s, int c, double offset_hz)
     set_bin(s, c, offset_hz);
     s->step_cps[c] = NAN;
     s->corr_used[c] = NAN;
+}
+
+/* The filter: N/4 + 1 taps, its response at the M bins around 0 (0..M/2-1, -M/2..-1); *hnoise its noise gain. */
+static int make_H(const rdof_chz_t *s, double cutoff_hz, rdof_cf_t *H, float *hnoise)
+{
+    const int N = s->N, M = s->M, taps = N - s->hop + 1;
+    double *h = rdof_sdr_alloc(sizeof(double) * taps);
+    if (!h)
+        return -1;
+    rdof_chz_lowpass(taps, cutoff_hz, s->fs, h);
+    double hn = 0.0;
+    for (int n = 0; n < taps; n++)
+        hn += h[n] * h[n];
+    if (hnoise)
+        *hnoise = (float)hn;
+    for (int j = 0; j < M; j++) {
+        int rel = j < M / 2 ? j : j - M;
+        int bin = ((rel % N) + N) % N;
+        double re = 0.0, im = 0.0;
+        for (int n = 0; n < taps; n++) {
+            long long kn = ((long long)bin * n) % N;
+            double ph = -2.0 * RDOF_PI * (double)kn / (double)N;
+            re += h[n] * cos(ph);
+            im += h[n] * sin(ph);
+        }
+        /* / D for unity gain, then / M for the unnormalized inverse FFT */
+        H[j].re = (float)(re / s->D) / (float)M;
+        H[j].im = (float)(im / s->D) / (float)M;
+    }
+    rdof_sdr_free(h);
+    return 0;
 }
 
 int rdof_chz_init(rdof_chz_t *s, double sample_rate, const double *offsets_hz, int channels, int decimation,
@@ -134,33 +168,8 @@ int rdof_chz_init(rdof_chz_t *s, double sample_rate, const double *offsets_hz, i
         !s->block_rad || !s->level)
         return -1;
 
-    /* Filter: N/4 + 1 taps, its response at the M bins around 0 (0..M/2-1, -M/2..-1). */
-    const int taps = N - s->hop + 1;
-    double *h = rdof_sdr_alloc(sizeof(double) * taps);
-    if (!h)
+    if (make_H(s, cutoff_hz, s->H, &s->hnoise))
         return -1;
-    rdof_chz_lowpass(taps, cutoff_hz, s->fs, h);
-    double hn = 0.0;
-    for (int n = 0; n < taps; n++)
-        hn += h[n] * h[n];
-    s->hnoise = (float)hn;
-    for (int j = 0; j < M; j++) {
-        int rel = j < M / 2 ? j : j - M;
-        int bin = ((rel % N) + N) % N;
-        double re = 0.0, im = 0.0;
-        for (int n = 0; n < taps; n++) {
-            long long kn = ((long long)bin * n) % N;
-            double ph = -2.0 * RDOF_PI * (double)kn / (double)N;
-            re += h[n] * cos(ph);
-            im += h[n] * sin(ph);
-        }
-        /* / D for unity gain, then / M for the unnormalized inverse FFT */
-        float hr = (float)(re / s->D), hi = (float)(im / s->D);
-        s->H[j].re = hr / (float)M;
-        s->H[j].im = hi / (float)M;
-    }
-    rdof_sdr_free(h);
-
     for (int c = 0; c < C; c++)
         set_bin(s, c, offsets_hz[c]);
     for (int m = 0; m < N; m++) {
@@ -302,6 +311,71 @@ static void channel_block(rdof_chz_t *s, int c, const rdof_cf_t *X, unsigned bof
     s->phase[c] = ph;
 }
 
+/* ── taps ── */
+
+int rdof_chz_tap_filter(const rdof_chz_t *s, double cutoff_hz, rdof_cf_t *H)
+{
+    if (!(cutoff_hz > 0 && cutoff_hz < s->out_rate / 2))
+        return -1;
+    return make_H(s, cutoff_hz, H, NULL);
+}
+
+int rdof_chz_tap_set(rdof_chz_t *s, int t, double offset_hz, const rdof_cf_t *H, rdof_chz_tap_out_t out, void *ctx)
+{
+    if (t < 0 || t >= RDOF_CHZ_TAPS || !s->k)
+        return -1;
+    rdof_chz_tap_t *p = &s->tap[t];
+    if (!out) {
+        p->out = NULL;
+        return 0;
+    }
+    if (!p->H && !(p->H = rdof_sdr_alloc(sizeof(rdof_cf_t) * s->M)))
+        return -1;
+    if (!s->tap_y && !(s->tap_y = rdof_sdr_alloc(sizeof(rdof_cf_t) * s->out_per_hop)))
+        return -1;
+    memcpy(p->H, H, sizeof(rdof_cf_t) * s->M);
+    const double bin_hz = s->fs / s->N, kk = nearbyint(offset_hz / bin_hz);
+    p->k = (((int)kk % s->N) + s->N) % s->N;
+    const double step = 2.0 * RDOF_PI * (offset_hz - kk * bin_hz) / s->out_rate;
+    p->stepr = (rdof_cf_t){cosf((float)step), -sinf((float)step)};
+    p->block_rad = step * s->out_per_hop;
+    p->phase = 0;
+    p->ctx = ctx;
+    p->out = out;
+    return 0;
+}
+
+/* The taps' share of block b (spectrum X, offset boff): as channel_block, each with its own filter and no
+ * correction, then to its out. */
+static void taps_block(rdof_chz_t *s, const rdof_cf_t *X, unsigned boff, long long b)
+{
+    const int N = s->N, M = s->M, half = M / 2;
+    for (int t = 0; t < RDOF_CHZ_TAPS; t++) {
+        rdof_chz_tap_t *p = &s->tap[t];
+        if (!p->out)
+            continue;
+        gather(X, N, p->k, p->H, s->Y, half);
+        gather(X, N, p->k >= half ? p->k - half : p->k - half + N, p->H + half, s->Y + half, half);
+        rdof_fft_run(s->inv, s->Y, s->y);
+        const rdof_cf_t fix = s->twiddle[((unsigned)p->k * boff) % (unsigned)N];
+        const float phf = (float)p->phase;
+        rdof_cf_t r = cmul((rdof_cf_t){cosf(phf), -sinf(phf)}, fix);
+        const rdof_cf_t *src = s->y + s->discard;
+        for (int j = 0; j < s->out_per_hop; j++) {
+            s->tap_y[j] = cmul(src[j], r);
+            r = cmul(r, p->stepr);
+        }
+        double ph = p->phase + p->block_rad;
+        if (ph >= 2.0 * RDOF_PI || ph < 0.0)
+            ph -= 2.0 * RDOF_PI * floor(ph / (2.0 * RDOF_PI));
+        p->phase = ph;
+        const int64_t sc = rdof_chz_block_sc(s, b);
+        const int skip = sc < 0 ? (int)((-sc + s->D - 1) / s->D) : 0; /* before the first input */
+        if (skip < s->out_per_hop)
+            p->out(p->ctx, (uint64_t)(sc + (int64_t)skip * s->D), s->tap_y + skip, s->out_per_hop - skip);
+    }
+}
+
 rdof_chz_prof_t rdof_chz_prof;
 static uint32_t (*chz_clock)(void);
 void rdof_chz_set_clock(uint32_t (*ticks)(void)) { chz_clock = ticks; }
@@ -354,6 +428,7 @@ int rdof_chz_process(rdof_chz_t *s, const rdof_cf_t *in, int n_in, rdof_cf_t *ou
         const uint32_t th = chz_now();
         for (int c = 0; c < s->C; c++)
             channel_block(s, c, s->X, boff, noise, out + (size_t)c * stride + produced, s->inv, s->Y, s->y);
+        taps_block(s, s->X, boff, s->block - 1);
         const uint32_t tm = chz_now();
         produced += s->out_per_hop;
         memmove(s->win, s->win + s->hop, sizeof(rdof_cf_t) * (N - s->hop));
@@ -406,6 +481,7 @@ int rdof_chz_forward(rdof_chz_t *s, const rdof_cf_t *in, int n_in)
         if (s->fill < N)
             break;
         forward_block(s, s->fwd, s->win, s->Xs + (size_t)s->nblk * N, &first);
+        taps_block(s, s->Xs + (size_t)s->nblk * N, s->boff, s->block);
         s->xs_boff[s->nblk++] = s->boff;
         s->boff = (s->boff + (unsigned)s->hop) % (unsigned)N;
         s->block++;

@@ -94,9 +94,10 @@ void rdof_psd_in(rdof_psd_t *s, float x)
         return;
     s->fn = 0;
     rdof_fft_run(s->fft, s->in, s->out);
+    /* each bin's power in float, one double add (a double op is a library call on an ESP32) */
+    const float nf = (float)s->norm;
     for (int k = 0; k <= s->n / 2; k++)
-        s->acc[k] += (k && k < s->n / 2 ? 2.0 : 1.0) *
-                     ((double)s->out[k].re * s->out[k].re + (double)s->out[k].im * s->out[k].im) * s->norm;
+        s->acc[k] += (k && k < s->n / 2 ? 2 * nf : nf) * (s->out[k].re * s->out[k].re + s->out[k].im * s->out[k].im);
     s->frames++;
 }
 

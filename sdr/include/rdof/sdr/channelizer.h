@@ -25,6 +25,21 @@ extern "C" {
 
 #define RDOF_CHZ_OUT_FFT 64
 #define RDOF_CHZ_CUTOFF_HZ 7500.0
+#define RDOF_CHZ_TAPS 2 /* taps a channelizer keeps (rdof_chz_tap_set) */
+
+/* A tap: one more channel, anywhere in the band, with a filter of its own, for whoever wants it now (the bench's
+ * receivers). Each block's out_per_hop outputs go to out(ctx, sc, y, n): sc the wideband sample (counted from the
+ * channelizer's first input) the first one stands for, the rest every decimation samples on. It runs on the
+ * channelizer's thread, between its channels. */
+typedef void (*rdof_chz_tap_out_t)(void *ctx, uint64_t sc, const rdof_cf_t *y, int n);
+typedef struct {
+    rdof_chz_tap_out_t out;
+    void *ctx;
+    int k;                /* its bin */
+    double phase, block_rad;
+    rdof_cf_t stepr;      /* e^{-j step} for the residual */
+    rdof_cf_t *H;         /* M filter bins (rdof_chz_tap_filter's) */
+} rdof_chz_tap_t;
 
 typedef struct {
     double fs, out_rate;
@@ -65,6 +80,8 @@ typedef struct {
     rdof_cf_t *Ws;          /* each block's input, N apiece */
     int ws_cap;
     rdof_fft_t *fwd2;       /* the second core's forward FFT */
+    rdof_chz_tap_t tap[RDOF_CHZ_TAPS];
+    rdof_cf_t *tap_y;       /* a tap's block, out_per_hop */
 } rdof_chz_t;
 
 /* Kaiser-windowed sinc low-pass (beta 5), unity DC gain: channelizer._lowpass. out has num_taps. */
@@ -78,6 +95,18 @@ void rdof_chz_free(rdof_chz_t *s);
 /* Channel c mixed from offsets_hz now (as init's), from the next block on: its bin and residual again, its NCO step
  * worked out anew. The filter and the other channels stay. */
 void rdof_chz_set_offset(rdof_chz_t *s, int c, double offset_hz);
+/* A tap's filter, cutoff_hz each side, as the M bins the tap takes (H, M of them): from any thread (it reads only
+ * the channelizer's sizes), so the double work needn't run on the channelizer's. 0, or -1 (bad cutoff). */
+int rdof_chz_tap_filter(const rdof_chz_t *s, double cutoff_hz, rdof_cf_t *H);
+/* Tap t at offset_hz (from the tuner center) with filter H (copied), from the next block on; out NULL turns it
+ * off. Call it from the channelizer's thread, between calls. 0, or -1 (no such tap, no memory). */
+int rdof_chz_tap_set(rdof_chz_t *s, int t, double offset_hz, const rdof_cf_t *H, rdof_chz_tap_out_t out, void *ctx);
+/* The wideband sample the first output of the block numbered b stands for (the filter's middle): b * hop less the
+ * filter's delay, which can be before the first input (the zeros the channelizer starts with). */
+static inline int64_t rdof_chz_block_sc(const rdof_chz_t *s, long long b)
+{
+    return (int64_t)b * s->hop - (s->N - s->hop) / 2;
+}
 /* Output samples per channel that n_in more input samples will produce. */
 int rdof_chz_out_len(const rdof_chz_t *s, int n_in);
 /* Feed n_in samples. Channel c's output goes to out + c * stride (stride >= rdof_chz_out_len).
