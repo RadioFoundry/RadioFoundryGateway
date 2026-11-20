@@ -4,11 +4,13 @@
 
     RDOF_BOARD=<board ip> RDOF_BOARD_PERF=1 python -m pytest -q hil-tests/test_perf.py
 
-About two minutes. Each job runs on the bench line (TCP 7373) while the test polls `/api/status`. A job passes when:
+About two and a half minutes. Each job runs on the bench line (TCP 7373) while the test polls `/api/status`. A job
+passes when:
 
 - the receiver lost nothing: `fifo_loss_n` (the chip's FIFO, the reader late), `ring_overflows` (the DSP behind),
   `bytes_lost`, no stall (a core's tick stopped for 2.5 ms) and no flash write;
-- the job kept real time, with no `gap` and no `gap_samples` (rx);
+- the job kept real time, with no `gap` and no `gap_samples` (rx), its channel from a receiver tap (rx; again after
+  the capture and the trigger, whose history holds PSRAM a while);
 - the web server answered each poll within POLL_MAX_S (a busy core 0 starves it);
 - the internal heap never fell under HEAP_FLOOR (RDOF_PERF_HEAP_FLOOR to change it).
 
@@ -155,12 +157,12 @@ def test_rest():
     before = Counters(d)
     time.sleep(10)
     d, _ = status()
-    print(f"\nrest: cpu {d['cpu']}, heap {d.get('heap_free')}")
+    print(f"\nrest: cpu {d['cpu']}, heap {d.get('heap_free')}, psram {d.get('memory', {}).get('psram')}")
     assert d["cpu"][0] <= REST_CPU_MAX, f"core 0 at rest {d['cpu'][0]}"
     assert Counters(d).since(before)["fifo_losses"] == 0
 
 
-def test_fm_over_with_audio():
+def fm_over():
     secs = 30
     kinds, gaps, last, wall = gated({"op": "rx", "mode": "fm", "freq": FREQ, "seconds": secs, "bw": 16000,
                                      "streams": "audio", "tones": True, "block_s": 0.01})
@@ -171,6 +173,13 @@ def test_fm_over_with_audio():
     assert abs(done["seconds"] - secs) < 0.1
     assert wall < secs + 4, f"{wall:.1f} s for {secs} s: not real time"
     assert kinds.get("rec", 0) >= 0.98 * secs / 0.01
+    # a receiver channel's tap, not the channel cut from the wideband history in software (core 0, with gaps): the
+    # tap's ring needs PSRAM, and a capture's history rings once kept it all (2026-11-20)
+    assert done.get("cpu_s", {}).get("chan", 0) == 0, f"no channel tap: cut in software, cpu_s {done['cpu_s']}"
+
+
+def test_fm_over_with_audio():
+    fm_over()
 
 
 def test_capture():
@@ -178,7 +187,8 @@ def test_capture():
     # the receiver behind it must lose nothing
     kinds, _, last, _ = gated({"op": "capture", "freq": FREQ, "seconds": 4})
     assert "done" in last, last
-    assert last["done"]["samples"] == round(4 * last["done"]["fs"])
+    done = last["done"]  # with the pre-roll the history had (warm after an earlier capture)
+    assert abs(done["samples"] - round((4 + done["pre_s"]) * done["fs"])) <= 1, done
 
 
 def test_trigger_beside_the_radio():
@@ -188,6 +198,11 @@ def test_trigger_beside_the_radio():
     assert last.get("code") == "no_signal", last
     assert "fell behind the history 0 times" in last.get("error", ""), last
     assert wall < 25
+
+
+def test_fm_after_captures():
+    # again after the capture and the trigger, whose history stays warm (PSRAM taken) for ten minutes
+    fm_over()
 
 
 @pytest.mark.skipif(not TX_FREQ, reason="RDOF_PERF_TX (a leased frequency, MHz) not set")

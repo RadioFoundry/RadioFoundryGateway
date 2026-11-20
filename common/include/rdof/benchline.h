@@ -49,11 +49,27 @@ extern "C" {
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #define RDOF_BL_MALLOC(n) heap_caps_malloc_prefer((n), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
+#define RDOF_BL_CALLOC(n, size) \
+    heap_caps_calloc_prefer((n), (size), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
 #define RDOF_BL_REALLOC(p, n) \
     heap_caps_realloc_prefer((p), (n), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
-/* A hot loop's few KB: internal RAM where there's room (PSRAM goes through the cache both cores share) */
-#define RDOF_BL_MALLOC_FAST(n) \
-    heap_caps_malloc_prefer((n), 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+/* A hot loop's few KB: internal RAM only while RDOF_BL_INTERNAL_RESERVE stays free after it, as the DSP's buffers
+ * (esp_idf/main/sdr.c), else PSRAM (through the cache both cores share). Wi-Fi, lwIP and the tasks need the rest: a
+ * W12 has 12-15 KB free, and a job that took its filter from it dipped under 8 KB. */
+#include "sdkconfig.h"
+#ifdef CONFIG_RDOF_SDR_INTERNAL_RESERVE_KB
+#define RDOF_BL_INTERNAL_RESERVE ((size_t)CONFIG_RDOF_SDR_INTERNAL_RESERVE_KB * 1024)
+#else
+#define RDOF_BL_INTERNAL_RESERVE ((size_t)40 * 1024)
+#endif
+static inline void *rdof_bl_malloc_fast(size_t n)
+{
+    void *p = NULL;
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > n + RDOF_BL_INTERNAL_RESERVE)
+        p = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    return p ? p : heap_caps_malloc_prefer(n, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
+}
+#define RDOF_BL_MALLOC_FAST(n) rdof_bl_malloc_fast(n)
 /* A trigger's output at most (its whole capture where it fits): 10.9 s of cs16 at 48 kS/s, which makes 192 KB/s. A
  * W12 at 384 kS/s sent 40-150 KB/s over its Wi-Fi: at 1 MB a 15 s trigger lost its last seconds. 2 MB is the largest
  * block a W12 has free in PSRAM; less is taken where it isn't. */
@@ -61,6 +77,7 @@ extern "C" {
 #else
 #define RDOF_BL_OUT_TRIG 4194304
 #define RDOF_BL_MALLOC(n) malloc(n)
+#define RDOF_BL_CALLOC(n, size) calloc((n), (size))
 #define RDOF_BL_MALLOC_FAST(n) malloc(n)
 #define RDOF_BL_REALLOC(p, n) realloc((p), (n))
 #endif

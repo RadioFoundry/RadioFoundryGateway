@@ -476,7 +476,7 @@ static void session_end(rdof_bl_t *bl, int s, const char *why, double now)
 
 rdof_bl_t *rdof_bl_new(const rdof_bl_platform_t *p)
 {
-    rdof_bl_t *bl = calloc(1, sizeof *bl);
+    rdof_bl_t *bl = RDOF_BL_CALLOC(1, sizeof *bl);
     if (!bl)
         return NULL;
     bl->p = *p;
@@ -485,7 +485,7 @@ rdof_bl_t *rdof_bl_new(const rdof_bl_platform_t *p)
     bl->tx_conn = -1;
     bl->tune_sess = bl->tune_conn = bl->tune_wait = -1;
     bl->next_id = 1;
-    bl->strbuf = malloc(RDOF_BL_LINE_MAX + 64);
+    bl->strbuf = RDOF_BL_MALLOC(RDOF_BL_LINE_MAX + 64);
     if (!bl->strbuf) {
         pthread_mutex_destroy(&bl->mu);
         free(bl);
@@ -667,7 +667,7 @@ int rdof_bl_open(rdof_bl_t *bl, double now)
         c->line = line, c->lcap = lcap;
         if (!c->out || c->ocap != RDOF_BL_OUT) {
             free(c->out);
-            c->out = malloc(RDOF_BL_OUT);
+            c->out = RDOF_BL_MALLOC(RDOF_BL_OUT);
             c->ocap = c->out ? RDOF_BL_OUT : 0;
         }
         if (!c->out)
@@ -1642,14 +1642,14 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
         fail(bl, c, "bad_request", "interval_ms 20-2000, drift_s 1-max_s, line_ms 0-2000");
         return;
     }
-    trig_t *t = calloc(1, sizeof *t);
+    trig_t *t = RDOF_BL_CALLOC(1, sizeof *t);
     if (t) {
         t->d = d;
         t->cs.h = -1;
         t->ntaps = chan ? 1 : 8 * d + 1; /* a channel's outputs are filtered already */
-        /* internal RAM (under 1 KB at a W12's rate): the filter reads them every output, PSRAM too slow for it */
-        t->taps = malloc(sizeof(float) * (size_t)t->ntaps);
-        t->dl = malloc(sizeof(float) * 4 * (size_t)t->ntaps);
+        /* read every output: internal RAM where there's room to spare (RDOF_BL_MALLOC_FAST); under 1 KB on a W12 */
+        t->taps = RDOF_BL_MALLOC_FAST(sizeof(float) * (size_t)t->ntaps);
+        t->dl = RDOF_BL_MALLOC_FAST(sizeof(float) * 4 * (size_t)t->ntaps);
         t->y = RDOF_BL_MALLOC(sizeof(float) * 2 * (size_t)(RDOF_BL_IQ_CHUNK / d + 2));
     }
     /* room for the whole capture where there's memory for it: a slow link (an ESP32's Wi-Fi) sends it late, not
@@ -1658,7 +1658,7 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     const double whole = whole_s * rate * (fmt && !strcmp(fmt, "cs16") ? 4 : 8);
     if (t && track) { /* its lines, not I/Q: no big buffer */
         t->lcap = (int)(max_s * 1000 / ivl_ms) + 2;
-        t->bf = malloc(sizeof(float) * (size_t)(rate / 1000 + 2));
+        t->bf = RDOF_BL_MALLOC(sizeof(float) * (size_t)(rate / 1000 + 2));
         t->ih = RDOF_BL_MALLOC(sizeof(uint32_t) * TRACK_BINS);
         t->lines = RDOF_BL_MALLOC(sizeof *t->lines * (size_t)t->lcap);
         t->snap = RDOF_BL_MALLOC(sizeof *t->snap * TRACK_SNAPS);
@@ -1728,11 +1728,11 @@ static void op_capture_chan(rdof_bl_t *bl, conn_t *c, int root, double now, doub
     }
     const int d = (int)lround(w->fs / 48000.0) > 0 ? (int)lround(w->fs / 48000.0) : 1;
     const double rate = w->fs / d;
-    trig_t *t = calloc(1, sizeof *t);
+    trig_t *t = RDOF_BL_CALLOC(1, sizeof *t);
     if (t) {
         t->d = d, t->ntaps = 1, t->cs.h = -1;
-        t->taps = malloc(sizeof(float));
-        t->dl = malloc(sizeof(float) * 4);
+        t->taps = RDOF_BL_MALLOC_FAST(sizeof(float));
+        t->dl = RDOF_BL_MALLOC_FAST(sizeof(float) * 4);
         t->y = RDOF_BL_MALLOC(sizeof(float) * 2 * (size_t)(RDOF_BL_IQ_CHUNK / d + 2));
         t->cs16 = !fmt || !strcmp(fmt, "cs16");
     }
@@ -2150,7 +2150,7 @@ static void run_file(void *ctx, const char *name, const uint8_t *b, size_t n)
     const int hn = snprintf(hdr, sizeof hdr, "{\"file\":%s,\"bytes\":%zu}\n", q, n);
     if (room(c) < (size_t)hn + n) {
         const size_t need = c->ol + (size_t)hn + n + RDOF_BL_OUT;
-        uint8_t *p = malloc(need);
+        uint8_t *p = RDOF_BL_MALLOC(need);
         if (!p) {
             run_log(r->bl, c, 0, "%s: no memory for %zu bytes", name, n);
             return;
@@ -2261,8 +2261,8 @@ static bool ob_build(rdof_bl_t *bl, conn_t *c, job_t *J)
         total += rdof_bj_ob_call_build(j, i, NULL, 0);
     }
     J->ob_off[j->ob_ncalls] = total;
-    J->b = calloc((size_t)total, sizeof *J->b);
-    J->ob_late = calloc((size_t)total, 1);
+    J->b = RDOF_BL_CALLOC((size_t)total, sizeof *J->b);
+    J->ob_late = RDOF_BL_CALLOC((size_t)total, 1);
     if (!J->b || !J->ob_late) {
         free(J->b);
         free(J->ob_late);
@@ -2379,7 +2379,7 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
         fail(bl, c, "unsupported", "the gateway runs the bench tools' jobs (bench_tx.py), not programs");
         return;
     }
-    job_t *J = calloc(1, sizeof *J);
+    job_t *J = RDOF_BL_CALLOC(1, sizeof *J);
     if (!J) {
         fail(bl, c, "busy", "no memory for the job");
         return;
@@ -2441,7 +2441,7 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
             return;
         }
         J->maxb = rdof_bj_max_bursts(j);
-        J->b = J->maxb > 0 ? malloc(sizeof *J->b * (size_t)J->maxb) : NULL;
+        J->b = J->maxb > 0 ? RDOF_BL_MALLOC(sizeof *J->b * (size_t)J->maxb) : NULL;
         if (!J->b) {
             free(J);
             fail(bl, c, "busy", "no memory for the job's bursts");
@@ -3307,7 +3307,7 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     if (reach_tune(bl, c, root, mhz, false, true, now))
         return;
-    sigtx_t *t = calloc(1, sizeof *t);
+    sigtx_t *t = RDOF_BL_CALLOC(1, sizeof *t);
     if (!t) {
         fail(bl, c, "busy", "no memory for the job");
         return;
@@ -3451,7 +3451,7 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
         fail(bl, c, "bad_request", "seconds 0-3600, bw 1000-40000 Hz, squelch_over_db 0-60");
         return;
     }
-    sigrx_t *r = calloc(1, sizeof *r);
+    sigrx_t *r = RDOF_BL_CALLOC(1, sizeof *r);
     if (r)
         r->cs.h = -1;
     if (r && chan &&
@@ -4131,20 +4131,20 @@ static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t 
     const bool want_ramp = jbool(bl, root, "ramp");
     /* a floor the tool gives is used as given; a measured one follows a close carrier (bench-api.md) */
     const rdof_benv_opts_t o = {on_db, off_db, on_db - 4 > 1 ? on_db - 4 : 1, step_db, isfinite(floor_db) ? 0 : 30};
-    trig_t *t = calloc(1, sizeof *t);
-    struct envx *x = calloc(1, sizeof *x);
+    trig_t *t = RDOF_BL_CALLOC(1, sizeof *t);
+    struct envx *x = RDOF_BL_CALLOC(1, sizeof *x);
     if (t) {
         t->d = d;
         t->cs.h = -1;
         t->ntaps = chan ? 1 : 8 * d + 1;
-        t->taps = malloc(sizeof(float) * (size_t)t->ntaps); /* internal RAM: read every output */
-        t->dl = malloc(sizeof(float) * 4 * (size_t)t->ntaps);
+        t->taps = RDOF_BL_MALLOC_FAST(sizeof(float) * (size_t)t->ntaps); /* read every output */
+        t->dl = RDOF_BL_MALLOC_FAST(sizeof(float) * 4 * (size_t)t->ntaps);
         t->env = rdof_benv_new(rate, d, &o);
         if (want_ramp)
             t->ramp = rdof_bramp_new(rate, d);
     }
     if (raw)
-        x->ry = malloc(sizeof(float) * 2 * (size_t)(RAW_SAMPLES / d + 2));
+        x->ry = RDOF_BL_MALLOC(sizeof(float) * 2 * (size_t)(RAW_SAMPLES / d + 2));
     if (!t || !x || !t->taps || !t->dl || !t->env || (want_ramp && !t->ramp) || (raw && !x->ry)) {
         if (x)
             free(x->ry);
@@ -5640,7 +5640,7 @@ long rdof_bl_fills_count(const rdof_bl_fills_t *f, uint64_t sc, long n)
 
 bool rdof_bl_ring_init(rdof_bl_ring_t *r, long n)
 {
-    r->buf = calloc((size_t)n, 2); /* zeros: a ring only skipped reads as filler */
+    r->buf = RDOF_BL_CALLOC((size_t)n, 2); /* zeros: a ring only skipped reads as filler */
     r->n = r->buf ? n : 0;
     r->w = 0;
     r->scale = 1.0f;

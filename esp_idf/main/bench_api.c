@@ -152,6 +152,7 @@ static int16_t *hist_ch;           /* [C][HIST_CH_N][2] */
 static int8_t *hist_wide;          /* [hist_wide_n][2] */
 static uint32_t hist_wide_n;
 static int hist_c;                 /* channels hist_ch holds (0: no channel pre-roll) */
+static bool hist_ch_sized;         /* hist_ch sized for hist_run (the channels' rings warm) */
 static uint32_t hist_run;          /* the run the rings are for */
 static volatile uint64_t hist_ch_w, hist_wide_w; /* samples written (channel samples, wideband samples) */
 static SemaphoreHandle_t hist_mu;  /* the rings while bench_iq reads them, against a new run's */
@@ -1707,8 +1708,18 @@ static void hist_write(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
     hist_chunk_ok = false;
     const int64_t now = esp_timer_get_time();
     const bool ch_warm = now <= hist_warm_until;
+    /* The rings take PSRAM only while warm: the channels' (384 KB each, 2.7 MB at 7) once kept from a capture on
+     * left a channel tap no room for its ring, and an rx fell back to cutting its channel from the history, with
+     * gaps. Cold, they're given back. */
     if (!ch_warm && now > wide_warm_until) {
         hist_on = hist_ch_on = false;
+        if (hist_ch || hist_wide) {
+            xSemaphoreTake(hist_mu, portMAX_DELAY);
+            heap_caps_free(hist_ch), heap_caps_free(hist_wide);
+            hist_ch = NULL, hist_wide = NULL, hist_c = 0, hist_wide_n = 0, hist_ch_sized = false;
+            hist_run = 0; /* sized again when warm */
+            xSemaphoreGive(hist_mu);
+        }
         return;
     }
     if (!hist_on || hist_run != run_id) { /* warming up, or a new run: the kept samples start here */
@@ -1719,17 +1730,18 @@ static void hist_write(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
     if (ch_warm && !hist_ch_on) /* the channels' rings warming up */
         hist_ch_w = hist_ch_from = (uint64_t)(rx->out_index - rx->got);
     hist_ch_on = ch_warm;
-    if (hist_run != run_id) {
+    if (hist_run != run_id || ch_warm != hist_ch_sized) {
         xSemaphoreTake(hist_mu, portMAX_DELAY);
         heap_caps_free(hist_ch);
         hist_ch = NULL;
         hist_c = 0;
+        hist_ch_sized = ch_warm; /* only a channel stream with pre-roll or a trigger needs them */
         const size_t per = (size_t)HIST_CH_N * 4;
         const size_t free_ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        if (rx->C > 0 && free_ps > HIST_KEEP_FREE + per * (size_t)rx->C &&
+        if (ch_warm && rx->C > 0 && free_ps > HIST_KEEP_FREE + per * (size_t)rx->C &&
             (hist_ch = heap_caps_malloc(per * (size_t)rx->C, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) != NULL)
             hist_c = rx->C;
-        else
+        else if (ch_warm)
             ESP_LOGW(TAG, "no PSRAM for %d channels' pre-roll (%u KB free): none this run", rx->C,
                      (unsigned)(free_ps / 1024));
         if (!hist_wide) {
@@ -2420,7 +2432,7 @@ static esp_err_t ws_iq(httpd_req_t *req)
     const char *bad = pre_s < 0 || pre_s > PREROLL_S ? "pre_s: 0 to 1 s"
                     : trigger && strcmp(v, "level") ? "trigger: level"
                     : trigger && wide ? "a trigger is on a channel, not the wideband stream"
-                    : pre_s > 0 && hist_run == run_id && (wide ? !hist_wide_n : c >= hist_c)
+                    : pre_s > 0 && hist_run == run_id && (wide ? !hist_wide_n : hist_ch_sized && c >= hist_c)
                         ? "no pre-roll here (no PSRAM for its history)"
                     : NULL;
     if (bad) {

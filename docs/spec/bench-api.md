@@ -369,8 +369,12 @@ How it hooks in:
 - Pre-roll: `bench_on_chunk` keeps 2 s of every channel (cs16) and of the wideband samples (cs8) in PSRAM rings,
   about 4.5 MB with five channels, and skips the channels' ring if that would leave less than 1.5 MB free. Writing
   them costs about 0.11 of a core (`history_load` in the v1 status; the wideband ring alone 0.04 on a W12), so it
-  runs only within 10 minutes of a stream that reads it being opened. The wideband ring rounds as the streams do, so
-  a wide cs8 or cu8 stream's frames go from the DSP as references to the ring, and the stream task copies the bytes in
+  runs only within 10 minutes of a stream that reads it being opened. The rings hold PSRAM only then: the channels'
+  only while a channel stream with pre-roll or a trigger keeps them warm, the wideband one while a capture or a wide
+  stream does; cold, both are freed. (Kept for good, the channels' 2.7 MB on a W12 left a channel tap no room for its
+  ring, and an rx cut its channel from the history in software instead, with gaps.)
+  The wideband ring rounds as the streams do, so a wide cs8 or cu8 stream's frames go from the DSP as references to
+  the ring, and the stream task copies the bytes in
   (`stream_load`: the DSP's share for the I/Q streams' frames). A reference the ring has moved past (the stream more
   than 1.8 s behind) is dropped: the client sees the samples missing. A stream past its `seconds` ends 2 s after its
   last frame (or 20 s late), not while frames still come. A stream's pre-roll goes out from the stream task, read from the rings; it doesn't hold up

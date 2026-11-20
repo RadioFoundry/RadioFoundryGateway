@@ -371,7 +371,9 @@ void roam_hb_start(roam_t *r)
         ESP_LOGI(TAG, "%s: not on an HBlink network: no peer", r->cfg->name);
         return;
     }
-    struct roam_hb *h = calloc(1, sizeof *h);
+    /* PSRAM: its keepalive state, touched every few seconds; internal RAM is the scarce one (under 4 KB, calloc
+     * would put it there) */
+    struct roam_hb *h = heap_caps_calloc_prefer(1, sizeof *h, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
     h->sock = -1;
     h->lock = xSemaphoreCreateMutex();
     rdof_hb_peer_init(&h->peer, r->cfg->peer_id,
