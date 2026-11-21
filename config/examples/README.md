@@ -43,9 +43,39 @@ A network carries no talkgroups unless its `tg` says so, so the repeater app has
 keys goes up, and BrandMeister decides what comes down (static and dynamic talkgroups, set in SelfCare or by keying
 one). A private call to 9990 is BrandMeister's echo.
 
+## Trunked: DMR Tier III
+
+A `tier3` site ([tier3.md](../../docs/spec/fw/tier3.md)) set up the way every ham site should be, so a radio set up
+once takes any of them:
+
+| File | Hardware | Network |
+|---|---|---|
+| `ham-tier3-site-standalone.json` | a PlutoSDR, 1 carrier | none |
+| `ham-tier3-site-linked.json` | a PlutoSDR, 2 carriers (`tx.carriers: 2`) | the MQTT network, to the operator's other sites |
+
+| Key | Value | Why |
+|---|---|---|
+| `system.model`, `system.net` | `huge`, `1` | One NET of 1024 site numbers for every ham site, so radios roam between regions |
+| `system.site` | 0-1022, chosen with the neighbors | 1023 is left out so 4 x site + 4 stays within 4094 |
+| `system.par` | `ab` | Radios are category A; any category is admitted |
+| `defaults.cc` | `1` | Every carrier's color code |
+| `carriers[].chan` | 4 x site + carrier (1-4) | No two sites announce one logical channel for different frequencies |
+| `carriers[].tscc` | on carrier 1 | The control channel |
+| `registration`, `auth` | `open`, `off` | Any licensed ham registers; no keys |
+| `ms`, `private`, `tg` | `*` | Every radio, private call and talkgroup |
+| `wide_tg` (linked) | `1-16776415` | Every BrandMeister talkgroup number is carried between the operator's sites |
+| `static_tg` (linked) | `3100` | An example: a talkgroup the site always carries |
+
+- Radios use their own DMR IDs and BrandMeister talkgroup numbers. The site links over the MQTT network only
+  (`calls`, `format: v3`; [mqtt-net.md](../../docs/spec/fw/mqtt-net.md)), not to BrandMeister, so those talkgroups
+  travel between one operator's sites. Set `host` to your broker.
+- The site grants channels by logical number and broadcasts each one's frequencies (Chan_Freq): a radio that learns
+  the plan from those needs none programmed. Grants with absolute frequencies aren't done yet.
+- Neither file has a `bench` section.
+
 ## The clock and the bench
 
-Each file ends with the same two sections:
+Each file ends with the same two sections (the trunked ones with `ntp` only):
 
 - `ntp`: public servers that don't smear a leap second (NIST, USNO, Apple, Cloudflare; no pool). rdofradio keeps its
   own clock from them (netclock); `"clock": "os"` takes the system's instead.
@@ -66,6 +96,7 @@ rdofradio --allow-tx --mmdvm /dev/ttyAMA0 --config standalone-mmdvm-simplex.json
 rdofradio --soapy driver=rtlsdr -r 288000 --allow-tx --mmdvm /dev/ttyAMA0 --config standalone-mmdvm-rtl-simplex.json --web 8080 --bench 7373
 rdofradio --iio local: --allow-tx --config standalone-pluto-duplex.json --web 0.0.0.0:8080 --bench 7373
 rdofradio --allow-tx --mmdvm /dev/ttyAMA0 --config brandmeister-mmdvm-duplex.json --web 8080
+rdofradio --iio local: --allow-tx --config ham-tier3-site-linked.json --web 0.0.0.0:8080
 ```
 
 - A Raspberry Pi with an MMDVM_HS hat, including the hat's calibration from MMDVM.ini and running as a service:

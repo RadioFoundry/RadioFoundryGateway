@@ -1752,6 +1752,13 @@ idle status that keeps it in hotspot mode.
 - The MQTT network: phase 1 only, not yet run on a board. `bundle` above 1, confirmed data retries and NAKs, the
   voter, MQTT-SN and the other transports come later; so do the private-call router and the apps (mqtt-net.md §14).
 
+**Trunking (`tier3`)**
+
+- Grants with absolute frequencies (LPCN 0xFFF and the appended block), so a radio needs no channel plan: the site
+  grants by logical number only.
+- A BrandMeister link for a site: sites link over the MQTT network only.
+- A P25 trunked site.
+
 **The SDR core**
 
 - Calibration, gain scans and recording on the board (the board learns its ppm instead).

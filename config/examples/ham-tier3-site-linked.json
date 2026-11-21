@@ -1,0 +1,40 @@
+// A ham DMR Tier III site, as recommended for every ham site, with two carriers, linked to the operator's other sites
+// over the MQTT network. Set the site number (0-1022, chosen with the neighbors) and each carrier's logical channel
+// number to 4 x site + carrier (site 5: 21 and 22). Every ham site has model huge, NET 1, PAR ab and color code 1.
+// Talkgroups are BrandMeister's numbers: wide_tg are carried between the operator's sites, static_tg are always
+// carried; the rest stay on the site. The broker is the operator's.
+{
+  "version": 3,
+  "name": "t3site5",
+  "id": 9800105,
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "pluto", "kind": "sdr", "driver": "iio", "match": {"uri": "local:"}, "tx": {"carriers": 2}}
+  ],
+  "frequencies": [
+    {"name": "A-out", "freq": 442.0125},
+    {"name": "A-in", "freq": 447.0125, "tx": false},
+    {"name": "B-out", "freq": 442.0625},
+    {"name": "B-in", "freq": 447.0625, "tx": false}
+  ],
+  "apps": [
+    {"name": "site", "type": "tier3",
+     "system": {"model": "huge", "net": 1, "site": 5, "par": "ab"},
+     "carriers": [
+       {"out": "A-out", "in": "A-in", "chan": 21, "tscc": true},
+       {"out": "B-out", "in": "B-in", "chan": 22}
+     ],
+     "registration": "open",
+     "ms": "*",
+     "private": "*",
+     "tg": "*",
+     "wide_tg": "1-16776415",
+     "static_tg": "3100",
+     "auth": "off"}
+  ],
+  "networks": [
+    {"type": "mqtt", "host": "mqtt.example.net", "calls": true, "format": "v3", "report": true}
+  ],
+  "ntp": {"servers": "time-a-g.nist.gov time-a-b.nist.gov tick.usno.navy.mil tock.usno.navy.mil time.apple.com time.cloudflare.com"}
+}
