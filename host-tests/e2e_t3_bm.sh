@@ -6,14 +6,15 @@
 # register to it, then: a group call from site A heard at site B, a private call to the parrot (9990) played back,
 # a call from B heard at A, a private call from an MS at A to one at B. Then A's MSs move to TG 92 (pinned to slot 2):
 # A keys it there and, unlink_s after the last call on 91, keys TG 4000 on slot 1; B's next call on 91 doesn't come
-# to A. A key-up is never played to the other site's MSs.
+# to A. A key-up is never played to the other site's MSs. A's rules keep TG 2 (MQTT only, and A has none) and TG 9
+# off the master: its calls on them stay on the site (A's announcements on TG 9 still go).
 #
 #   sh host-tests/e2e_t3_bm.sh <dir with rdofradio and fakebm> [fakebm's port]
 set -u
 BIN=$1 PORT=${2:-47015}
 D=$(mktemp -d "${TMPDIR:-/tmp}/rdof-t3bm.XXXXXX")
 trap 'kill $FB 2>/dev/null; rm -rf "$D"' EXIT
-site() { # name, site number, peer ID, out, in, extra network keys
+site() { # name, site number, peer ID, out, in, extra network keys, extra top-level keys
     cat > "$D/site-$1.json" <<J
 {"version": 3, "name": "t3$1", "id": 99901${2}1, "callsign": "N0CALL", "defaults": {"cc": 2},
  "devices": [{"name": "sdr", "kind": "sdr", "driver": "iio", "match": {"uri": "local:"}, "tx": {}, "transmits": ["OUT"]}],
@@ -22,12 +23,13 @@ site() { # name, site number, peer ID, out, in, extra network keys
            "carriers": [{"out": "OUT", "in": "IN", "chan": $2, "tscc": true}],
            "registration": "open", "wide_tg": "1-99999", "timers": {"hang_s": 2}}],
  "networks": [{"type": "brandmeister", "host": "127.0.0.1", "port": $PORT, "password": "passw0rd",
-               "peer_ids": {"SITE": $3}$6}]}
+               "peer_ids": {"SITE": $3}$6}]$7}
 J
 }
-site a 1 999012101 438.25 433.25 ', "unlink_s": 5, "ts2_tg": [92]'
-site b 2 999012201 438.75 433.75 ''
-printf '8 1000001 group 91 2000\n14 1000001 private 9990 2000\n30 1000002 private 2000002 1500\n36 1000001 register 92\n37 1000002 register 92\n' \
+site a 1 999012101 438.25 433.25 ', "unlink_s": 5, "ts2_tg": [92]' \
+    ', "rules": [{"name": "mqtt-only", "tg": 2, "nets": ["mqtt"]}, {"name": "local", "tg": 9, "nets": []}]'
+site b 2 999012201 438.75 433.75 '' ''
+printf '8 1000001 group 91 2000\n14 1000001 private 9990 2000\n30 1000002 private 2000002 1500\n36 1000001 register 92\n37 1000002 register 92\n44 1000001 group 2 1500\n53 1000002 group 9 1000\n' \
     > "$D/script-a"
 printf '25 2000002 group 91 1000\n50 2000001 group 91 1000\n' > "$D/script-b"
 "$BIN/fakebm" --port $PORT --password passw0rd > "$D/fakebm" 2>&1 &
@@ -72,6 +74,13 @@ check fakebm "unlink: peer 999012101 s1: 1 dynamic TGs dropped" "the master drop
 check fakebm "DMRD peer 999012201 2000001 -> 91" "B calls TG 91 after the unlink"
 sed -n '/unlink: peer 999012101/,$p' "$D/fakebm" | grep -q "relay TG 91 from peer 999012201 s1 to peer 999012101" &&
     { echo "FAIL: TG 91 still goes to A after the unlink"; fail=1; }
+none fakebm "DMRD peer 999012101 [0-9]* -> 2 TG" "A's rules keep TG 2 off the master"
+# a key-up on TG 9 from 1000002 at the master is an announcement of it; one more would be its call
+[ "$(grep -c "1000002 registered here: announced" "$D/a")" = \
+  "$(grep -c "DMRD peer 999012101 1000002 -> 9 TG s[12] TLC" "$D/fakebm")" ] ||
+    { echo "FAIL: A's rules keep TG 9 calls off the master (its announcements stay)"; fail=1; }
+check a "air MS 1000001: .*calls 3 done.* heard 1000001 -> 2$" "A's call on TG 2 goes through on the site"
+check a "air MS 1000002: .*calls 2 done.* heard 1000002 -> 9$" "A's call on TG 9 goes through on the site"
 none a "both slots busy" "no call waits for a slot"
 [ $fail = 0 ] && echo "brandmeister tier3: all passed" || {
     for f in fakebm a b; do echo "== $f"; grep -v "samples lost\| voice sid" "$D/$f" | head -80; done

@@ -23,7 +23,7 @@ use crate::oled::{RdofFrameBuf, RdofOledStatus};
 use crate::parrot::{RdofIpgwDmr, RdofParrot, RdofParrotBurst};
 use crate::plan::{
     RdofApp3, RdofDevBench, RdofDevice3, RdofFreq, RdofIdrange, RdofIdset, RdofNet3, RdofPath, RdofPlanDev, RdofPlanExtra,
-    RdofPolicy, RdofPort, RdofSite, RdofTxmap, RdofUnit,
+    RdofPolicy, RdofPort, RdofRule, RdofSite, RdofTxmap, RdofUnit,
 };
 use crate::pdu::{RdofCsbk, RdofDataBlock, RdofDataHeader, RdofFullLc};
 use crate::rawburst::RdofRawburst;
@@ -117,6 +117,7 @@ static LAYOUTS: &[Layout] = &layouts![
     ("rdof_app3_t", RdofApp3),
     ("rdof_net3_t", RdofNet3),
     ("rdof_path_t", RdofPath),
+    ("rdof_rule_t", RdofRule),
     ("rdof_site_t", RdofSite),
     ("rdof_port_t", RdofPort),
     ("rdof_dev_bench_t", RdofDevBench),

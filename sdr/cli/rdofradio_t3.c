@@ -347,6 +347,13 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
     if (!rdof_t3unit_init(T.u, T.site_mem, &t->cfg, &t->pol, &io, T.net ? (mq ? t->root : "DMR") : NULL,
                              T.net ? T.node : NULL, t->path, "rdofradio " RDOF_VERSION, err, cap))
         return false;
+    for (int x = 0; x < 2; x++)
+        for (int kind = 0; kind < 2; kind++) {
+            rdof_idrange_t r[RDOF_IDSET_MAX];
+            const int n = rdof_idset_ranges(kind ? &t->deny_pc[x] : &t->deny_tg[x], r, RDOF_IDSET_MAX);
+            if (!rdof_t3unit_deny(T.u, x, kind, r, (size_t)(n < RDOF_IDSET_MAX ? n : RDOF_IDSET_MAX)))
+                tsay("rules: more ranges kept off a network than the site holds (16): some not applied");
+        }
     if (T.net && t->bm >= 0) {
         rdof_t3unit_bm(T.u, t->bm_peer, mq, t->bm_activate, (int)t->bm_renew_s, (int)t->bm_unlink_s,
                        t->bm_announce);

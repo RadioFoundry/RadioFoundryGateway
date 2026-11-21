@@ -30,13 +30,19 @@
      "ms": "*",
      "private": "*",
      "tg": "*",
-     // every BrandMeister talkgroup but 9 (the repeater's own) and 4000 (the site keys it itself)
-     "wide_tg": "1-8,10-3999,4001-16776415",
+     // every BrandMeister talkgroup but 4000 (the site keys it itself); the rules keep 2 and 9 off it
+     "wide_tg": "1-3999,4001-16776415",
      "auth": "off"}
   ],
   "networks": [
     {"type": "brandmeister", "host": "3102.master.brandmeister.network", "password": "your-hotspot-password",
      "peer_ids": {"site": 980010501}}
+  ],
+  // TG 2 stays on an MQTT network (the operator's sites; with none, here), TG 9 on this repeater: neither goes to
+  // BrandMeister (config-v3.md 8.1)
+  "rules": [
+    {"name": "mqtt-only", "tg": 2, "nets": ["mqtt"]},
+    {"name": "local", "tg": 9, "nets": []}
   ],
   "ntp": {"servers": "time-a-g.nist.gov time-a-b.nist.gov tick.usno.navy.mil tock.usno.navy.mil time.apple.com time.cloudflare.com"},
   // the bench (rdofradio --bench 7373): its jobs may transmit anywhere in the US amateur bands from 6 m to 13 cm,

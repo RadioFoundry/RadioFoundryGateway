@@ -132,6 +132,16 @@ typedef struct {
     rdof_policy_t pol;
 } rdof_path_t;
 
+#define RDOF_SITE_MAX_RULES 16
+
+/* A rule (config-v3.md section 8.1): the calls it matches (talkgroups, private-call IDs) and the networks they may
+   use (a bit per net[] index). */
+typedef struct {
+    char name[RDOF_SITE_NAME];
+    rdof_idset_t tg, pc; /* empty: matches none of that kind */
+    uint8_t nets;        /* the networks the calls may use (bit per net[] index); 0: none, local only */
+} rdof_rule_t;
+
 typedef struct {
     char name[32];
     uint32_t id;
@@ -143,6 +153,10 @@ typedef struct {
     rdof_net3_t net[RDOF_SITE_MAX_NETS];
     char pol_name[RDOF_SITE_MAX_POLICIES][RDOF_SITE_NAME];
     rdof_path_t path[RDOF_SITE_MAX_PATHS];
+    int nrule;
+    rdof_rule_t rule[RDOF_SITE_MAX_RULES];
+    /* the rules, by network: the talkgroups and private-call IDs it may not carry (first matching rule wins) */
+    rdof_idset_t net_deny_tg[RDOF_SITE_MAX_NETS], net_deny_pc[RDOF_SITE_MAX_NETS];
 } rdof_site_t;
 
 /* Version 3 settings into s. false with err set: "path: message", path as frequencies[3].tg or apps.R1.in. */

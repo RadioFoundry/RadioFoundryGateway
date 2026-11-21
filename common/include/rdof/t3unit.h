@@ -28,6 +28,7 @@
 #include <stdint.h>
 
 #include "rdof/features.h"
+#include "rdof/idset.h"
 
 #include "rdof/mnctl.h"
 #include "rdof/mqttnet.h"
@@ -144,6 +145,10 @@ void rdof_t3unit_tick(rdof_t3unit_t *u, int64_t now_ms);
  * its ID on TG 9 (the repeater's own) so the master routes its private calls here. After rdof_t3unit_init. */
 void rdof_t3unit_bm(rdof_t3unit_t *u, uint32_t peer_id, bool mqtt, bool activate, int renew_s, int unlink_s,
                     bool announce);
+/* Ranges a network doesn't carry, from the site's rules (config-v3.md 8.1): net 0 the MQTT network, 1 the login;
+   kind 0 talkgroups, 1 private calls (by the ID called going out, the ID calling coming in). Replaces what was set.
+   False: more than 16, the rest not kept. */
+bool rdof_t3unit_deny(rdof_t3unit_t *u, int net, int kind, const rdof_idrange_t *r, size_t n);
 /* Talkgroup tg always goes up on slot (1, 2) of the login; 0 unpins it. False: no room (16). After rdof_t3unit_bm. */
 bool rdof_t3unit_bm_pin(rdof_t3unit_t *u, uint32_t tg, int slot);
 /* The login came up (logged in) or went down. Call rdof_t3unit_link too with whether any network is up. */

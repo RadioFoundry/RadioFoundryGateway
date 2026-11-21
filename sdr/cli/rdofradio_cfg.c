@@ -187,6 +187,13 @@ static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char 
     for (int k = 0; k < s->nnet; k++)
         if (s->net[k].type == RDOF_NET_HBLINK && s->net[k].login && t->path >= 0 && s->path[t->path].pol.net == k)
             t->bm = k;
+    for (int x = 0; x < 2; x++) {
+        const int k = x ? t->bm : t->net;
+        rdof_idset_clear(&t->deny_tg[x]);
+        rdof_idset_clear(&t->deny_pc[x]);
+        if (k >= 0)
+            t->deny_tg[x] = s->net_deny_tg[k], t->deny_pc[x] = s->net_deny_pc[k];
+    }
     if (t->bm >= 0) {
         const rdof_jdoc_t *d = rdof_plan_doc(p);
         const int m = rdof_plan_net_node(p, t->bm);

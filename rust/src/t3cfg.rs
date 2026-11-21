@@ -8,7 +8,7 @@ use core::ffi::{c_char, c_int, CStr};
 
 use crate::ffi::{floor, llround, snprintf};
 use crate::jsonp::{rdof_jget, rdof_jnode, JDoc, JNode, RDOF_JARR, RDOF_JBOOL, RDOF_JNUM, RDOF_JOBJ, RDOF_JSTR};
-use crate::plan::{field, rdof_idset_ranges, Plan, RdofIdrange, RdofIdset, RdofPlan, SITE_NAME, UNIT_TRUNK};
+use crate::plan::{field, rdof_idset_ranges, Plan, RdofIdrange, RdofIdset, RdofPlan, RdofSite, SITE_NAME, UNIT_TRUNK};
 use crate::t3site::{cfg_default, Carrier, Cfg, IdSet, Policy, Range, CARRIERS, IDSET_RANGES};
 use crate::text::{c_bytes, print, Piece, Piece::I, Piece::S};
 
@@ -756,6 +756,84 @@ pub unsafe extern "C" fn rdof_t3cfg_unit(p: *const RdofPlan) -> c_int {
     (0..p.nunits()).find(|&k| p.unit(k).kind == UNIT_TRUNK).unwrap_or(-1)
 }
 
+/// wide_tg less the talkgroups the site's rules keep off every network (config-v3.md 8.1): those stay on the site,
+/// short data and packet data too. False: more ranges than an IdSet holds.
+fn wide_less_local(s: &RdofSite, wide: &mut IdSet) -> bool {
+    const N: usize = 2 * IDSET_RANGES;
+    let nnet = (s.nnet.max(0) as usize).min(s.net_deny_tg.len());
+    if nnet == 0 {
+        return true;
+    }
+    let ranges = |set: &RdofIdset, out: &mut [(u32, u32); N]| -> usize {
+        let mut r = [RdofIdrange { lo: 0, hi: 0 }; N];
+        let n = (unsafe { rdof_idset_ranges(set, r.as_mut_ptr(), N as c_int) }.max(0) as usize).min(N);
+        for (o, r) in out.iter_mut().zip(&r[..n]) {
+            *o = (r.lo, r.hi);
+        }
+        n
+    };
+    // the intersection of every network's denied ranges (each sorted, apart)
+    let mut local = [(0u32, 0u32); N];
+    let mut nl = ranges(&s.net_deny_tg[0], &mut local);
+    for k in 1..nnet {
+        let mut d = [(0u32, 0u32); N];
+        let nd = ranges(&s.net_deny_tg[k], &mut d);
+        let mut out = [(0u32, 0u32); N];
+        let mut no = 0;
+        for &(a, b) in &local[..nl] {
+            for &(c, e) in &d[..nd] {
+                let (lo, hi) = (a.max(c), b.min(e));
+                if lo <= hi && no < N {
+                    out[no] = (lo, hi);
+                    no += 1;
+                }
+            }
+        }
+        local = out;
+        nl = no;
+    }
+    if nl == 0 {
+        return true;
+    }
+    let mut cur = [(0u32, 0u32); N];
+    let mut nc = 0;
+    if wide.all != 0 {
+        cur[0] = (1, ID_MAX as u32);
+        nc = 1;
+    } else {
+        for r in &wide.r[..usize::from(wide.n).min(IDSET_RANGES)] {
+            cur[nc] = (r.lo, r.hi);
+            nc += 1;
+        }
+    }
+    for &(lo, hi) in &local[..nl] {
+        let mut out = [(0u32, 0u32); N];
+        let mut no = 0;
+        for &(a, b) in &cur[..nc] {
+            for piece in [(a, b.min(lo.saturating_sub(1))), (a.max(hi.saturating_add(1)), b)] {
+                if piece.0 <= piece.1 && piece.0 >= a && piece.1 <= b {
+                    if no == N {
+                        return false;
+                    }
+                    out[no] = piece;
+                    no += 1;
+                }
+            }
+        }
+        cur = out;
+        nc = no;
+    }
+    if nc > IDSET_RANGES {
+        return false;
+    }
+    *wide = IdSet::default();
+    for (i, &(lo, hi)) in cur[..nc].iter().enumerate() {
+        wide.r[i] = Range { lo, hi };
+    }
+    wide.n = nc as u8;
+    true
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3cfg_plan(
     p: *const RdofPlan,
@@ -781,6 +859,9 @@ pub unsafe extern "C" fn rdof_t3cfg_plan(
     cx.doc = Some(p.doc);
     if !cx.apply(p.app_node(app), path, cfg, pol) {
         return false;
+    }
+    if !wide_less_local(s, &mut pol.wide_tg) {
+        return cx.fail(&[S(path), S(b".wide_tg: with the rules, more ranges than the site holds (16)")]);
     }
     cfg.carriers = [Carrier::default(); CARRIERS];
     cfg.ncarriers = ap.ncarrier;

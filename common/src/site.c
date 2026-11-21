@@ -103,7 +103,7 @@ void rdof_site_ctx_close(rdof_site_ctx_t *c) { close_doc(c); }
 #define POLICY_KEYS "tg", "ptt", "ptt_hold_s", "pc", "apps", "net", "dir"
 static const char *const TOP_KEYS[] = {"version", "name", "id", "callsign", "location", "defaults", "devices",
                                        "frequencies", "apps", "networks", "policies", "pc_hold_s", "wifi", "ntp",
-                                       "oled", "slot_timing", "usb_hub", "selftest_load", "bench", NULL};
+                                       "oled", "slot_timing", "usb_hub", "selftest_load", "bench", "rules", NULL};
 /* A frequency's own; the SFR / DCDM keys go with mode sfr or dcdm (inbound_slot with sfr; duplex and active_slots
    with dcdm). */
 #define FREQ_RADIO_KEYS                                                                                                \
@@ -114,6 +114,7 @@ static const char *const FREQ_KEYS[] = {"freq", "name", "cc", "mode", "ts", "tx"
 static const char *const RADIO_FREQ_KEYS[] = {FREQ_RADIO_KEYS, NULL};
 static const char *const DEFAULT_KEYS[] = {"cc", "mode", "ts", "tx", "power_dbm", "policy", POLICY_KEYS, NULL};
 static const char *const POL_KEYS[] = {"name", POLICY_KEYS, NULL};
+static const char *const RULE_KEYS[] = {"name", "tg", "pc", "nets", NULL};
 static const char *const SLOT_KEYS[] = {"policy", POLICY_KEYS, NULL};
 /* The talker keys: how a device that transmits on several frequencies waits and answers. A device's other keys
    are checked in siteplan.c. */
@@ -947,6 +948,166 @@ static bool parse_policies(ctx_t *c, rdof_site_t *s)
     return true;
 }
 
+/* ── rules (config-v3.md section 8.1) ────────────────────────────────────────── */
+
+/* A network by its name, or every network of a type (hblink, brandmeister, homebrew, mqtt): bit per net[] index. */
+static uint8_t nets_named(const rdof_site_t *s, const char *ref)
+{
+    uint8_t m = 0;
+    for (int k = 0; k < s->nnet; k++) {
+        const rdof_net3_t *n = &s->net[k];
+        const char *type = n->homebrew ? "homebrew" : n->login ? "brandmeister" : n->type == RDOF_NET_HBLINK ? "hblink"
+                                                                                                             : "mqtt";
+        if (!strcmp(n->name, ref) || !strcmp(type, ref))
+            m |= (uint8_t)(1u << k);
+    }
+    return m;
+}
+
+/* What the rules of one kind (pc: the private-call sets) deny network k, first match winning: every boundary of the
+   rules' sets splits the IDs into pieces, each decided by the first rule holding its first ID. */
+static bool rules_deny(ctx_t *c, rdof_site_t *s, int k, bool pc, rdof_idset_t *out)
+{
+    enum { MAXB = 2 * RDOF_SITE_MAX_RULES * RDOF_IDSET_MAX + 2 };
+    uint32_t b[MAXB];
+    int nb = 0;
+    b[nb++] = 1;
+    b[nb++] = RDOF_ID_MAX + 1;
+    for (int r = 0; r < s->nrule; r++) {
+        rdof_idrange_t rg[RDOF_IDSET_MAX];
+        const rdof_idset_t *set = pc ? &s->rule[r].pc : &s->rule[r].tg;
+        const int n = rdof_idset_ranges(set, rg, RDOF_IDSET_MAX);
+        for (int i = 0; i < n && i < RDOF_IDSET_MAX && nb + 2 <= MAXB; i++)
+            b[nb++] = rg[i].lo, b[nb++] = rg[i].hi + 1;
+    }
+    for (int i = 1; i < nb; i++) /* sort (a few dozen at most) */
+        for (int j = i; j > 0 && b[j - 1] > b[j]; j--) {
+            const uint32_t t = b[j];
+            b[j] = b[j - 1], b[j - 1] = t;
+        }
+    rdof_idset_clear(out);
+    char why[96];
+    uint32_t lo = 0, hi = 0; /* the denied run being built, lo 0: none */
+    for (int i = 0; i + 1 < nb; i++) {
+        if (b[i] == b[i + 1] || b[i] < 1 || b[i] > RDOF_ID_MAX)
+            continue;
+        bool deny = false;
+        for (int r = 0; r < s->nrule; r++)
+            if (rdof_idset_has(pc ? &s->rule[r].pc : &s->rule[r].tg, b[i])) {
+                deny = !(s->rule[r].nets & (1u << k));
+                break;
+            }
+        const uint32_t end = b[i + 1] - 1;
+        if (deny && lo && hi + 1 == b[i]) {
+            hi = end;
+            continue;
+        }
+        if (lo) {
+            char item[24];
+            snprintf(item, sizeof item, "%u-%u", lo, hi);
+            if (!rdof_idset_add(out, item, why, sizeof why))
+                return fail(c, "rules: what they keep off networks.%s is too many ranges (%s)", s->net[k].name, why);
+            lo = 0;
+        }
+        if (deny)
+            lo = b[i], hi = end;
+    }
+    if (lo) {
+        char item[24];
+        snprintf(item, sizeof item, "%u-%u", lo, hi);
+        if (!rdof_idset_add(out, item, why, sizeof why))
+            return fail(c, "rules: what they keep off networks.%s is too many ranges (%s)", s->net[k].name, why);
+    }
+    rdof_idset_finish(out);
+    return true;
+}
+
+static bool parse_rules(ctx_t *c, rdof_site_t *s)
+{
+    int rl = get(c, c->root, "rules");
+    if (rl >= 0 && !is_type(c, rl, RDOF_JARR))
+        return fail(c, "rules: a list");
+    for (int k = 0; k < count(c, rl); k++) {
+        int e = at(c, rl, k);
+        char path[48];
+        snprintf(path, sizeof path, "rules[%d]", k);
+        if (s->nrule >= RDOF_SITE_MAX_RULES)
+            return fail(c, "rules: %d at most", RDOF_SITE_MAX_RULES);
+        if (!is_type(c, e, RDOF_JOBJ))
+            return fail(c, "%s: an object", path);
+        if (!known(c, e, path, RULE_KEYS))
+            return false;
+        rdof_rule_t *r = &s->rule[s->nrule];
+        const char *n = str_of(c, get(c, e, "name"));
+        if (get(c, e, "name") >= 0 && (!n || !name_ok(n)))
+            return fail(c, "%s.name: a name under %d characters", path, RDOF_SITE_NAME);
+        snprintf(r->name, sizeof r->name, "%s", n ? n : "");
+        char p[80];
+        snprintf(p, sizeof p, "%s.tg", path);
+        int i = get(c, e, "tg");
+        rdof_idset_clear(&r->tg);
+        if (i >= 0 && !idset_of(c, i, p, &r->tg))
+            return false;
+        snprintf(p, sizeof p, "%s.pc", path);
+        i = get(c, e, "pc");
+        rdof_idset_clear(&r->pc);
+        if (i >= 0 && !idset_of(c, i, p, &r->pc))
+            return false;
+        if (rdof_idset_empty(&r->tg) && rdof_idset_empty(&r->pc))
+            return fail(c, "%s: tg or pc, the calls it matches", path);
+        i = get(c, e, "nets");
+        if (!is_type(c, i, RDOF_JARR))
+            return fail(c, "%s.nets: the networks its calls may use, by name or type ([] keeps them local)", path);
+        r->nets = 0;
+        for (int x = 0; x < count(c, i); x++) {
+            const char *ref = str_of(c, at(c, i, x));
+            static const char *const TYPES[] = {"hblink", "brandmeister", "homebrew", "mqtt", NULL};
+            if (!ref || (!nets_named(s, ref) && !in_list(TYPES, ref)))
+                return fail(c, "%s.nets[%d]: a network's name, or a type (hblink, brandmeister, homebrew, mqtt)", path,
+                            x);
+            r->nets |= nets_named(s, ref); /* a type the site hasn't: nothing */
+        }
+        s->nrule++;
+    }
+    for (int k = 0; k < s->nnet; k++)
+        if (!rules_deny(c, s, k, false, &s->net_deny_tg[k]) || !rules_deny(c, s, k, true, &s->net_deny_pc[k]))
+            return false;
+    return true;
+}
+
+/* A path's sets less what the rules keep off its network. An empty set (none) stays empty. */
+static bool rule_fold(ctx_t *c, const rdof_idset_t *deny, rdof_idset_t *set, const char *path, const char *key)
+{
+    if (rdof_idset_empty(set) || rdof_idset_empty(deny))
+        return true;
+    rdof_idrange_t rg[RDOF_IDSET_MAX];
+    const int n = rdof_idset_ranges(deny, rg, RDOF_IDSET_MAX);
+    char why[96];
+    for (int i = 0; i < n && i < RDOF_IDSET_MAX; i++) {
+        char item[26];
+        snprintf(item, sizeof item, "!%u-%u", rg[i].lo, rg[i].hi);
+        if (!rdof_idset_add(set, item, why, sizeof why))
+            return fail(c, "%s.%s: with the rules, too many ranges (%s)", path, key, why);
+    }
+    rdof_idset_finish(set);
+    return true;
+}
+
+static bool apply_rules(ctx_t *c, rdof_site_t *s)
+{
+    for (int i = 0; i < s->npath; i++) {
+        rdof_path_t *p = &s->path[i];
+        const int k = p->pol.net;
+        if (k < 0 || k >= s->nnet)
+            continue;
+        if (!rule_fold(c, &s->net_deny_tg[k], &p->pol.tg, p->name, "tg") ||
+            !rule_fold(c, &s->net_deny_tg[k], &p->pol.ptt, p->name, "ptt") ||
+            !rule_fold(c, &s->net_deny_pc[k], &p->pol.pc, p->name, "pc"))
+            return false;
+    }
+    return true;
+}
+
 /* An SDR driver that transmits. */
 static bool sdr_transmits(const char *driver)
 {
@@ -1460,8 +1621,8 @@ static bool parse_site(ctx_t *c, rdof_site_t *s)
         return fail(c, "defaults.power: power_dbm, in dBm at the antenna");
     if (!known(c, c->defaults, "defaults", DEFAULT_KEYS))
         return false;
-    return parse_freqs(c, s) && parse_nets(c, s) && parse_apps(c, s) && parse_policies(c, s) &&
-           parse_devices(c, s) && make_paths(c, s) && peer_ids(c, s);
+    return parse_freqs(c, s) && parse_nets(c, s) && parse_rules(c, s) && parse_apps(c, s) && parse_policies(c, s) &&
+           parse_devices(c, s) && make_paths(c, s) && apply_rules(c, s) && peer_ids(c, s);
 }
 
 bool rdof_site_ctx_parse(rdof_site_ctx_t *c, rdof_site_t *s) { return parse_site(c, s); }

@@ -321,6 +321,23 @@
       "properties": {"name": {"$ref": "#/$defs/name3"}},
       "unevaluatedProperties": false
     },
+    "rule3": {
+      "description": "Which networks a call may use, first match winning (config-v3.md 8.1). Rules only restrict: the policies still decide.",
+      "type": "object",
+      "required": ["nets"],
+      "anyOf": [{"required": ["tg"]}, {"required": ["pc"]}],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"$ref": "#/$defs/name3"},
+        "tg": {"$ref": "#/$defs/idset", "description": "The group calls it matches, by talkgroup."},
+        "pc": {"$ref": "#/$defs/idset", "description": "The private calls it matches, by the ID called (out) or calling (in)."},
+        "nets": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "The networks its calls may use, by name or type (hblink, brandmeister, homebrew, mqtt). [] keeps them on the box."
+        }
+      }
+    },
     "slot_policy": {
       "anyOf": [
         {"type": "string", "description": "A named policy."},
@@ -650,6 +667,7 @@
         "apps": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/app3"}},
         "networks": {"type": "array", "maxItems": 2, "items": {"$ref": "#/$defs/net3"}},
         "policies": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/policy3"}},
+        "rules": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/rule3"}},
         "pc_hold_s": {"type": "integer", "minimum": 0},
         "wifi": {"$ref": "#/$defs/wifi"},
         "ntp": {"$ref": "#/$defs/ntp"},

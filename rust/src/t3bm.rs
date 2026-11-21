@@ -242,6 +242,9 @@ pub unsafe fn bm_frame(u: *mut Unit, ch: usize, f: &RdofFrame) {
         if !f.has_addr {
             return; // voice before its LC: the sink would hold it on a slot not chosen yet
         }
+        if denied(u, NET_BM, f.group, f.dst) {
+            return; // the site's rules keep it off the master
+        }
         s = slot_for(b, if f.group { Some(f.dst) } else { None }, now);
         b.ch_slot[ch] = s;
         if s == 0 {
@@ -302,7 +305,7 @@ pub unsafe fn bm_ch_closed(u: *mut Unit, ch: usize) {
 
 /// Whether the site carries talkgroup tg from the network: in wide_tg, and wanted (its radios', static_tg).
 pub unsafe fn bm_wants(u: *mut Unit, tg: u32) -> bool {
-    if !tg_in(&(*u).pol.wide_tg, tg) {
+    if !tg_in(&(*u).pol.wide_tg, tg) || denied(u, NET_BM, true, tg) {
         return false;
     }
     if tg_in(&(*u).pol.static_tg, tg) {
@@ -338,6 +341,11 @@ pub unsafe extern "C" fn rdof_t3unit_bm_dmrd(u: *mut Unit, d: *const u8, n: usiz
             }
             return;
         }
+    } else if denied(u, NET_BM, false, x.src) {
+        if new {
+            (*bm(u)).n.not_carried += 1;
+        }
+        return;
     }
     let b = &mut *bm(u);
     if new {
@@ -395,6 +403,9 @@ pub unsafe fn bm_setup_out(u: *mut Unit, e: &Event) {
     }
     if e.op != t3::SETUP_REQUEST || e.flags & (t3::SETUP_F_DATA | t3::SETUP_F_ALS) != 0 {
         return; // packet data and ambient listening stay on the MQTT network
+    }
+    if denied(u, NET_BM, false, e.dst) {
+        return; // the site's rules keep calls to it off the master
     }
     let due = (*u).now_ms + if b.mqtt { SETUP_WAIT_MS } else { 0 };
     let w = Wait { used: true, stream: e.stream, src: e.src, dst: e.dst, svc: e.svc, due_ms: due };
@@ -536,7 +547,7 @@ unsafe fn wanted(u: *mut Unit, out: &mut [u32; TGS]) -> usize {
     let (m, _) = want_tgs(u, &mut t);
     let mut n = 0;
     for &g in &t[..m] {
-        if g != UNLINK_TG && tg_in(&(*u).pol.wide_tg, g) {
+        if g != UNLINK_TG && tg_in(&(*u).pol.wide_tg, g) && !denied(u, NET_BM, true, g) {
             out[n] = g;
             n += 1;
         }
@@ -724,6 +735,32 @@ pub unsafe extern "C" fn rdof_t3unit_bm_pin(u: *mut Unit, tg: u32, slot: c_int) 
         }
         None => false,
     }
+}
+
+/// Ranges network net (0 MQTT, 1 the master) doesn't carry: kind 0 talkgroups, 1 private calls (the ID called up,
+/// calling down). Replaces what was set; false: more than fit (16), the rest not kept.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3unit_deny(
+    u: *mut Unit,
+    net: c_int,
+    kind: c_int,
+    r: *const crate::plan::RdofIdrange,
+    n: usize,
+) -> bool {
+    if !(0..=1).contains(&net) || !(0..=1).contains(&kind) {
+        return false;
+    }
+    let d = &mut (*u).deny[net as usize][kind as usize];
+    d.n = 0;
+    let src = if r.is_null() { &[][..] } else { core::slice::from_raw_parts(r, n) };
+    for g in src {
+        if d.n == d.r.len() {
+            return false;
+        }
+        d.r[d.n] = (g.lo, g.hi);
+        d.n += 1;
+    }
+    true
 }
 
 #[no_mangle]

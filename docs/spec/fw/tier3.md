@@ -1208,7 +1208,7 @@ in table 6.5 and the off-air captures), `par` (`a`, `b`, `ab`), `area_bits` (1..
 | `refuse_unlisted` | `denied`, `refused` | `denied` | |
 | `private` | ID set | `*` | IDs that may make individual calls |
 | `tg` | ID set | `*` | talkgroups usable at the site |
-| `wide_tg` | ID set | `""` | talkgroups carried on the network (wide area); others stay local |
+| `wide_tg` | ID set | `""` | talkgroups carried on the network (wide area); others stay local. A talkgroup the box's `rules` keep off every network leaves it ([config-v3.md](config-v3.md) §8.1) |
 | `static_tg` | ID set | `""` | talkgroups the site always subscribes to on the network (as a Tier II repeater's `tg`) |
 | `foacsu` | bool | false | full off-air call setup for individual calls |
 | `dgna_from_ms` | bool | false | MSs may assign talkgroups to other MSs (DGNA, 3.17); off: Not_Supported. The site's own DGNA always goes |
@@ -1614,12 +1614,18 @@ on it there, for 15 minutes after the last. So:
 heard, and a Tier III radio that has only registered was never heard there. So a radio that registers is keyed from
 its ID on TG 9 (the repeater's own, carried nowhere), headers and a terminator, once each `renew_s`.
 
+**Rules.** The box's `rules` ([config-v3.md](config-v3.md) §8.1) reach the unit as ranges each network doesn't carry
+(`rdof_t3unit_deny`: the MQTT network, the login; talkgroups, private calls by the ID called going out and calling
+coming in). A call they keep off a network isn't sent there and isn't taken from it, a talkgroup kept off the login
+isn't keyed there, and a setup for an ID kept off one isn't sent or answered there. The TG 9 announcement still goes.
+The BrandMeister examples keep TG 2 on the MQTT network and TG 9 on the site.
+
 **Status.** `rdof_t3unit_bm_json`: up, calls up and down, no slot, duplicates, not carried, key-ups heard, data
 dropped, setups answered, activations, unlinks, and the talkgroups on each slot.
 
 Not built: packet data and short data through the master; ALS; a radio's late entry onto a slot whose talkgroup is
-already keyed. Tests: `host-tests/e2e_t3_bm.sh` (two sites on fakebm), `e2e_t3_bm_mqtt.sh` (both networks),
-`e2e_t3_hat_bm.sh` (the duplex hotspot example).
+already keyed. Tests: `host-tests/e2e_t3_bm.sh` (two sites on fakebm; the rules keep TG 2 and 9 off it),
+`e2e_t3_bm_mqtt.sh` (both networks), `e2e_t3_hat_bm.sh` (the duplex hotspot example).
 
 **On the real master (2026-11-20, master 3102, a hotspot login with no static talkgroups, one simulated radio on the
 owner's ID, no RF).** The header-and-terminator key-up activates a dynamic talkgroup: TG 91's traffic came down

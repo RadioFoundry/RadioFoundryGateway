@@ -866,6 +866,78 @@ static void test_trunk(const char *dir)
 }
 
 /* Every fixture: good- taken, bad- refused; a good one's units and SDR parse. */
+/* rules (config-v3.md 8.1): first match wins; each path loses what the rules keep off its network */
+static bool site_text(const char *t, char *err, size_t cap) { return rdof_site_parse(t, strlen(t), &S, err, cap); }
+
+static void test_rules(void)
+{
+    char err[200] = "", txt[4096];
+    static const char *const base =
+        "{\"version\": 3, \"id\": 9990300, \"callsign\": \"N0CALL\", \"defaults\": {\"cc\": 1},"
+        " \"devices\": [{\"kind\": \"sdr\", \"driver\": \"iio\", \"match\": {\"uri\": \"local:\"}}],"
+        " \"frequencies\": [{\"name\": \"in\", \"freq\": 438.25}, {\"name\": \"out\", \"freq\": 438.75}],"
+        " \"apps\": [{\"name\": \"R1\", \"type\": \"repeater\", \"in\": \"in\", \"out\": \"out\", \"tg\": \"*\","
+        "            \"slots\": {\"1\": {\"net\": \"bm\"}, \"2\": {\"net\": \"mq\"}}}],"
+        " \"networks\": [{\"name\": \"bm\", \"type\": \"brandmeister\", \"host\": \"bm.example.net\","
+        "                 \"password\": \"example\", \"peer_ids\": {\"R1\": 999030001}},"
+        "                {\"name\": \"mq\", \"type\": \"mqtt\", \"host\": \"broker.example.net\"}],"
+        " \"rules\": %s}";
+    snprintf(txt, sizeof txt, base,
+             "[{\"name\": \"mqtt-only\", \"tg\": 2, \"nets\": [\"mqtt\"]}, {\"name\": \"local\", \"tg\": 9, "
+             "\"nets\": []}, {\"tg\": \"8-12\", \"nets\": [\"bm\"]}, "
+             "{\"pc\": \"9990\", \"nets\": [\"brandmeister\"]}]");
+    CHECK(site_text(txt, err, sizeof err), "rules: %s", err);
+    if (!err[0] || S.nrule == 4) {
+        CHECK(S.nrule == 4 && !strcmp(S.rule[0].name, "mqtt-only") && S.rule[0].nets == 2 && S.rule[1].nets == 0 &&
+                  S.rule[2].nets == 1 && S.rule[3].nets == 1,
+              "the rules: %d", S.nrule);
+        int bm = !strcmp(S.net[0].name, "bm") ? 0 : 1, mq = 1 - bm;
+        rdof_idrange_t r[RDOF_IDSET_MAX];
+        int n = rdof_idset_ranges(&S.net_deny_tg[bm], r, RDOF_IDSET_MAX);
+        CHECK(n == 2 && r[0].lo == 2 && r[0].hi == 2 && r[1].lo == 9 && r[1].hi == 9, "off bm: 2, 9 (%d)", n);
+        n = rdof_idset_ranges(&S.net_deny_tg[mq], r, RDOF_IDSET_MAX);
+        CHECK(n == 1 && r[0].lo == 8 && r[0].hi == 12, "off mq: 8-12 (%d)", n);
+        n = rdof_idset_ranges(&S.net_deny_pc[mq], r, RDOF_IDSET_MAX);
+        CHECK(n == 1 && r[0].lo == 9990 && r[0].hi == 9990, "9990 off mq (%d)", n);
+        CHECK(rdof_idset_empty(&S.net_deny_pc[bm]), "every private call on bm");
+        for (int i = 0; i < S.npath; i++) {
+            const rdof_policy_t *p = &S.path[i].pol;
+            if (p->net == bm)
+                CHECK(rdof_idset_has(&p->tg, 1) && !rdof_idset_has(&p->tg, 2) && !rdof_idset_has(&p->tg, 9) &&
+                          rdof_idset_has(&p->tg, 10) && rdof_idset_has(&p->tg, 91) && rdof_idset_has(&p->pc, 9990),
+                      "%s: tg *, !2, !9", S.path[i].name);
+            if (p->net == mq)
+                CHECK(rdof_idset_has(&p->tg, 2) && rdof_idset_has(&p->tg, 7) && !rdof_idset_has(&p->tg, 8) &&
+                          !rdof_idset_has(&p->tg, 12) && rdof_idset_has(&p->tg, 13) && !rdof_idset_has(&p->pc, 9990) &&
+                          rdof_idset_has(&p->pc, 3100001),
+                      "%s: tg *, !8-12; pc !9990", S.path[i].name);
+        }
+    }
+    static const struct {
+        const char *rules, *why;
+    } BAD[] = {
+        {"{}", "rules: a list"},
+        {"[{\"nets\": []}]", "rules[0]: tg or pc"},
+        {"[{\"tg\": 2}]", "rules[0].nets"},
+        {"[{\"tg\": 2, \"nets\": [\"nowhere\"]}]", "rules[0].nets[0]"},
+        {"[{\"tg\": 2, \"nets\": [], \"slot\": 1}]", "slot"},
+    };
+    for (size_t i = 0; i < sizeof BAD / sizeof BAD[0]; i++) {
+        snprintf(txt, sizeof txt, base, BAD[i].rules);
+        err[0] = 0;
+        CHECK(!site_text(txt, err, sizeof err) && strstr(err, BAD[i].why), "refused %s: %s", BAD[i].rules, err);
+    }
+    /* a type the site hasn't is no network; 17 rules are too many */
+    snprintf(txt, sizeof txt, base, "[{\"tg\": 2, \"nets\": [\"homebrew\"]}]");
+    CHECK(site_text(txt, err, sizeof err) && S.rule[0].nets == 0, "homebrew: none here: %s", err);
+    char many[1200] = "[";
+    for (int k = 0; k < 17; k++)
+        snprintf(many + strlen(many), sizeof many - strlen(many), "%s{\"tg\": %d, \"nets\": []}", k ? ", " : "", k + 1);
+    strcat(many, "]");
+    snprintf(txt, sizeof txt, base, many);
+    CHECK(!site_text(txt, err, sizeof err) && strstr(err, "16 at most"), "17 rules: %s", err);
+}
+
 static void test_fixtures(const char *dir)
 {
     char p[512], err[200];
@@ -937,6 +1009,7 @@ int main(int argc, char **argv)
     test_siteroute(dir);
     test_fixtures(dir);
     test_trunk(dir);
+    test_rules();
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

@@ -65,6 +65,9 @@ typedef struct {
     char host[64], user[32], pass[64], root[32];
     int port;
     bool tls;
+    /* what the site's rules (config-v3.md 8.1) keep off the MQTT network [0] and the login [1]: talkgroups, private
+       calls */
+    rdof_idset_t deny_tg[2], deny_pc[2];
     /* a brandmeister or homebrew network (tier3.md 5.11): the site's own login, -1 none */
     int bm;
     uint32_t bm_peer;       /* its ID (peer_ids, under the app's name) */

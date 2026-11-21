@@ -15,6 +15,7 @@ const MAX_DEVICES: usize = 16;
 const MAX_APPS: usize = 16;
 const MAX_NETS: usize = 4;
 const MAX_POLICIES: usize = 16;
+const MAX_RULES: usize = 16; // RDOF_SITE_MAX_RULES
 const MAX_PATHS: usize = 64;
 const IDSET_MAX: usize = 12; // RDOF_IDSET_MAX
 const PK_N: usize = 7; // RDOF_PK_N
@@ -164,6 +165,19 @@ pub struct RdofSite {
     pub net: [RdofNet3; MAX_NETS],
     pub pol_name: [[u8; SITE_NAME]; MAX_POLICIES],
     pub path: [RdofPath; MAX_PATHS],
+    pub nrule: c_int,
+    pub rule: [RdofRule; MAX_RULES],
+    pub net_deny_tg: [RdofIdset; MAX_NETS],
+    pub net_deny_pc: [RdofIdset; MAX_NETS],
+}
+
+/// rdof_rule_t
+#[repr(C)]
+pub struct RdofRule {
+    pub name: [u8; SITE_NAME],
+    pub tg: RdofIdset,
+    pub pc: RdofIdset,
+    pub nets: u8,
 }
 
 /// rdof_port_t

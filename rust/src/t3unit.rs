@@ -659,6 +659,31 @@ pub struct Unit {
     pd_from: [(u32, [u8; NODE_MAX + 1]); HELD],
     // the site's own BrandMeister login (t3bm.rs)
     bm: t3bm::Bm,
+    // what the site's rules keep off each network (config-v3.md 8.1): [NET_MQTT, NET_BM][DENY_TG, DENY_PC]
+    deny: [[Deny; 2]; 2],
+}
+
+pub const NET_MQTT: usize = 0;
+pub const NET_BM: usize = 1;
+const DENY_RANGES: usize = 16;
+
+/// ID ranges a network doesn't carry (rdof_t3unit_deny). All zero: none.
+#[derive(Clone, Copy)]
+pub struct Deny {
+    r: [(u32, u32); DENY_RANGES],
+    n: usize,
+}
+
+impl Deny {
+    fn has(&self, id: u32) -> bool {
+        self.r[..self.n.min(DENY_RANGES)].iter().any(|&(lo, hi)| (lo..=hi).contains(&id))
+    }
+}
+
+/// Whether the rules keep a call off network net: a group call by its talkgroup, a private call by the ID called
+/// (up) or calling (down).
+pub unsafe fn denied(u: *const Unit, net: usize, group: bool, id: u32) -> bool {
+    (*u).deny[net][usize::from(!group)].has(id)
 }
 
 /// A packet the site sends (rdof_t3unit_data_tx): held until its channel opens, then fed to its queue.
@@ -955,6 +980,9 @@ fn answer_op(op: u8) -> bool {
 }
 
 unsafe fn setup_out(u: *mut Unit, e: &Event) {
+    if e.op == t3::SETUP_REQUEST && denied(u, NET_MQTT, false, e.dst) {
+        return;
+    }
     let s = MnSetup { op: e.op, reason: e.reason, flags: e.flags, options: e.svc, r#ref: e.r#ref };
     let (src, dst) = if answer_op(e.op) { (e.dst, e.src) } else { (e.src, e.dst) };
     let mut m = [0u8; MN_HEADER + 2 + MN_SETUP_LEN];
@@ -1938,8 +1966,9 @@ unsafe extern "C" fn up_path_of(ctx: *mut c_void, slot: c_int) -> c_int {
     }
 }
 
-unsafe extern "C" fn up_admit(ctx: *mut c_void, slot: c_int, _src: u32, _dst: u32, _group: bool) -> bool {
-    up_wide(ctx, slot).1
+unsafe extern "C" fn up_admit(ctx: *mut c_void, slot: c_int, _src: u32, dst: u32, group: bool) -> bool {
+    let (u, wide) = up_wide(ctx, slot);
+    wide && !denied(u, NET_MQTT, group, dst)
 }
 
 unsafe extern "C" fn up_publish(ctx: *mut c_void, kind: c_int, dst: u32, msg: *const u8, len: usize) {
@@ -2030,6 +2059,7 @@ unsafe fn net_burst_in(u: *mut Unit, b: &RdofNetBurst, flags: u8, bm: bool) {
             t3bm::bm_twin(u, id, b, bm);
             return;
         }
+        None if !bm && denied(u, NET_MQTT, b.group, if b.group { b.dst } else { b.src }) => return,
         None => {
             let Some(i) = stream_new(u, b, id, flags) else { return };
             (*u).st[i].bm = bm;
@@ -2064,6 +2094,9 @@ unsafe extern "C" fn down_setup(ctx: *mut c_void, h: *const MnHdr, s: *const MnS
         r#ref: s.r#ref,
     };
     (*u).n.setups_in += 1;
+    if s.op == t3::SETUP_REQUEST && denied(u, NET_MQTT, false, m.src) {
+        return; // the rules keep the calling ID's calls off the MQTT network
+    }
     if ans && t3bm::bm_setup_in(u, s.op, s.reason, s.r#ref) {
         return; // not found on the MQTT network: BrandMeister is asked
     }

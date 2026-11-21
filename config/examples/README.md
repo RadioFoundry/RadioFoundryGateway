@@ -66,7 +66,8 @@ once takes any of them:
 | `registration`, `auth` | `open`, `off` | Any licensed ham registers; no keys |
 | `ms`, `private`, `tg` | `*` | Every radio, private call and talkgroup |
 | `wide_tg` (linked) | `1-16776415` | Every BrandMeister talkgroup number is carried between the operator's sites |
-| `wide_tg` (BrandMeister) | `1-8,10-3999,4001-16776415` | Every talkgroup but 9 (the repeater's own) and 4000 (the site keys it) |
+| `wide_tg` (BrandMeister) | `1-3999,4001-16776415` | Every talkgroup but 4000 (the site keys it) |
+| `rules` (BrandMeister) | TG 2 `mqtt` only, TG 9 none | TG 2 stays on the operator's MQTT network, TG 9 on the repeater |
 | `static_tg` (linked) | `3100` | An example: a talkgroup the site always carries |
 
 - Radios use their own DMR IDs and BrandMeister talkgroup numbers. The linked site links over the MQTT network
@@ -76,6 +77,10 @@ once takes any of them:
   `tier3` app. A talkgroup a radio registers to is keyed there so BrandMeister carries it, and TG 4000 drops it once
   no radio wants it; each talkgroup keeps one of the login's two slots (`ts1_tg` / `ts2_tg` pin some), so two
   calls at a time go through. A site can have both networks: a call that comes both ways plays once.
+- Every BrandMeister file has two rules ([config-v3.md](../../docs/spec/fw/config-v3.md) §8.1): TG 2 goes only to an
+  MQTT network (the operator's own sites; with none, it stays on the site) and TG 9 to no network (the repeater's
+  own). Neither is sent to or keyed on BrandMeister. A Tier III site still keys TG 9 there to announce a radio that
+  registers (so BrandMeister routes its private calls here): that is no call.
 - The duplex hotspot is a one-carrier site on an MMDVM_HS dual hat ([tier3-hat.md](../../docs/spec/fw/tier3-hat.md)):
   the hat transmits, an RTL-SDR beside it hears the carrier's out and in (so keep them within about 1 MHz). It takes
   two files: `--config` the box (the hat, its calibration, the bench), `--tier3` the site.

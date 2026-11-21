@@ -90,6 +90,7 @@ const places = {
         FREQ_KEYS: props(D.freq3.anyOf[1]).concat(pk),
         DEFAULT_KEYS: props(D.defaults3).concat(pk),
         POL_KEYS: props(D.policy3).concat(pk),
+        RULE_KEYS: props(D.rule3),
         SLOT_KEYS: props(D.slot_policy.anyOf[1]).concat(pk),
         HEARS_KEYS: props(D.dev3_own.properties.hears.anyOf[1]),
         REPEATER_KEYS: props(D.repeater3).concat(pk),

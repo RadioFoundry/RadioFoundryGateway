@@ -1,7 +1,7 @@
 // A duplex MMDVM modem as a repeater on BrandMeister: one login, with the repeater's ID (a hotspot's: your DMR ID and
-// two digits) and the hotspot security password set in BrandMeister's SelfCare. Every talkgroup goes both ways on
-// both slots ("tg": "*"): BrandMeister decides what comes down, by the static talkgroups set in SelfCare and the
-// ones a radio keys (dynamic). A private call to 9990 is BrandMeister's echo.
+// two digits) and the hotspot security password set in BrandMeister's SelfCare. Every talkgroup but 2 and 9 (the
+// rules) goes both ways on both slots ("tg": "*"): BrandMeister decides what comes down, by the static talkgroups set
+// in SelfCare and the ones a radio keys (dynamic). A private call to 9990 is BrandMeister's echo.
 {
   "version": 3,
   "name": "repeater",
@@ -20,6 +20,12 @@
   "networks": [
     {"type": "brandmeister", "host": "3102.master.brandmeister.network", "password": "your-hotspot-password",
      "peer_ids": {"R1": 980010001}}
+  ],
+  // TG 2 stays on an MQTT network (the operator's sites; with none, here), TG 9 on this repeater: neither goes to
+  // BrandMeister (config-v3.md 8.1)
+  "rules": [
+    {"name": "mqtt-only", "tg": 2, "nets": ["mqtt"]},
+    {"name": "local", "tg": 9, "nets": []}
   ],
   // the clock: public servers that don't smear a leap second (no pool)
   "ntp": {"servers": "time-a-g.nist.gov time-a-b.nist.gov tick.usno.navy.mil tock.usno.navy.mil time.apple.com time.cloudflare.com"},

@@ -75,6 +75,7 @@ which frequency follows from each device's `hears` and `transmits`; a file only 
 | `apps` | list | `[]` | §6 |
 | `networks` | list | `[]` | §7 |
 | `policies` | list | `[]` | §8 |
+| `rules` | list | `[]` | §8.1: which networks a call may use |
 | `location` | object | none | §2.2 |
 | `oled` | object, `true`, `false` or `null` | §2.2 | the screen |
 | `slot_timing` | object | `free` | the UTC slot grid ([../slot-timing.md](../slot-timing.md)); inherited by a repeater on a split or the SDR |
@@ -665,6 +666,40 @@ A named policy:
 ]
 ```
 
+### 8.1 Rules
+
+A rule keeps calls off networks, for the whole box. Policies say what a path carries; a rule says where a call may go
+at all, whatever path or app it is on. Rules only restrict: a call a rule lets onto a network still goes only where
+a policy (or a Tier III site's `wide_tg`) sends it.
+
+```jsonc
+"rules": [
+  {"name": "mqtt-only", "tg": 2, "nets": ["mqtt"]},   // TG 2: the MQTT network only
+  {"name": "local", "tg": 9, "nets": []},              // TG 9: no network, this repeater only
+  {"pc": "9990", "nets": ["brandmeister"]}             // private calls to and from 9990: BrandMeister only
+]
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `name` | str | none | for the reader and errors |
+| `tg` | ID set | none | the group calls it matches, by talkgroup |
+| `pc` | ID set | none | the private calls it matches, by the ID called (out) or calling (in), as a policy's `pc` |
+| `nets` | list | | required: the networks its calls may use, each a network's name or a type (`hblink`, `brandmeister`, `homebrew`, `mqtt`); `[]` keeps them on the box. A type the box has no network of matches none |
+
+A rule needs `tg` or `pc` (or both). The first rule that holds a call's ID decides, both ways: a matched call goes
+only to, and comes only from, the networks in its `nets`. A call no rule matches may use every network.
+
+- Each path's `tg`, `ptt` and `pc` lose the IDs the rules keep off its network, so the resolved view (§11) shows
+  them: with the rules above a path on BrandMeister with `tg: "*"` carries `*,!2,!9`.
+- A Tier III site (§6.4) checks them on each network it uses: the MQTT network and its own BrandMeister or Homebrew
+  login. A talkgroup a rule keeps off the login isn't keyed there. A talkgroup kept off every network leaves
+  `wide_tg`: its calls, short data and packet data stay on the site.
+- A Tier III site's key-up on TG 9 that announces a radio to BrandMeister ([tier3.md](tier3.md) §5.11) is control,
+  not a call: it still goes.
+- Up to 16 rules. What they keep off one network takes at most 12 ranges (an ID set's), and a path's sets with them
+  too; more is refused.
+
 ## 9. How calls move
 
 ### 9.1 RF to network
@@ -1031,6 +1066,7 @@ the top), the SDR-only firmware's stored settings and the broker (its checks are
 | apps | 16 | `RDOF_SITE_MAX_APPS` |
 | networks | one `hblink`, one `mqtt` | |
 | named policies | 16 | `RDOF_SITE_MAX_POLICIES` |
+| rules | 16 | `RDOF_SITE_MAX_RULES` |
 | talk paths | 64 | `RDOF_SITE_MAX_PATHS` |
 | ranges in an ID set (plain and `!` together, after merging) | 12 | `RDOF_IDSET_MAX` |
 | radios in the last-heard table | 256 | `RDOF_ROUTER_HEARD` |
