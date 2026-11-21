@@ -1,0 +1,57 @@
+// A ham DMR Tier III site, as recommended for every ham site, on a duplex hotspot (an MMDVM_HS dual hat on a
+// Raspberry Pi) with an RTL-SDR beside it, on BrandMeister. One carrier: the control channel on TS1 and a payload
+// channel on TS2. The hat transmits the carrier; the RTL-SDR hears what radios send (tier3-hat.md). The box's own
+// settings (the hat's calibration, the bench) are in ham-tier3-hotspot-box.json:
+//   rdofradio --soapy driver=rtlsdr -r 1536000 --allow-tx --mmdvm /dev/ttyAMA0 --config ham-tier3-hotspot-box.json \
+//       --tier3 ham-tier3-hotspot-brandmeister.json
+// The RTL-SDR hears the carrier's out (the hat's slot timing) and its in at once: keep them within about 1 MHz.
+// Set the site number (0-1022, chosen with the neighbors) and the carrier's logical channel number to 4 x site + 1
+// (site 5: 21). Every ham site has model huge, NET 1, PAR ab and color code 1. The site logs in to BrandMeister as one
+// repeater (its ID: your DMR ID and two digits; the hotspot security password set in SelfCare). A talkgroup a radio
+// registers to is keyed on BrandMeister so it comes down, and dropped (TG 4000 on its slot) once no radio here wants
+// it. Two calls at a time go through BrandMeister, one a slot; on air the site has one payload channel.
+{
+  "version": 3,
+  "name": "t3hotspot",
+  "id": 9800105,
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "hat", "kind": "modem", "type": "mmdvm_hs", "port": {"path": "/dev/ttyAMA0"}, "transmits": ["A-out"]},
+    {"name": "rtl", "kind": "sdr", "driver": "rtlsdr"}
+  ],
+  "frequencies": [
+    {"name": "A-out", "freq": 438.75},
+    {"name": "A-in", "freq": 438.25, "tx": false}
+  ],
+  "apps": [
+    {"name": "site", "type": "tier3",
+     "system": {"model": "huge", "net": 1, "site": 5, "par": "ab"},
+     "carriers": [
+       {"out": "A-out", "in": "A-in", "chan": 21, "tscc": true}
+     ],
+     "registration": "open",
+     "ms": "*",
+     "private": "*",
+     "tg": "*",
+     // every BrandMeister talkgroup but 9 (the repeater's own) and 4000 (the site keys it itself)
+     "wide_tg": "1-8,10-3999,4001-16776415",
+     "auth": "off"}
+  ],
+  "networks": [
+    {"type": "brandmeister", "host": "3102.master.brandmeister.network", "password": "your-hotspot-password",
+     "peer_ids": {"site": 980010501}}
+  ],
+  "ntp": {"servers": "time-a-g.nist.gov time-a-b.nist.gov tick.usno.navy.mil tock.usno.navy.mil time.apple.com time.cloudflare.com"},
+  // the bench (rdofradio --bench 7373): its jobs may transmit anywhere in the US amateur bands from 6 m to 13 cm,
+  // keyed 10 s at most, at the transmitter's least power (add "rf_level" 0..255, or "max_dbm", for more)
+  "bench": {
+    "tx": {
+      "bands_hz": [
+        [50000000, 54000000], [144000000, 148000000], [222000000, 225000000], [420000000, 450000000],
+        [902000000, 928000000], [1240000000, 1300000000], [2300000000, 2310000000], [2390000000, 2450000000]
+      ],
+      "max_key_s": 10
+    }
+  }
+}

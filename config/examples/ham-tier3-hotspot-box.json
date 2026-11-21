@@ -1,0 +1,26 @@
+// The box under ham-tier3-hotspot-brandmeister.json: a Raspberry Pi with an MMDVM_HS dual hat and an RTL-SDR. The
+// site (--tier3) takes the hat; this file has the hat itself and the box's clock and bench. Put the hat's
+// calibration from MMDVM.ini under the device's "mmdvm" (docs/raspberry-pi.md).
+{
+  "version": 3,
+  "name": "t3hotspot-box",
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "hat", "kind": "modem", "type": "mmdvm_hs", "port": {"path": "/dev/ttyAMA0"}}
+  ],
+  "frequencies": [438.75],
+  // the clock: public servers that don't smear a leap second (no pool)
+  "ntp": {"servers": "time-a-g.nist.gov time-a-b.nist.gov tick.usno.navy.mil tock.usno.navy.mil time.apple.com time.cloudflare.com"},
+  // the bench (rdofradio --bench 7373): its jobs may transmit anywhere in the US amateur bands from 6 m to 13 cm,
+  // keyed 10 s at most, at the transmitter's least power (add "rf_level" 0..255, or "max_dbm", for more)
+  "bench": {
+    "tx": {
+      "bands_hz": [
+        [50000000, 54000000], [144000000, 148000000], [222000000, 225000000], [420000000, 450000000],
+        [902000000, 928000000], [1240000000, 1300000000], [2300000000, 2310000000], [2390000000, 2450000000]
+      ],
+      "max_key_s": 10
+    }
+  }
+}

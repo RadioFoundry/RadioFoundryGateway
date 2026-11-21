@@ -53,6 +53,7 @@ once takes any of them:
 | `ham-tier3-site-standalone.json` | a PlutoSDR, 1 carrier | none |
 | `ham-tier3-site-linked.json` | a PlutoSDR, 2 carriers (`tx.carriers: 2`) | the MQTT network, to the operator's other sites |
 | `ham-tier3-site-brandmeister.json` | a PlutoSDR, 2 carriers | BrandMeister: the site is one repeater there |
+| `ham-tier3-hotspot-brandmeister.json` (with `ham-tier3-hotspot-box.json`) | a duplex MMDVM_HS hat and an RTL-SDR, 1 carrier | BrandMeister |
 
 | Key | Value | Why |
 |---|---|---|
@@ -75,13 +76,15 @@ once takes any of them:
   `tier3` app. A talkgroup a radio registers to is keyed there so BrandMeister carries it, and TG 4000 drops it once
   no radio wants it; each talkgroup keeps one of the login's two slots (`ts1_tg` / `ts2_tg` pin some), so two
   calls at a time go through. A site can have both networks: a call that comes both ways plays once.
+- The duplex hotspot is a one-carrier site on an MMDVM_HS dual hat ([tier3-hat.md](../../docs/spec/fw/tier3-hat.md)):
+  the hat transmits, an RTL-SDR beside it hears the carrier's out and in (so keep them within about 1 MHz). It takes
+  two files: `--config` the box (the hat, its calibration, the bench), `--tier3` the site.
 - The site grants channels by logical number and broadcasts each one's frequencies (Chan_Freq): a radio that learns
   the plan from those needs none programmed. Grants with absolute frequencies aren't done yet.
-- Neither file has a `bench` section.
 
 ## The clock and the bench
 
-Each file ends with the same two sections (the trunked ones with `ntp` only):
+Each file ends with the same two sections:
 
 - `ntp`: public servers that don't smear a leap second (NIST, USNO, Apple, Cloudflare; no pool). rdofradio keeps its
   own clock from them (netclock); `"clock": "os"` takes the system's instead.
@@ -103,6 +106,7 @@ rdofradio --soapy driver=rtlsdr -r 288000 --allow-tx --mmdvm /dev/ttyAMA0 --conf
 rdofradio --iio local: --allow-tx --config standalone-pluto-duplex.json --web 0.0.0.0:8080 --bench 7373
 rdofradio --allow-tx --mmdvm /dev/ttyAMA0 --config brandmeister-mmdvm-duplex.json --web 8080
 rdofradio --iio local: --allow-tx --config ham-tier3-site-linked.json --web 0.0.0.0:8080
+rdofradio --soapy driver=rtlsdr -r 1536000 --allow-tx --mmdvm /dev/ttyAMA0 --config ham-tier3-hotspot-box.json --tier3 ham-tier3-hotspot-brandmeister.json --web 8080
 ```
 
 - A Raspberry Pi with an MMDVM_HS hat, including the hat's calibration from MMDVM.ini and running as a service:
