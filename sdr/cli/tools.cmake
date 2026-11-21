@@ -216,18 +216,21 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
         add_test(NAME rdofradio_e2e_t3_car4 COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_car4.sh
                  $<TARGET_FILE_DIR:rdofradio>)
         set_tests_properties(rdofradio_e2e_t3_car4 PROPERTIES TIMEOUT 120)
-        # no RF: a site on a stock duplex MMDVM modem, simulated (--mmdvm sim-hat), its bursts each on their slot
+        # no RF: a site on a stock duplex MMDVM modem, simulated (--mmdvm sim-hat), its bursts each on their slot.
+        # The sim keeps its slot clock on the wall clock and the test allows no late burst: it runs alone (RUN_SERIAL),
+        # as other tests' load makes bursts late.
         add_test(NAME rdofradio_e2e_t3_hat COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_hat.sh
                  $<TARGET_FILE_DIR:rdofradio>)
-        set_tests_properties(rdofradio_e2e_t3_hat PROPERTIES TIMEOUT 60)
+        set_tests_properties(rdofradio_e2e_t3_hat PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
         # no RF: two sites, each its own login to fakebm (tier3.md 5.11): calls across, talkgroups keyed and dropped
         add_test(NAME rdofradio_e2e_t3_bm COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_bm.sh
                  $<TARGET_FILE_DIR:rdofradio> 47015)
         set_tests_properties(rdofradio_e2e_t3_bm PROPERTIES TIMEOUT 90)
-        # no RF: config/examples' Tier III duplex hotspot on BrandMeister, the hat simulated, against fakebm
+        # no RF: config/examples' Tier III duplex hotspot on BrandMeister, the hat simulated, against fakebm (alone, as
+        # e2e_t3_hat)
         add_test(NAME rdofradio_e2e_t3_hat_bm COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_hat_bm.sh
                  $<TARGET_FILE_DIR:rdofradio> ${RDOF_CLI}/../../config/examples 47017)
-        set_tests_properties(rdofradio_e2e_t3_hat_bm PROPERTIES TIMEOUT 60)
+        set_tests_properties(rdofradio_e2e_t3_hat_bm PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
     endif()
     # no RF: two boxes, each on a fakemodem, joined by the MQTT network (format v3) through a broker on this host
     find_program(MOSQUITTO_BROKER mosquitto HINTS /usr/sbin /usr/local/sbin /opt/homebrew/sbin)
