@@ -1525,9 +1525,11 @@ starts `rdofradio` again 5 s after it exits.
   121 MiB keeps writes only at the front of each MiB (2026-11-15). There a program too big for the flash runs from RAM
   until a genuine card goes in. Bulk reads of that card while rdofradio ran rebooted the Pluto twice.
 - **Size:** the flash (`mtd2`, jffs2, 896 KB) holds the program and the settings, about 690 KB of program at most.
-  The bundle's program is xz (`xz -9e --check=crc32`; no BCJ filter, which busybox's `unxz` can't decode): with the
-  Tier III site in it, 628 KB (2026-11-12), where `gzip -9` gives 746 KB. A bundle from before xz installed
-  `rdofradio.gz`; `install.sh` replaces it, and `run.sh` runs either.
+  The bundle's program is xz (`xz -9e --check=crc32`, `lc=2,lp=2` for ARM code; no BCJ filter, which busybox's
+  `unxz` can't decode), with its Rust at opt-level "z": 611 KB with the web page, Tier III and BrandMeister
+  (2026-11-21), where `gzip -9` gave 746 KB without BrandMeister. Keep about 70 KB of the flash free: near 60 KB jffs2
+  refuses small writes (settings, `netclock.state`). A bundle from before xz installed `rdofradio.gz`; `install.sh`
+  replaces it, and `run.sh` runs either.
 - The Pluto makes a new ssh host key at every boot, so the script doesn't check it.
 - At `--tx-gain 0` (the default) the start's calibration pulse isn't heard, so the outbound slot timing isn't
   measured.

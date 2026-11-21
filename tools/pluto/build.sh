@@ -50,7 +50,10 @@ if [ ! -f "$OUT/libs/usr/include/iio.h" ]; then
 fi
 
 VERSION=${RDOF_VERSION:-$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo dev)}
+# The Rust at opt-level "z" here (the profile's "s" elsewhere): 12 KB less xz (2026-11-21: 611 KB against 624 KB)
+# for the same CPU on the Pluto (rdofradio 752 against 737 ticks in 20 s, receiving)
 docker run --rm -v "$ROOT":/src:ro -v "$OUT":/out -e RDOF_PLUTO_LIBS=/out/libs -e RDOF_VERSION="$VERSION" -e RDOF_PLUTO_WEB="${RDOF_PLUTO_WEB:-ON}" \
+    -e CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
     -e RUST_TARGET="$RUST_TARGET" -e RUSTUP_HOME=/out/rust/rustup -e CARGO_HOME=/out/rust/cargo debian:stretch bash -euo pipefail -c '
 echo "deb http://archive.debian.org/debian stretch main" > /etc/apt/sources.list
 apt-get -qq -o Acquire::Check-Valid-Until=false update
@@ -115,8 +118,8 @@ if ls "$ROOT"/tools/pluto/fpga/*.bit.bin > /dev/null 2>&1; then
     cp "$ROOT"/tools/pluto/fpga/* "$OUT/$B/fpga/"
 fi
 # xz: about 15 % smaller than gzip -9 (the Pluto's flash holds about 700 KB of program); crc32, no filter: busybox's
-# unxz decodes it
-xz -9e --check=crc32 -c "$OUT/rdofradio" > "$OUT/$B/rdofradio.xz"
+# unxz decodes it. lc=2,lp=2 suit ARM's 4-byte instructions: 7 KB less than plain -9e
+xz --check=crc32 --lzma2=preset=9e,lc=2,lp=2,pb=2 -c "$OUT/rdofradio" > "$OUT/$B/rdofradio.xz"
 echo "$VERSION" > "$OUT/$B/VERSION"
 chmod 755 "$OUT/$B/install.sh" "$OUT/$B/run.sh"
 tar -C "$OUT" -czf "$OUT/$B.tar.gz" "$B"
