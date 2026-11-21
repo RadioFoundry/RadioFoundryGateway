@@ -1572,6 +1572,54 @@ Their setup codecs read only flags bits 0-1 and refuse to encode bit 2; a servic
 it again (none does today) would drop the data flag, and the far site would then take the request for a voice call.
 The codecs should keep bit 2 (`data`).
 
+### 5.11 BrandMeister (the site's own login)
+
+A site can log in to a BrandMeister master, or any master that speaks the Homebrew repeater protocol (`homebrew`),
+with or without the MQTT network. The network's `peer_ids` names the `tier3` app: the whole site is one repeater of
+two slots on the master (DMRC slots `3`, the TSCC carrier's frequencies, the box's callsign and location). The unit
+does it (`rust/src/t3bm.rs`, `rdof_t3unit_bm*` in `rdof/t3unit.h`); rdofradio owns the socket and the login
+(`rdofnet_peer_t`). Homebrew carries two calls at a time, one a slot, and a site has more payload channels than
+that, so the login's slots are virtual: a call goes up on whichever slot its talkgroup is on.
+
+**Up.** A call on a payload channel that goes beyond the site (a talkgroup in `wide_tg`, or a private call whose
+other party isn't here; never an all call or packet data) goes up as DMRD on a slot of the login:
+- A talkgroup keeps one slot: the one in `ts1_tg` / `ts2_tg` if it's pinned there, else the one it was last keyed
+  or heard on. The master carries a dynamic talkgroup on the slot it was keyed on, and one keyed on both would come
+  down twice. When that slot is busy (a call up or down on it in the last second), the call stays on the site (`no
+  slot` in the status, a log line).
+- A new talkgroup, or a private call: the free slot with fewer talkgroups on it.
+
+**Down.** A group call for a talkgroup in `wide_tg` that the site carries (its radios' subscriptions, `static_tg`)
+is granted as a network call, as one from the MQTT network is; a private call to a radio registered here as an
+implicit setup. A stream from the master starts with its first voice burst: its headers wait for it, and one that
+ends with no voice (another site's key-up below) isn't played. Packet data from the master isn't carried. A call that
+comes both ways (the MQTT network and the master: sites on both key the talkgroup on each) plays once, from whichever
+came first; the other copy is dropped by its source, destination and kind.
+
+**Private calls out.** A setup request (`EV_NET_SETUP`) for an ID not at the site, but for packet data and ambient
+listening, is the master's to answer: with no MQTT network the unit accepts it at once and the call goes up; with one
+it waits 1.5 s for a site there, and a not-found from the MQTT network doesn't count. Homebrew has no call setup, so
+the master's side is OACSU: the called radio isn't asked first.
+
+**Talkgroups (`activate`, on by default).** The master carries a dynamic talkgroup to a login once a call is keyed
+on it there, for 15 minutes after the last. So:
+- A talkgroup a radio registers to (or in `static_tg`), in `wide_tg`, that the site hasn't keyed: the site keys it,
+  two voice headers and a terminator from the login's owner (its ID without a hotspot's two digits), no voice. It
+  keys it again `renew_s` (840) after the last call keyed on it here.
+- A talkgroup no radio wants any more, with no call on it here for `unlink_s` (120): the site keys TG 4000 on its
+  slot. Homebrew has no way to drop one talkgroup: 4000 drops every dynamic talkgroup on that slot, so the slot's
+  others still wanted are keyed again. (A per-stream "stop sending" exists only on OpenBridge, not Homebrew.)
+
+**Radios (`announce`, on by default).** The master routes a private call to the login where the called ID was last
+heard, and a Tier III radio that has only registered was never heard there. So a radio that registers is keyed from
+its ID on TG 9 (the repeater's own, carried nowhere), headers and a terminator, once each `renew_s`.
+
+**Status.** `rdof_t3unit_bm_json`: up, calls up and down, no slot, duplicates, not carried, key-ups heard, data
+dropped, setups answered, activations, unlinks, and the talkgroups on each slot.
+
+Not built: packet data and short data through the master; ALS; a radio's late entry onto a slot whose talkgroup is
+already keyed. Tests: `host-tests/e2e_t3_bm.sh` (two sites on fakebm), `e2e_t3_bm_mqtt.sh` (both networks).
+
 ## 6. Failure and isolation
 
 ### 6.1 What each failure costs

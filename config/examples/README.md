@@ -52,6 +52,7 @@ once takes any of them:
 |---|---|---|
 | `ham-tier3-site-standalone.json` | a PlutoSDR, 1 carrier | none |
 | `ham-tier3-site-linked.json` | a PlutoSDR, 2 carriers (`tx.carriers: 2`) | the MQTT network, to the operator's other sites |
+| `ham-tier3-site-brandmeister.json` | a PlutoSDR, 2 carriers | BrandMeister: the site is one repeater there |
 
 | Key | Value | Why |
 |---|---|---|
@@ -64,11 +65,16 @@ once takes any of them:
 | `registration`, `auth` | `open`, `off` | Any licensed ham registers; no keys |
 | `ms`, `private`, `tg` | `*` | Every radio, private call and talkgroup |
 | `wide_tg` (linked) | `1-16776415` | Every BrandMeister talkgroup number is carried between the operator's sites |
+| `wide_tg` (BrandMeister) | `1-8,10-3999,4001-16776415` | Every talkgroup but 9 (the repeater's own) and 4000 (the site keys it) |
 | `static_tg` (linked) | `3100` | An example: a talkgroup the site always carries |
 
-- Radios use their own DMR IDs and BrandMeister talkgroup numbers. The site links over the MQTT network only
-  (`calls`, `format: v3`; [mqtt-net.md](../../docs/spec/fw/mqtt-net.md)), not to BrandMeister, so those talkgroups
-  travel between one operator's sites. Set `host` to your broker.
+- Radios use their own DMR IDs and BrandMeister talkgroup numbers. The linked site links over the MQTT network
+  (`calls`, `format: v3`; [mqtt-net.md](../../docs/spec/fw/mqtt-net.md)), so those talkgroups travel between one
+  operator's sites. Set `host` to your broker.
+- The BrandMeister site logs in as one repeater ([tier3.md](../../docs/spec/fw/tier3.md) §5.11): `peer_ids` names the
+  `tier3` app. A talkgroup a radio registers to is keyed there so BrandMeister carries it, and TG 4000 drops it once
+  no radio wants it; each talkgroup keeps one of the login's two slots (`ts1_tg` / `ts2_tg` pin some), so two
+  calls at a time go through. A site can have both networks: a call that comes both ways plays once.
 - The site grants channels by logical number and broadcasts each one's frequencies (Chan_Freq): a radio that learns
   the plan from those needs none programmed. Grants with absolute frequencies aren't done yet.
 - Neither file has a `bench` section.

@@ -65,6 +65,22 @@ typedef struct {
     char host[64], user[32], pass[64], root[32];
     int port;
     bool tls;
+    /* a brandmeister or homebrew network (tier3.md 5.11): the site's own login, -1 none */
+    int bm;
+    uint32_t bm_peer;       /* its ID (peer_ids, under the app's name) */
+    bool bm_dl5di;          /* brandmeister: the 2015 specification's dialect; homebrew: HBlink's */
+    char bm_host[64], bm_pass[64], bm_location[21], bm_description[20], bm_url[125], callsign[12];
+    int bm_port;
+    bool bm_activate;       /* key the talkgroups the site's radios register to (default true) */
+    double bm_renew_s;      /* key them again after this long with none keyed here (0: never; default 840) */
+    bool bm_announce;       /* key a radio that registers on TG 9 from its ID (default true) */
+    double bm_unlink_s;     /* TG 4000 this long after the last call on a talkgroup no radio wants (default 120) */
+    uint32_t bm_pin_tg[32]; /* ts1_tg, ts2_tg: talkgroups that always go on that slot of the login */
+    uint8_t bm_pin_slot[32];
+    int bm_npin;
+    bool has_location;
+    double latitude, longitude;
+    int height_m;
     /* "standby" (tier3.md 6.2): two boxes with these settings, one on the air; it waits while the node is online
        and takes over takeover_s after its will; the active one stops when its broker is gone fence_s while a
        standby is there */

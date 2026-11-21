@@ -72,6 +72,8 @@ typedef struct {
     /* Packet data the site is a party to (tier3.md 3.16): each burst of it heard on payload channel ch (dt 6 a data
      * header, 7, 8 or 10 a block; BS sync), for the IP gateway. NULL: none taken. */
     void (*data)(void *ctx, int ch, int dt, const uint8_t burst[RDOF_BURST_BYTES], uint32_t src, uint32_t dst);
+    /* A DMRD packet (HBlink's 55 bytes) for the site's BrandMeister login (rdof_t3unit_bm). NULL: none. */
+    void (*dmrd)(void *ctx, const uint8_t *pkt, size_t len);
 } rdof_t3unit_io_t;
 
 /* counters */
@@ -133,6 +135,23 @@ void rdof_t3unit_message(rdof_t3unit_t *u, const char *topic, const void *data, 
 void rdof_t3unit_link(rdof_t3unit_t *u, bool up);
 /* Timers: the network's streams and uplinks, status every RDOF_T3UNIT_STATUS_S. now_ms: the wall clock. */
 void rdof_t3unit_tick(rdof_t3unit_t *u, int64_t now_ms);
+
+/* The site's own BrandMeister login (tier3.md 5.11), one repeater of two slots: the site's wide calls go up as DMRD
+ * (io.dmrd), the master's calls for talkgroups the site carries come down (rdof_t3unit_bm_dmrd). peer_id: the
+ * login's. mqtt: an MQTT network too (a private call's setup waits for it first). activate: key a talkgroup a radio
+ * registers to so the master carries it, TG 4000 when none wants it and none called on it for unlink_s; renew_s: key
+ * it again after that long with nothing keyed on it here (0 never). announce: a radio that registers is keyed from
+ * its ID on TG 9 (the repeater's own) so the master routes its private calls here. After rdof_t3unit_init. */
+void rdof_t3unit_bm(rdof_t3unit_t *u, uint32_t peer_id, bool mqtt, bool activate, int renew_s, int unlink_s,
+                    bool announce);
+/* Talkgroup tg always goes up on slot (1, 2) of the login; 0 unpins it. False: no room (16). After rdof_t3unit_bm. */
+bool rdof_t3unit_bm_pin(rdof_t3unit_t *u, uint32_t tg, int slot);
+/* The login came up (logged in) or went down. Call rdof_t3unit_link too with whether any network is up. */
+void rdof_t3unit_bm_link(rdof_t3unit_t *u, bool up);
+/* A DMRD packet from the master (HBlink's form). */
+void rdof_t3unit_bm_dmrd(rdof_t3unit_t *u, const uint8_t *pkt, size_t len);
+/* The login's status: {"up", counters, "tgs": [{"tg", "slot", "keyed_s", "heard_s"}]}. */
+size_t rdof_t3unit_bm_json(const rdof_t3unit_t *u, char *out, size_t cap);
 
 /* Provisioning (rdof_t3unit_mc) over the settings again, into the controller: after loading the cache. False with the
    reason logged (the controller keeps what it had). */

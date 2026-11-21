@@ -182,6 +182,53 @@ static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char 
         }
         t->tls = (ti >= 0 && rdof_jnode(d, ti)->type == RDOF_JBOOL && rdof_jnode(d, ti)->b) || s->net[t->net].transport == RDOF_MQTT_TLS;
     }
+    /* the site's own login to a BrandMeister or Homebrew master (tier3.md 5.11) */
+    t->bm = -1;
+    for (int k = 0; k < s->nnet; k++)
+        if (s->net[k].type == RDOF_NET_HBLINK && s->net[k].login && t->path >= 0 && s->path[t->path].pol.net == k)
+            t->bm = k;
+    if (t->bm >= 0) {
+        const rdof_jdoc_t *d = rdof_plan_doc(p);
+        const int m = rdof_plan_net_node(p, t->bm);
+        const rdof_net3_t *n = &s->net[t->bm];
+        t->bm_peer = s->path[t->path].peer_id;
+        t->bm_dl5di = !n->homebrew;
+        str_key(d, m, "host", "", t->bm_host, sizeof t->bm_host);
+        str_key(d, m, "password", "", t->bm_pass, sizeof t->bm_pass);
+        str_key(d, m, "location", "", t->bm_location, sizeof t->bm_location);
+        str_key(d, m, "description", "", t->bm_description, sizeof t->bm_description);
+        str_key(d, m, "url", "", t->bm_url, sizeof t->bm_url);
+        str_key(d, 0 /* the root */, "callsign", "", t->callsign, sizeof t->callsign);
+        const int pi = m >= 0 ? rdof_jget(d, m, "port") : -1, ai = m >= 0 ? rdof_jget(d, m, "activate") : -1,
+                  ri = m >= 0 ? rdof_jget(d, m, "renew_s") : -1;
+        t->bm_port = pi >= 0 && rdof_jnode(d, pi)->type == RDOF_JNUM ? (int)rdof_jnode(d, pi)->num
+                                                                     : (t->bm_dl5di ? 62030 : 62031);
+        t->bm_activate = ai < 0 || rdof_jnode(d, ai)->b;
+        t->bm_renew_s = ri >= 0 && rdof_jnode(d, ri)->type == RDOF_JNUM ? rdof_jnode(d, ri)->num : 840;
+        const int ni = m >= 0 ? rdof_jget(d, m, "announce") : -1;
+        t->bm_announce = ni < 0 || rdof_jnode(d, ni)->b;
+        const int ui = m >= 0 ? rdof_jget(d, m, "unlink_s") : -1;
+        t->bm_unlink_s = ui >= 0 && rdof_jnode(d, ui)->type == RDOF_JNUM ? rdof_jnode(d, ui)->num : 120;
+        t->bm_npin = 0;
+        for (int sl = 1; sl <= 2 && m >= 0; sl++) {
+            const int ai = rdof_jget(d, m, sl == 1 ? "ts1_tg" : "ts2_tg");
+            for (int k = 0; ai >= 0 && k < rdof_jnode(d, ai)->count && t->bm_npin < 32; k++) {
+                const int vi = rdof_jat(d, ai, k);
+                if (vi >= 0 && rdof_jnode(d, vi)->type == RDOF_JNUM)
+                    t->bm_pin_tg[t->bm_npin] = (uint32_t)rdof_jnode(d, vi)->num, t->bm_pin_slot[t->bm_npin++] = sl;
+            }
+        }
+        const int li = rdof_jget(d, 0 /* the root */, "location");
+        t->has_location = li >= 0 && rdof_jnode(d, li)->type == RDOF_JOBJ;
+        if (t->has_location) {
+            int la = rdof_jget(d, li, "latitude"), lo = rdof_jget(d, li, "longitude");
+            const int h = rdof_jget(d, li, "height");
+            la = la >= 0 ? la : rdof_jget(d, li, "lat"), lo = lo >= 0 ? lo : rdof_jget(d, li, "lon");
+            t->latitude = la >= 0 && rdof_jnode(d, la)->type == RDOF_JNUM ? rdof_jnode(d, la)->num : 0;
+            t->longitude = lo >= 0 && rdof_jnode(d, lo)->type == RDOF_JNUM ? rdof_jnode(d, lo)->num : 0;
+            t->height_m = h >= 0 && rdof_jnode(d, h)->type == RDOF_JNUM ? (int)rdof_jnode(d, h)->num : 0;
+        }
+    }
     /* "standby": true or {"takeover_s", "fence_s"} (tier3.md 6.2) */
     t->standby = false, t->takeover_s = 13, t->fence_s = 9;
     {

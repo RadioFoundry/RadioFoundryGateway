@@ -603,7 +603,18 @@ required: each login's `RPTC` carries it, and BrandMeister checks it against the
 
 `RPTC` takes the rest from the path: its frequencies, color code, slots (`'4'` simplex, `'3'` a repeater), the
 transmitter's power in dBm off the device's power map, and the top-level `location`'s coordinates and height. A
-simplex login sends its calls up on slot 2. A device that transmits on a frequency of the network transmits on that
+simplex login sends its calls up on slot 2.
+
+A trunked site (a `tier3` app named in `peer_ids`) logs in as one repeater, the TSCC carrier's frequencies
+([tier3.md](tier3.md) §5.11). These keys are for it:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `activate` | bool | true | key each talkgroup the site's radios register to (in `wide_tg`) so the master carries it, and TG 4000 on a slot once none wants its talkgroups |
+| `renew_s` | number, 0..3600 | 840 | key a wanted talkgroup again this long after the last call keyed on it here (0: never) |
+| `unlink_s` | number, 0..3600 | 120 | TG 4000 this long after the last call on a talkgroup no radio wants |
+| `announce` | bool | true | key a radio that registers from its ID on TG 9, so the master routes its private calls here |
+| `ts1_tg`, `ts2_tg` | [int], ≤ 16 | | talkgroups that always go on that slot of the login (the rest: the slot they were keyed or heard on, else the less used one) | A device that transmits on a frequency of the network transmits on that
 one only (no roaming transceiver). `GET /api/config` shows the password, as it does MQTT's.
 
 ### 7.4 `homebrew`

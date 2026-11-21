@@ -35,6 +35,9 @@ use crate::t3site::{
 use crate::text::{c_bytes, c_out, Out};
 use crate::tracker::{RdofBurst, RdofFrame};
 
+#[path = "t3bm.rs"]
+mod t3bm;
+
 const CARRIERS: usize = t3::CARRIERS;
 const CHANNELS: usize = t3::CHANNELS;
 pub const RING: usize = 16;
@@ -131,6 +134,8 @@ pub struct Io {
     /// or 10 a block; BS sync). NULL: none taken.
     pub data:
         Option<unsafe extern "C" fn(ctx: *mut c_void, ch: c_int, dt: c_int, burst: *const u8, src: u32, dst: u32)>,
+    /// A DMRD packet (HBlink's 55 bytes) for the site's BrandMeister login (rdof_t3unit_bm). NULL: none.
+    pub dmrd: Option<unsafe extern "C" fn(ctx: *mut c_void, pkt: *const u8, len: usize)>,
 }
 
 /// rdof_t3unit_counts_t
@@ -579,6 +584,7 @@ struct Stream {
     mapped: bool,
     group: bool,
     ended: bool,
+    bm: bool, // from the BrandMeister login, not the MQTT network
     stream: u32,
     src: u32,
     dst: u32,
@@ -651,6 +657,8 @@ pub struct Unit {
     pdnet: PdNet,
     relay_rx: [t3::DataRx; CHANNELS],
     pd_from: [(u32, [u8; NODE_MAX + 1]); HELD],
+    // the site's own BrandMeister login (t3bm.rs)
+    bm: t3bm::Bm,
 }
 
 /// A packet the site sends (rdof_t3unit_data_tx): held until its channel opens, then fed to its queue.
@@ -1151,6 +1159,15 @@ unsafe fn stream_find(u: *const Unit, id: u32) -> Option<usize> {
     (0..STREAMS).find(|&i| (*u).st[i].used && (*u).st[i].stream == id)
 }
 
+/// A live stream of the same call (source, destination) from the other network: BrandMeister and the MQTT network
+/// both carry a talkgroup the site's peers key there.
+unsafe fn stream_twin(u: *const Unit, b: &RdofNetBurst, bm: bool) -> bool {
+    (0..STREAMS).any(|i| {
+        let s = &(*u).st[i];
+        s.used && !s.ended && s.bm != bm && s.src == b.src && s.dst == b.dst && s.group == b.group
+    })
+}
+
 unsafe fn stream_feed(u: *mut Unit, i: usize, f: &RdofFrame) {
     let s = addr_of_mut!((*u).st[i]);
     if (*s).mapped {
@@ -1244,6 +1261,7 @@ unsafe fn drain(u: *mut Unit) {
                 }
                 if usize::from(e.ch) < CHANNELS {
                     (*u).ch_flags[usize::from(e.ch)] = 0;
+                    t3bm::bm_ch_closed(u, usize::from(e.ch));
                 }
                 for i in 0..STREAMS {
                     let s = addr_of_mut!((*u).st[i]);
@@ -1254,7 +1272,10 @@ unsafe fn drain(u: *mut Unit) {
                 }
             }
             t3::EV_CH_STREAM => stream_map(u, e.stream, c_int::from(e.ch)),
-            t3::EV_NET_SETUP => setup_out(u, &e),
+            t3::EV_NET_SETUP => {
+                setup_out(u, &e);
+                t3bm::bm_setup_out(u, &e);
+            }
             t3::EV_NET_SD => sdata_out(u, &e),
             t3::EV_SD => sdata_here(u, &e),
             t3::EV_PD => {
@@ -1262,7 +1283,10 @@ unsafe fn drain(u: *mut Unit) {
                 (*u).pdnet.event(&e, (*u).now_ms);
             }
             t3::EV_NET_SUBS => subs = true,
-            t3::EV_RECORD => record_out(u, e.src, e.why == 1),
+            t3::EV_RECORD => {
+                record_out(u, e.src, e.why == 1);
+                t3bm::bm_record(u, e.src, e.why == 1);
+            }
             t3::EV_ACTIVITY => {
                 let c = rdof_t3rf_channel(rf(u), c_int::from(e.ch));
                 if e.kind == t3::ACT_GRANT && !c.is_null() && (*c).open {
@@ -1382,8 +1406,14 @@ unsafe extern "C" fn io_uplink(ctx: *mut c_void, ch: c_int, f: *const RdofFrame)
         return;
     }
     let c = ch / 2;
-    if (*u).net && (0..CARRIERS as c_int).contains(&c) {
+    if (*u).net && (*u).bm.mqtt_up() && (0..CARRIERS as c_int).contains(&c) {
         rdof_mn_up_frame((*u).up[c as usize], f, wall_s(u));
+    }
+    if (0..CHANNELS as c_int).contains(&ch) {
+        let fl = (*u).ch_flags[ch as usize];
+        if fl & (t3::F_WIDE | t3::F_PRIVATE_NET) != 0 && fl & t3::F_ALLCALL == 0 {
+            t3bm::bm_frame(u, ch as usize, &*f);
+        }
     }
 }
 
@@ -1978,8 +2008,11 @@ unsafe extern "C" fn down_burst(
     flags: u8,
     _from: *const c_char,
 ) {
-    let u: *mut Unit = ctx.cast();
-    let b = &*b;
+    net_burst_in(ctx.cast(), &*b, flags, false);
+}
+
+/// A burst of a network call, from the MQTT network or the BrandMeister login (bm).
+unsafe fn net_burst_in(u: *mut Unit, b: &RdofNetBurst, flags: u8, bm: bool) {
     let id = u32::from_be_bytes(b.stream_id);
     let mut f: RdofFrame = core::mem::zeroed();
     rdof_control_to_dt(b.control, &mut f.dt, &mut f.n);
@@ -1990,7 +2023,19 @@ unsafe extern "C" fn down_burst(
     f.dst = b.dst;
     f.group = b.group;
     (*u).n.net_in += 1;
-    let Some(i) = stream_find(u, id).or_else(|| stream_new(u, b, id, flags)) else { return };
+    let i = match stream_find(u, id) {
+        Some(i) => i,
+        None if t3bm::bm_is_twin(u, id) => return,
+        None if stream_twin(u, b, bm) => {
+            t3bm::bm_twin(u, id, b, bm);
+            return;
+        }
+        None => {
+            let Some(i) = stream_new(u, b, id, flags) else { return };
+            (*u).st[i].bm = bm;
+            i
+        }
+    };
     (*u).st[i].last_ms = (*u).now_ms;
     if !(*u).st[i].ended {
         stream_feed(u, i, &f);
@@ -2019,6 +2064,9 @@ unsafe extern "C" fn down_setup(ctx: *mut c_void, h: *const MnHdr, s: *const MnS
         r#ref: s.r#ref,
     };
     (*u).n.setups_in += 1;
+    if ans && t3bm::bm_setup_in(u, s.op, s.reason, s.r#ref) {
+        return; // not found on the MQTT network: BrandMeister is asked
+    }
     t3::rdof_t3_net_setup((*u).site, &m, (*u).now_ms);
     drain(u);
 }
@@ -2725,6 +2773,7 @@ pub unsafe extern "C" fn rdof_t3unit_tick(u: *mut Unit, now_ms: i64) {
         }
     }
     drain(u);
+    t3bm::bm_tick(u);
     if (*u).connected && now_ms - (*u).status_ms >= STATUS_S * 1000 {
         publish_status(u);
     }

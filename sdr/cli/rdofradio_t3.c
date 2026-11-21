@@ -18,6 +18,8 @@
 #include <unistd.h>
 
 #include "rdof/duplex.h"
+#include "rdof/hblink.h"
+#include "rdof/hbpeer.h"
 #include "rdof/mmdvm.h"
 #include "rdof/mnctl.h"
 #include "rdof/mqttnet.h"
@@ -34,6 +36,7 @@
 #ifdef RDOF_MQTT
 #include "rdofradio_ipgw.h"
 #include "rdofradio_mqtt.h"
+#include "rdofradio_net.h"
 #endif
 #include "rdofradio_serial.h"
 #include "rdofradio_simext.h"
@@ -65,6 +68,9 @@ static struct {
     char hold_topic[128], sb_topic[128];
     int64_t hold_next, sb_last;
     bool sb_seen, fenced;
+    /* the site's own BrandMeister (or Homebrew) login (tier3.md 5.11) */
+    bool bm_on, bm_up;
+    rdofnet_peer_t bm;
 } T = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
 /* messages from libmosquitto's thread, taken by the loop */
@@ -130,6 +136,23 @@ static void io_subscribe(void *ctx, const char *const *f, int n)
         all[m++] = T.sb_topic, all[m++] = T.hold_topic;
     rdofmq_subscribe(T.mq, all, m);
 #endif
+}
+
+static void io_dmrd(void *ctx, const uint8_t *pkt, size_t len)
+{
+    if (T.bm_on)
+        rdofnet_peer_send(&T.bm, pkt, len);
+}
+
+static void bm_packet(void *ctx, const uint8_t *d, size_t n)
+{
+    if (n >= 4 && !memcmp(d, "DMRD", 4))
+        rdof_t3unit_bm_dmrd(T.u, d, n);
+}
+
+static void bm_say(const char *line)
+{
+    tsay("%s%s", strncmp(line, "brandmeister: ", 14) ? "brandmeister: " : "", line);
 }
 
 /* the site's own lines (C_RAND timing, C_MOVE, commands, data): a few a minute, so always; -v adds the bursts */
@@ -301,16 +324,18 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
         T.rng = 1;
     const rdofradio_t3_cfg_t *t = &c->t;
     snprintf(T.node, sizeof T.node, "%s", c->site.name);
-    T.net = t->net >= 0;
+    bool mq = t->net >= 0; /* an MQTT network; the unit's network side runs for a BrandMeister login alone too */
+    T.net = mq || t->bm >= 0;
     if (T.net && !rdof_mn_node_ok(T.node)) {
         tsay("the box's name \"%s\" can't be a node (letters, digits, . _ -, at most 39): the site runs alone",
              T.node);
-        T.net = false;
+        T.net = mq = false;
     }
 #ifndef RDOF_MQTT
-    if (T.net)
-        tsay("rdofradio was built without libmosquitto (RDOF_MQTT): the site runs alone");
-    T.net = false;
+    if (mq)
+        tsay("rdofradio was built without libmosquitto (RDOF_MQTT): no MQTT network");
+    mq = false;
+    T.net = T.net && t->bm >= 0;
 #endif
     T.u = calloc(1, rdof_t3unit_size());
     T.site_mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
@@ -318,16 +343,38 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
         snprintf(err, cap, "no memory");
         return false;
     }
-    const rdof_t3unit_io_t io = {io_publish, io_subscribe, io_log, io_cache, io_rand, NULL, io_data};
-    if (!rdof_t3unit_init(T.u, T.site_mem, &t->cfg, &t->pol, &io, T.net ? t->root : NULL, T.net ? T.node : NULL,
-                             t->path, "rdofradio " RDOF_VERSION, err, cap))
+    const rdof_t3unit_io_t io = {io_publish, io_subscribe, io_log, io_cache, io_rand, NULL, io_data, io_dmrd};
+    if (!rdof_t3unit_init(T.u, T.site_mem, &t->cfg, &t->pol, &io, T.net ? (mq ? t->root : "DMR") : NULL,
+                             T.net ? T.node : NULL, t->path, "rdofradio " RDOF_VERSION, err, cap))
         return false;
+    if (T.net && t->bm >= 0) {
+        rdof_t3unit_bm(T.u, t->bm_peer, mq, t->bm_activate, (int)t->bm_renew_s, (int)t->bm_unlink_s,
+                       t->bm_announce);
+        for (int i = 0; i < t->bm_npin; i++)
+            rdof_t3unit_bm_pin(T.u, t->bm_pin_tg[i], t->bm_pin_slot[i]);
+        rdofnet_peer_init(&T.bm, t->bm_host, t->bm_port, t->bm_peer, RDOF_HB_KEEPALIVE_SECONDS, t->name);
+        T.bm.on_packet = bm_packet;
+        T.bm.say = bm_say;
+        rdofnet_peer_set_login(&T.bm, t->bm_pass, t->bm_location, t->bm_description, t->bm_url);
+        rdofnet_peer_set_dl5di(&T.bm, t->bm_dl5di);
+        const rdof_location_t loc = {t->latitude, t->longitude, t->height_m};
+        const int power = isnan(c->tx_power_dbm) ? 0 : (int)c->tx_power_dbm;
+        uint8_t pkt[RDOF_DMRC_MAX];
+        /* one repeater of two slots: the TSCC carrier's frequencies (the master shows them) */
+        const size_t n = rdof_dmrc_packet(t->bm_peer, t->callsign, t->car[0].rx_hz, t->car[0].tx_hz, t->cfg.cc, '3',
+                                          power < 0 ? 0 : power, RDOF_VERSION, "RadioFoundry Gateway",
+                                          t->has_location ? &loc : NULL, NULL, NULL, pkt);
+        rdofnet_peer_set_config(&T.bm, pkt, n, (double)mono_ms() / 1000.0);
+        T.bm_on = true;
+        tsay("brandmeister: peer %u to %s:%d%s", (unsigned)t->bm_peer, t->bm_host, t->bm_port,
+             t->bm_activate ? ", talkgroups keyed as radios register" : "");
+    }
     rdof_t3unit_set_now(T.u, wall_ms());
     cache_load();
     if (c->has_ipgw && c->ipgw.on && !rdofgw_on() && !rdofgw_start(&c->ipgw, t3_gw_send, NULL))
         tsay("ip gateway: no memory: packet data to the site goes unanswered");
 #ifdef RDOF_MQTT
-    if (T.net) {
+    if (mq) {
         static char id[64];
         rdof_mn_node_topic(T.online, sizeof T.online, t->root, T.node, "online");
         rdof_mn_node_topic(T.info, sizeof T.info, t->root, T.node, "info");
@@ -557,10 +604,20 @@ static void poll_locked(int64_t now_ms)
             rdof_t3unit_link(T.u, true);
         } else if (T.up && !rdofmq_up(T.mq)) {
             T.up = false;
-            rdof_t3unit_link(T.u, false);
+            rdof_t3unit_link(T.u, T.bm_up);
         }
     }
 #endif
+    if (T.bm_on) {
+        rdofnet_peer_poll(&T.bm, (double)mono_ms() / 1000.0);
+        const bool up = T.bm.sock >= 0 && rdof_hb_peer_may_send(&T.bm.peer);
+        if (up != T.bm_up) {
+            T.bm_up = up;
+            rdof_t3unit_bm_link(T.u, up);
+            if (up != T.up)
+                rdof_t3unit_link(T.u, up); /* the network is up while either is */
+        }
+    }
     standby_tick();
     rdof_t3unit_tick(T.u, now_ms);
     gw_drain();
@@ -568,6 +625,10 @@ static void poll_locked(int64_t now_ms)
 
 static void stop_common(void)
 {
+    if (T.bm_on) {
+        rdofnet_peer_close(&T.bm); /* RPTCL */
+        T.bm_on = false;
+    }
 #ifdef RDOF_MQTT
     if (T.mq) {
         rdofmq_stop(T.mq); /* online 0 */

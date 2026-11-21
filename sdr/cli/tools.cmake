@@ -220,6 +220,10 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
         add_test(NAME rdofradio_e2e_t3_hat COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_hat.sh
                  $<TARGET_FILE_DIR:rdofradio>)
         set_tests_properties(rdofradio_e2e_t3_hat PROPERTIES TIMEOUT 60)
+        # no RF: two sites, each its own login to fakebm (tier3.md 5.11): calls across, talkgroups keyed and dropped
+        add_test(NAME rdofradio_e2e_t3_bm COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_bm.sh
+                 $<TARGET_FILE_DIR:rdofradio> 47015)
+        set_tests_properties(rdofradio_e2e_t3_bm PROPERTIES TIMEOUT 90)
     endif()
     # no RF: two boxes, each on a fakemodem, joined by the MQTT network (format v3) through a broker on this host
     find_program(MOSQUITTO_BROKER mosquitto HINTS /usr/sbin /usr/local/sbin /opt/homebrew/sbin)
@@ -232,6 +236,11 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
             add_test(NAME rdofradio_e2e_t3_standby COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_standby.sh
                      $<TARGET_FILE_DIR:rdofradio> ${MOSQUITTO_BROKER} 18874)
             set_tests_properties(rdofradio_e2e_t3_standby PROPERTIES TIMEOUT 120)
+            # no RF: two sites on the MQTT network and each logged in to fakebm: a call plays once, setups go first
+            # to the MQTT network
+            add_test(NAME rdofradio_e2e_t3_bm_mqtt COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_bm_mqtt.sh
+                     $<TARGET_FILE_DIR:rdofradio> ${MOSQUITTO_BROKER} 18875 47016)
+            set_tests_properties(rdofradio_e2e_t3_bm_mqtt PROPERTIES TIMEOUT 90)
         endif()
     else()
         message(STATUS "no mosquitto broker (or rdofradio without MQTT): the MQTT network's end-to-end test is off")

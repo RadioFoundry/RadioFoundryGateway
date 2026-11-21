@@ -590,7 +590,13 @@
         "peer_ids": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 4294967295}},
         "location": {"type": "string", "maxLength": 20},
         "description": {"type": "string", "maxLength": 19},
-        "url": {"type": "string", "maxLength": 124}
+        "url": {"type": "string", "maxLength": 124},
+        "activate": {"type": "boolean", "description": "A trunked site's login (peer_ids under the tier3 app's name): key each talkgroup its radios register to so the master carries it, and TG 4000 on a slot once none wants its talkgroups (default true; docs/spec/fw/tier3.md 5.11)."},
+        "renew_s": {"type": "number", "minimum": 0, "maximum": 3600, "description": "A trunked site's login: key a wanted talkgroup again after this long with nothing keyed on it there (default 840; 0 never)."},
+        "unlink_s": {"type": "number", "minimum": 0, "maximum": 3600, "description": "A trunked site's login: TG 4000 this long after the last call on a talkgroup no radio wants (default 120)."},
+        "announce": {"type": "boolean", "description": "A trunked site's login: a radio that registers is keyed from its ID on TG 9 so the master routes its private calls there (default true)."},
+        "ts1_tg": {"type": "array", "maxItems": 16, "items": {"type": "integer", "minimum": 1, "maximum": 16777215}, "description": "A trunked site's login: talkgroups that always go on its slot 1."},
+        "ts2_tg": {"type": "array", "maxItems": 16, "items": {"type": "integer", "minimum": 1, "maximum": 16777215}, "description": "A trunked site's login: talkgroups that always go on its slot 2."}
       }
     },
     "mqtt3": {

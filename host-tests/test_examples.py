@@ -6,7 +6,7 @@ place of its devices (fakemodem's pty for an MMDVM modem, --sim-sdr for the RTL-
 fakebm for BrandMeister). Each one's clock is netclock from the public servers, its bench takes transmit jobs in the
 amateur bands and refuses one outside them, a key-up past max_key_s, and receives where it physically can; the
 standalone MMDVM ones play a call to the parrot back, the BrandMeister one logs in, carries every talkgroup up and
-puts BrandMeister's echo back on air. Run by ctest; arguments: rdofradio, fakemodem, fakebm, config/examples."""
+puts BrandMeister's echo back on air, the Tier III one logs in as its site. Run by ctest; arguments: rdofradio, fakemodem, fakebm, config/examples."""
 import json
 import os
 import re
@@ -292,8 +292,46 @@ def bm(tg_all):
         shutil.rmtree(d, ignore_errors=True)
 
 
+# ── a Tier III site on BrandMeister (a PlutoSDR of two carriers, --file in its place), against fakebm ──
+def bm_tier3():
+    name = "ham-tier3-site-brandmeister.json"
+    port = 62081
+    d = tempfile.mkdtemp(prefix="rdof-ext3-")
+    log = os.path.join(d, "bm.log")
+    master = subprocess.Popen([FAKEBM, "--port", str(port), "--password", "pw1", "--ids", "980010501", "--log", log],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def edit(t):
+        t = t.replace("3102.master.brandmeister.network\"", f"127.0.0.1\", \"port\": {port}")
+        return t.replace("your-hotspot-password", "pw1")
+
+    empty = os.path.join(d, "rx.cf32")
+    open(empty, "w").close()
+    try:
+        b = Box(name, sdr=("--file", empty + ",/dev/null"), edit=edit)
+    except AssertionError as e:
+        if "built without it" in str(e):   # rdofradio without RDOF_TIER3: no trunked site to run
+            print("skip", name, "(no RDOF_TIER3)")
+            master.terminate()
+            master.wait(5)
+            shutil.rmtree(d, ignore_errors=True)
+            return
+        raise
+    try:
+        check("clock: netclock from " + SERVERS in read(b.err), f"{name}: the clock: {read(b.err)[:600]}")
+        check(wait_for(lambda: "RPTC 980010501: up: N0CALL rx 447012500 tx 442012500 cc 01 slots 3" in read(log), 10),
+              f"{name}: the login: {read(log)[-600:]}")
+        check(wait_for(lambda: "tier3: brandmeister: logged in" in read(b.err), 5), f"{name}: {read(b.err)[-600:]}")
+    finally:
+        b.stop()
+        master.terminate()
+        master.wait(5)
+        shutil.rmtree(d, ignore_errors=True)
+
+
 bm(True)
 bm(False)
+bm_tier3()
 
 print(f"{checks} checks, {failures} failures")
 sys.exit(1 if failures else 0)

@@ -181,6 +181,9 @@ Two simplex frequencies and a repeater, each its own login:
 
 Later (§6.9): `api_key`, to set a path's static TGs from its `tg` policy.
 
+A trunked site logs in too, as one repeater whose two slots its payload channels share, keying talkgroups as its
+radios register and TG 4000 when none wants them: [tier3.md](tier3.md) §5.11.
+
 ## 5. What is already in place
 
 - `DMRD` packing and parsing, stream ids per call and per data header, BER / RSSI bytes (`hblink.c`).

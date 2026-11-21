@@ -29,6 +29,10 @@
  *     radio's (a preamble CSBK or a data header) starts within 1 s of it (brandmeister.md §7);
  *   - a group call goes to every other login that keyed the same TG in the last 15 minutes (BrandMeister's dynamic
  *     talkgroup and its default timer): a repeater's on the slot it keyed it on, a simplex hotspot's on slot 2;
+ *   - a group call to TG 4000 drops every dynamic talkgroup of that login on its slot (and goes nowhere); one to
+ *     TG 9 goes nowhere (the repeater's own);
+ *   - a private call (but to 9990 and the SMS service) goes to the login that last heard the called ID, on the slot
+ *     it was heard on;
  *   - every packet is logged one line each (stdout, and --log).
  * Each peer's DMRD down carry its own peer ID. Single threaded; POSIX sockets.
  */
@@ -61,7 +65,10 @@
 #define SMS_ID 262993u
 #define PARROT_ID 9990u
 #define TMS_PORT 4007
-#define DYN_TGS 4
+#define DYN_TGS 16
+#define HEARD 32
+#define UNLINK_TG 4000u
+#define LOCAL_TG 9u
 #define DYN_S 900.0 /* BrandMeister's default dynamic talkgroup timer: 15 minutes */
 
 enum { ST_FREE = 0, ST_SALTED, ST_AUTHED, ST_UP };
@@ -81,7 +88,13 @@ typedef struct {
         int slot;
         double at;
     } dyn[DYN_TGS]; /* the TGs keyed here: dynamic subscriptions */
+    struct {
+        uint32_t id;
+        int slot;
+        double at;
+    } heard[HEARD];     /* the sources heard here: where a private call to them goes */
     uint32_t relay_sid; /* the last stream relayed here, for its log line */
+    uint32_t unlink_sid; /* the last TG 4000 stream taken */
     int preambles[3];   /* per slot: preamble CSBKs to the SMS service since its last data header */
     bool ignoring[3];   /* per slot: the packet under way came after too few: its blocks are dropped */
     struct {
@@ -372,6 +385,22 @@ static const char *dt_name(int dt)
 }
 
 static void relay_group(peer_t *from, const uint8_t *d, size_t n, const rdof_net_burst_t *b, double now);
+static void relay_private(peer_t *from, const uint8_t *d, size_t n, const rdof_net_burst_t *b, double now);
+
+/* Source id was heard on this login's slot. */
+static void heard(peer_t *p, uint32_t id, int slot, double now)
+{
+    int k = 0;
+    for (int i = 0; i < HEARD; i++) {
+        if (p->heard[i].id == id) {
+            k = i;
+            break;
+        }
+        if (p->heard[i].at < p->heard[k].at)
+            k = i;
+    }
+    p->heard[k].id = id, p->heard[k].slot = slot, p->heard[k].at = now;
+}
 
 static void dmrd_up(peer_t *p, const uint8_t *d, size_t n, double now)
 {
@@ -392,8 +421,23 @@ static void dmrd_up(peer_t *p, const uint8_t *d, size_t n, double now)
         F.parrot_peer = p;
         rdof_parrot_heard(&F.parrot, b.slot, b.control, b.burst, now);
     }
-    if (b.group)
+    heard(p, b.src, b.slot, now);
+    if (b.group && b.dst == UNLINK_TG) {
+        if (sid != p->unlink_sid) {
+            p->unlink_sid = sid;
+            int dropped = 0;
+            for (int i = 0; i < DYN_TGS; i++)
+                if (p->dyn[i].tg && p->dyn[i].slot == b.slot) {
+                    p->dyn[i].tg = 0, p->dyn[i].at = 0;
+                    dropped++;
+                }
+            say("unlink: peer %u s%d: %d dynamic TGs dropped", (unsigned)p->id, b.slot, dropped);
+        }
+    } else if (b.group && b.dst != LOCAL_TG) { /* TG 9: the repeater's own, nowhere else */
         relay_group(p, d, n, &b, now);
+    } else if (b.dst != PARROT_ID && b.dst != SMS_ID) {
+        relay_private(p, d, n, &b, now);
+    }
     if (b.dst == SMS_ID && !b.group && ft == 2) {
         const int s = b.slot == 1 ? 1 : 2;
         if (p->ack[s].on && (dt == RDOF_DT_CSBK || dt == RDOF_DT_DATA_HEADER)) {
@@ -456,6 +500,8 @@ static void relay_group(peer_t *from, const uint8_t *d, size_t n, const rdof_net
         if (from->dyn[i].at < from->dyn[k].at)
             k = i;
     }
+    if (from->dyn[k].tg != b->dst || from->dyn[k].slot != b->slot || now - from->dyn[k].at >= DYN_S)
+        say("dynamic: TG %u on peer %u s%d", (unsigned)b->dst, (unsigned)from->id, b->slot);
     from->dyn[k].tg = b->dst;
     from->dyn[k].slot = b->slot;
     from->dyn[k].at = now;
@@ -484,6 +530,39 @@ static void relay_group(peer_t *from, const uint8_t *d, size_t n, const rdof_net
             say("relay TG %u from peer %u s%d to peer %u s%d", (unsigned)b->dst, (unsigned)from->id, b->slot,
                 (unsigned)p->id, slot);
         }
+    }
+}
+
+/* A private call: to the login that last heard the called ID, on that slot. */
+static void relay_private(peer_t *from, const uint8_t *d, size_t n, const rdof_net_burst_t *b, double now)
+{
+    peer_t *to = NULL;
+    int slot = 0;
+    double at = 0;
+    for (int i = 0; i < MAX_PEERS; i++) {
+        peer_t *p = &F.peers[i];
+        if (p == from || p->state != ST_UP)
+            continue;
+        for (int j = 0; j < HEARD; j++)
+            if (p->heard[j].id == b->dst && p->heard[j].at > at)
+                to = p, slot = p->heard[j].slot, at = p->heard[j].at;
+    }
+    if (!to)
+        return;
+    if (to->rptc[97] == '4')
+        slot = 2;
+    uint8_t out[RDOF_DMRD_LEN + 2];
+    const size_t m = n < sizeof out ? n : sizeof out;
+    memcpy(out, d, m);
+    rdof_put_be32(out + 11, to->id);
+    out[15] = (uint8_t)((out[15] & 0x7F) | (slot == 2 ? 0x80 : 0));
+    send_to(to, out, m);
+    to->dmrd_out++;
+    const uint32_t sid = rdof_be32(d + 16);
+    if (sid != to->relay_sid) {
+        to->relay_sid = sid;
+        say("relay PC %u -> %u from peer %u s%d to peer %u s%d", (unsigned)b->src, (unsigned)b->dst,
+            (unsigned)from->id, b->slot, (unsigned)to->id, slot);
     }
 }
 

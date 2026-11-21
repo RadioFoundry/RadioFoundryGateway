@@ -1756,7 +1756,8 @@ idle status that keeps it in hotspot mode.
 
 - Grants with absolute frequencies (LPCN 0xFFF and the appended block), so a radio needs no channel plan: the site
   grants by logical number only.
-- A BrandMeister link for a site: sites link over the MQTT network only.
+- A site's BrandMeister link (tier3.md §5.11): host-tested against fakebm only, not yet run against BrandMeister.
+  Two calls at a time through it (the login's two slots); no packet or short data, no ALS through the master.
 - A P25 trunked site.
 
 **The SDR core**

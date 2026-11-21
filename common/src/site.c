@@ -139,7 +139,7 @@ static const char *const HBLINK_KEYS[] = {"name", "type", "host", "port", "trans
                                           "sctp_heartbeat_ms", "sctp_max_retransmit", "sctp_ttl_ms", "identity",
                                           "peer_ids", "roaming", NULL};
 static const char *const BM_KEYS[] = {"name", "type", "host", "port", "password", "peer_ids", "location",
-                                      "description", "url", NULL};
+                                      "description", "url", "activate", "renew_s", "unlink_s", "announce", "ts1_tg", "ts2_tg", NULL};
 static const char *const MQTT_KEYS[] = {"name", "type", "host", "port", "username", "password", "root", "tls",
                                         "report", "calls", "format", "bundle", "raw_tx", "transport", NULL};
 
@@ -636,6 +636,32 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
                 int ti = get(c, e, TEXT[x]);
                 if (ti >= 0 && (!str_of(c, ti) || strlen(str_of(c, ti)) > (size_t)MAXLEN[x]))
                     return fail(c, "%s.%s: text, %d characters at most", path, TEXT[x], MAXLEN[x]);
+            }
+            /* a trunked site's login: the talkgroups its radios register to, keyed on the master (tier3.md 5.11) */
+            int ai = get(c, e, "activate");
+            if (ai >= 0 && !is_type(c, ai, RDOF_JBOOL))
+                return fail(c, "%s.activate: true or false", path);
+            ai = get(c, e, "announce");
+            if (ai >= 0 && !is_type(c, ai, RDOF_JBOOL))
+                return fail(c, "%s.announce: true or false", path);
+            double rv;
+            ai = get(c, e, "renew_s");
+            if (ai >= 0 && (!num_of(c, ai, &rv) || rv < 0 || rv > 3600))
+                return fail(c, "%s.renew_s: seconds, 0 (never) to 3600", path);
+            ai = get(c, e, "unlink_s");
+            if (ai >= 0 && (!num_of(c, ai, &rv) || rv < 0 || rv > 3600))
+                return fail(c, "%s.unlink_s: seconds, 0 to 3600", path);
+            for (int sl = 1; sl <= 2; sl++) { /* talkgroups pinned to a slot of the login */
+                ai = get(c, e, sl == 1 ? "ts1_tg" : "ts2_tg");
+                if (ai < 0)
+                    continue;
+                bool ok = N(c, ai)->type == RDOF_JARR && N(c, ai)->count <= 16;
+                for (int k = 0; ok && k < N(c, ai)->count; k++) {
+                    const int vi = at(c, ai, k);
+                    ok = vi >= 0 && num_of(c, vi, &rv) && rv >= 1 && rv <= 16777215 && rv == (double)(uint32_t)rv;
+                }
+                if (!ok)
+                    return fail(c, "%s.ts%d_tg: [talkgroup, ...], 16 at most", path, sl);
             }
         }
         int i;
@@ -1339,10 +1365,12 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
     for (int k = 0; k < count(c, ids); k++) {
         const char *key = N(c, at(c, ids, k))->key;
         int a = rdof_site_app(s, key), f = rdof_site_freq(s, key);
-        bool found = (a >= 0 && s->app[a].type == RDOF_APP_REPEATER) || (f >= 0 && s->freq[f].app < 0);
+        bool found = (a >= 0 && (s->app[a].type == RDOF_APP_REPEATER || s->app[a].type == RDOF_APP_TIER3)) ||
+                     (f >= 0 && s->freq[f].app < 0);
         double v;
         if (!found)
-            return fail(c, "networks.%s.peer_ids.%s: not a frequency's or a repeater's name", s->net[hb].name, key);
+            return fail(c, "networks.%s.peer_ids.%s: not a frequency's, a repeater's or a trunked site's name",
+                        s->net[hb].name, key);
         if (!num_of(c, at(c, ids, k), &v) || v < 1 || v > 4294967295.0 || v != floor(v))
             return fail(c, "networks.%s.peer_ids.%s: a peer ID", s->net[hb].name, key);
     }
@@ -1377,9 +1405,15 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
             snprintf(p->peer_name, sizeof p->peer_name, "%.8s", key);
     }
     /* BrandMeister: a frequency or a repeater is a login, so a device that transmits there transmits nowhere else
-       (no roaming transceiver: the master can't move it) */
+       (no roaming transceiver: the master can't move it). A trunked site's carriers are one login, its own path: a
+       device that sends several of them is the site's */
     for (int d = 0; login && d < s->ndev; d++) {
-        const uint64_t t = s->dev[d].can_tx ? s->dev[d].transmits : 0;
+        uint64_t t = s->dev[d].can_tx ? s->dev[d].transmits : 0;
+        for (int a = 0; a < s->napp; a++)
+            if (s->app[a].type == RDOF_APP_TIER3)
+                for (int k = 0; k < s->app[a].ncarrier; k++)
+                    if (s->app[a].carrier[k].out >= 0 && (t & (1ull << s->app[a].carrier[k].out)))
+                        t = (t & ~(1ull << s->app[a].carrier[k].out)) | (1ull << s->app[a].out);
         if (!t || !(t & (t - 1)))
             continue;
         for (int k = 0; k < s->npath; k++)
