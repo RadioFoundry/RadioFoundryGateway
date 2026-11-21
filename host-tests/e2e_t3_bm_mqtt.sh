@@ -5,8 +5,8 @@
 # too (tier3.md 5.11). A group call from site A comes to B both ways and plays once. With no private-call router on
 # the MQTT network nothing answers a private call there, so after its wait the call goes through the master: to an
 # MS at B (announced to the master when it registered) and to the parrot (9990), which plays it back. Each site's
-# rules keep TG 2 on the MQTT network: B's MS registers to it and A calls it, and neither site keys it on the master
-# or sends it there.
+# rules keep TG 2 on the MQTT network: B's MS registers to it and hears A's call on it, and neither site keys it on
+# the master or sends it there.
 #
 #   sh host-tests/e2e_t3_bm_mqtt.sh <dir with rdofradio and fakebm> <mosquitto> <broker port> <fakebm port>
 set -u
@@ -61,6 +61,7 @@ check b "air MS 2000002: payload, registered on ch 1; .* heard 1000002 -> 200000
 check a "1000001 -> 9990: not at a site here, called through the master" "the parrot's call goes to the master"
 check a "air MS 1000001: payload, registered on ch 1; .* heard 9990 -> 1000001$" "A's MS hears the parrot"
 check a "air MS 1000001: .*calls 3 done.* heard 1000001 -> 2$" "A's call on TG 2 goes through"
+check b "air MS 2000001: payload, registered on ch 1; .* heard 1000001 -> 2$" "B's MS hears it over MQTT"
 grep -q "dynamic: TG 2 on\|DMRD peer [0-9]* [0-9]* -> 2 TG" "$D/fakebm" &&
     { echo "FAIL: TG 2 reaches the master"; fail=1; }
 [ $fail = 0 ] && echo "brandmeister and mqtt tier3: all passed" || {

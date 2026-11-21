@@ -112,6 +112,29 @@ fn registration_open() {
     assert!(log.of(EV_RECORD).iter().any(|e| e.src == 1001 && e.why == 1));
 }
 
+/// A registration to another talkgroup moves what the MS listens to: it joins a call on the new one, not the old.
+#[test]
+fn registration_moves_the_ms() {
+    let (old, new) = (TG, TG + 1);
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[old], &[1]), ms(1002, &[old], &[1]), ms(1003, &[old], &[1])], T0);
+    register_all(&mut air, &mut log);
+    reg_tg(&mut air, &mut log, 1, new);
+    let now = air.now();
+    air.ms[2].act(t3ms::DO_GROUP, new, 1500, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[1].state() == t3ms::PAYLOAD), "on the new talkgroup's call");
+    assert_ne!(air.ms[0].state(), t3ms::PAYLOAD, "not on the old one's");
+    assert!(air.until(8000, &mut log.f(), all_idle));
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, old, 1500, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD));
+    air.run(1000, &mut log.f());
+    assert_ne!(air.ms[1].state(), t3ms::PAYLOAD, "the old talkgroup's call isn't its");
+    assert_eq!(air.ms[2].status().heard_src, 1001);
+
+}
+
 #[test]
 fn registration_listed_and_denied() {
     let mut s = site_with(|_| {});

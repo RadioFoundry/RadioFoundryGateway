@@ -1469,6 +1469,14 @@ impl Ms {
                     // deleting an IP address leaves it registered (6.4.11.0 b)
                     let ipdel = self.cur.what == DO_DEREGISTER && self.cur.flags & F_IPADV != 0;
                     self.registered = self.cur.what == DO_REGISTER || (ipdel && self.registered);
+                    // a registration to one talkgroup, accepted, makes it the subscription, as at the site: the MS
+                    // listens to it from then on (R_REG_SUBSCRIPTION: the talkgroup refused, nothing changes)
+                    let single = self.cur.flags & (F_LIST | F_IPADV | F_MASS) == 0 && self.cur.arg != 0;
+                    if self.cur.what == DO_REGISTER && single && a.reason == R_REG_ACCEPTED {
+                        self.tg = [0; 8];
+                        self.tg[0] = self.cur.arg;
+                        self.ntg = 1;
+                    }
                     // 6.4.7.2.1: the offset in Response_Info; 0, power save not available
                     self.ps_off = if self.registered && self.ps_rq != 0 { a.response_info & 0x7F } else { 0 };
                     self.done(true);
