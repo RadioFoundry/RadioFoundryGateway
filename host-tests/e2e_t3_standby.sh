@@ -33,7 +33,8 @@ box() {
         >> "$D/$1.log" 2>&1
 }
 SUB=$(command -v mosquitto_sub || true)
-# until the node's status (retained) counts $1 registration records, at most $2 s
+# until the node's status (retained) counts $1 registration records, at most $2 s (status goes out every 10 s: a
+# count can take two periods to show)
 until_regs() {
     [ -n "$SUB" ] || return 0
     i=0
@@ -60,7 +61,7 @@ sed 's/"takeover_s": 12/"takeover_s": 10/' "$D/site.json" > "$D/bad.json"
 sleep 0.5
 box aaaaa1 1000001 & RA=$!
 until_in aaaaa1 "standby: on the air" 16 || { echo "FAIL: the first box on the air"; fail=1; }
-until_regs 1 10 || { echo "FAIL: the first box's MS registered"; fail=1; }
+until_regs 1 25 || { echo "FAIL: the first box's MS registered"; fail=1; }
 box bbbbb2 2000001 & RB=$!
 until_in aaaaa1 "standby: bbbbb2 is there" 5 || { echo "FAIL: the active box hears the standby"; fail=1; }
 sleep 2
@@ -70,7 +71,7 @@ t0=$(date +%s)
 until_in bbbbb2 "standby: on the air" 6 || { echo "FAIL: the standby on the air after the first's will"; fail=1; }
 grep -q "the node's will: claiming" "$D/bbbbb2.log" || { echo "FAIL: the claim on the will"; fail=1; }
 echo "takeover in about $(($(date +%s) - t0)) s"
-until_regs 2 10 || { echo "FAIL: the second box holds the first's record and its own"; fail=1; }
+until_regs 2 25 || { echo "FAIL: the second box holds the first's record and its own"; fail=1; }
 box aaaaa1 1000001 & RA=$!
 until_in bbbbb2 "standby: aaaaa1 is there" 5 || { echo "FAIL: the first back as the standby"; fail=1; }
 kill -STOP $MQ
