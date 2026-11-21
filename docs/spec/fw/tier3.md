@@ -1618,7 +1618,14 @@ its ID on TG 9 (the repeater's own, carried nowhere), headers and a terminator, 
 dropped, setups answered, activations, unlinks, and the talkgroups on each slot.
 
 Not built: packet data and short data through the master; ALS; a radio's late entry onto a slot whose talkgroup is
-already keyed. Tests: `host-tests/e2e_t3_bm.sh` (two sites on fakebm), `e2e_t3_bm_mqtt.sh` (both networks).
+already keyed. Tests: `host-tests/e2e_t3_bm.sh` (two sites on fakebm), `e2e_t3_bm_mqtt.sh` (both networks),
+`e2e_t3_hat_bm.sh` (the duplex hotspot example).
+
+**On the real master (2026-11-20, master 3102, a hotspot login with no static talkgroups, one simulated radio on the
+owner's ID, no RF).** The header-and-terminator key-up activates a dynamic talkgroup: TG 91's traffic came down
+within seconds, and the device API listed it. TG 4000 on the slot dropped it; a key-up 1 s later on the same slot
+activated the next talkgroup (TG 3100). The API's subscription list runs 50-70 s behind the master. Not checked
+there: a private call routed by the TG 9 announcement.
 
 ## 6. Failure and isolation
 
