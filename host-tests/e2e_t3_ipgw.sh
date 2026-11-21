@@ -33,7 +33,7 @@ cat > "$D/site.json" <<J
           {"type": "ipgw", "pc": "9991", "routes": [{"all": true, "to": "127.0.0.1:$PORT"}]}]}
 J
 printf '6 1000001 cdata 16776899 ping confirmed\n20 1000001 data 16776899 @127.0.0.1 ping plain\n34 1000001 missack 1\n35 1000001 cdata 16776899 @127.0.0.1 ping again\n' > "$D/script"
-"$BIN/rdofradio" --file /dev/zero,/dev/null --allow-tx -v --config "$D/site.json" --air-ms 2 --sim-tg 1 \
+"$BIN/rdofradio" --file /dev/zero,/dev/null -r 288000 --allow-tx -v --config "$D/site.json" --air-ms 2 --sim-tg 1 \
     --sim-script "$D/script" --seconds 56 > "$D/log" 2>&1
 fail=0
 check() {

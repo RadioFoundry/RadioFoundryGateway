@@ -22,7 +22,7 @@ cat > "$D/site.json" <<'J'
            "services": {"emergency_preempt": true}}]}
 J
 printf '6 1000001 group 1 12000\n10 1000002 egroup 2 1500\n' > "$D/script"
-"$BIN/rdofradio" --file /dev/zero,/dev/null --allow-tx --config "$D/site.json" --air-ms 3 --sim-tg 1 \
+"$BIN/rdofradio" --file /dev/zero,/dev/null -r 288000 --allow-tx --config "$D/site.json" --air-ms 3 --sim-tg 1 \
     --sim-script "$D/script" --seconds 22 -v > "$D/log" 2>&1
 fail=0
 check() {

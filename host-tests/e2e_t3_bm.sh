@@ -37,7 +37,7 @@ FB=$!
 sleep 0.3
 for s in a b; do
     [ $s = a ] && id=1000001 || id=2000001
-    "$BIN/rdofradio" --file /dev/zero,/dev/null --allow-tx --config "$D/site-$s.json" --air-ms 2 --sim-id $id \
+    "$BIN/rdofradio" --file /dev/zero,/dev/null -r 288000 --allow-tx --config "$D/site-$s.json" --air-ms 2 --sim-id $id \
         --sim-tg 91 --sim-script "$D/script-$s" --seconds 58 > "$D/$s" 2>&1 &
 done
 wait %2 %3 2>/dev/null || wait

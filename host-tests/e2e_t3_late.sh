@@ -27,7 +27,7 @@ J
 printf '5 1000003 off\n6 1000001 group 1 20000\n10 1000002 egroup 2 1500\n11 1000003 on\n' > "$D/script"
 run() {
     site "$1" > "$D/site.json"
-    "$BIN/rdofradio" --file /dev/zero,/dev/null --allow-tx --config "$D/site.json" --air-ms 3 --sim-tg 1 \
+    "$BIN/rdofradio" --file /dev/zero,/dev/null -r 288000 --allow-tx --config "$D/site.json" --air-ms 3 --sim-tg 1 \
         --sim-script "$D/script" --seconds 22 -v > "$D/log.$1" 2>&1
 }
 run true

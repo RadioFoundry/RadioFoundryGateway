@@ -22,7 +22,7 @@ cat > "$D/site.json" <<'J'
 J
 printf '6 1000001 group 1 1500\n9 1000002 setsupp meet at the corner\n10 1000002 private 1000001 1500\n14 1000001 status 1000002 5\n17 1000002 sdm 1000001 hello\n19 1000002 setstatus 12\n20 1000001 status 1000002 127\n23 1000001 data 1000002 hello by packet\n28 1000002 cdata 1000001 confirmed one\n33 1000001 gdata 1 to the group\n37 1000001 cdata34 1000002 confirmed at rate three quarters, in sixteens\n42 1000002 data1 1000001 rate one\n46 1000001 cdata 1000002 *600\n' \
     > "$D/script"
-"$BIN/rdofradio" --file /dev/zero,/dev/null --allow-tx --config "$D/site.json" --air-ms 2 --sim-tg 1 \
+"$BIN/rdofradio" --file /dev/zero,/dev/null -r 288000 --allow-tx --config "$D/site.json" --air-ms 2 --sim-tg 1 \
     --sim-script "$D/script" --seconds 60 > "$D/log" 2>&1
 fail=0
 check() {
