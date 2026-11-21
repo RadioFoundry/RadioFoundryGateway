@@ -5,6 +5,7 @@
 #include "rdof/site.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -1004,7 +1005,7 @@ static bool rules_deny(ctx_t *c, rdof_site_t *s, int k, bool pc, rdof_idset_t *o
         }
         if (lo) {
             char item[24];
-            snprintf(item, sizeof item, "%u-%u", lo, hi);
+            snprintf(item, sizeof item, "%" PRIu32 "-%" PRIu32, lo, hi);
             if (!rdof_idset_add(out, item, why, sizeof why))
                 return fail(c, "rules: what they keep off networks.%s is too many ranges (%s)", s->net[k].name, why);
             lo = 0;
@@ -1014,7 +1015,7 @@ static bool rules_deny(ctx_t *c, rdof_site_t *s, int k, bool pc, rdof_idset_t *o
     }
     if (lo) {
         char item[24];
-        snprintf(item, sizeof item, "%u-%u", lo, hi);
+        snprintf(item, sizeof item, "%" PRIu32 "-%" PRIu32, lo, hi);
         if (!rdof_idset_add(out, item, why, sizeof why))
             return fail(c, "rules: what they keep off networks.%s is too many ranges (%s)", s->net[k].name, why);
     }
@@ -1085,7 +1086,7 @@ static bool rule_fold(ctx_t *c, const rdof_idset_t *deny, rdof_idset_t *set, con
     char why[96];
     for (int i = 0; i < n && i < RDOF_IDSET_MAX; i++) {
         char item[26];
-        snprintf(item, sizeof item, "!%u-%u", rg[i].lo, rg[i].hi);
+        snprintf(item, sizeof item, "!%" PRIu32 "-%" PRIu32, rg[i].lo, rg[i].hi);
         if (!rdof_idset_add(set, item, why, sizeof why))
             return fail(c, "%s.%s: with the rules, too many ranges (%s)", path, key, why);
     }
