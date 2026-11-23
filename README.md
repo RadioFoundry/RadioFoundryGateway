@@ -12,8 +12,8 @@ an ESP32-S3, a Raspberry Pi or another Linux / macOS box, and on a PlutoSDR's ow
   data, emergency, roaming between sites. As far as we know, the only open-source Tier III site controller.
 - 🔌 **Use the hardware you have:** a stock MMDVM hotspot or repeater modem, a handheld in hotspot mode, an RTL-SDR,
   a PlutoSDR, the Meshnology W12's built-in LR2021, or any mix of them.
-- 🔁 **Repeater and hotspot controller** that takes MMDVMHost's place on an existing Pi hotspot or repeater modem,
-  with split duplex, SFR and dual capacity direct mode.
+- 🔁 **Repeater and hotspot controller** for the modems already in hotspots and repeaters, with split duplex, SFR
+  and dual capacity direct mode.
 - 📏 **A radio test and measurement bench** on TCP port 7373: captures, triggers, decoded bursts, carrier tracking,
   PA ramps, and transmit and receive jobs in FM, AM, DMR, P25, NXDN, dPMR, M17 and D-STAR, several carriers at once.
 - 📡 **Hear many channels at once:** up to 6 on an ESP32-S3, 10+ on a Raspberry Pi, 16 on a PlutoSDR clone with the
@@ -123,7 +123,7 @@ Some combinations:
 
 | You have | You get |
 |---|---|
-| A Raspberry Pi hotspot or repeater with an MMDVM hat | The same hotspot or repeater, with a web page, the bench line and BrandMeister, HBlink4 or MQTT |
+| A Raspberry Pi with an MMDVM hat | A hotspot or repeater with a web page and the bench line, on BrandMeister, HBlink4 or MQTT |
 | A duplex MMDVM hat + an RTL-SDR | A one-carrier Tier III site, or a repeater that also measures its own input |
 | A PlutoSDR alone | A full duplex repeater, or a Tier III site with up to 4 carriers, on the stock firmware |
 | A PlutoSDR 7010 clone | Up to 16 monitored channels and a bench instrument for transmit tests |

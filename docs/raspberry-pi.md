@@ -1,7 +1,7 @@
 # A Raspberry Pi with an MMDVM_HS hat
 
 `rdofradio` runs a Pi with an MMDVM_HS hat as a hotspot or a repeater, with or without an RTL-SDR beside it. It
-takes the place of MMDVMHost: the two can't share the hat.
+opens the hat's serial port itself, so only one program can use the hat at a time.
 
 | Hardware | What it runs | Start from |
 |---|---|---|
@@ -157,7 +157,7 @@ journalctl -u rdofradio -f
 - It restarts 5 s after any exit, so a dongle that drops off USB comes back.
 - Updates: the web page's Firmware update takes a new `rdofradio` (or its `.gz`). `run.sh` checks that it runs, keeps
   the old one as `rdofradio.prev`, and puts it back after 3 quick failures in a row.
-- `touch ~/rfg/disabled` keeps it from starting, for example while MMDVMHost has the hat back.
+- `touch ~/rfg/disabled` keeps it from starting, for example while another program uses the hat.
 
 ## Without a settings file
 
