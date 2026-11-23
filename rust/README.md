@@ -49,6 +49,7 @@ Modules with no C twin (new code is written in Rust only; its C callers build wi
 | Module | What |
 |---|---|
 | `mrelay.rs` | `rdof/mrelay.h`: a P25 or NXDN repeater on a duplex MMDVM modem (`bench_repeater` `mode`) |
+| `sigiq.rs` | `rdof/sigiq.h`: the bench's `iq` transmit mode, the client's cs16 baseband (`sdr/src/modes.c`) |
 
 - `config.rs` and `benchcfg.rs` read the version 3 plan, which stays C (`siteplan.c`, `site.c`): `src/plan.rs`
   mirrors its structs and declares the accessors they call.

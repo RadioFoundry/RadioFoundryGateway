@@ -24,6 +24,7 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... rx fm --freq MHz --seconds S [--audio FILE.wav] [--disc FILE.wav] [--records FILE] [--dtmf] [--tones] [--aprs] ...
     rfgbench.py ... tx am --freq MHz [SEGMENT...] [--pcm FILE] [--depth 0-1] [--offset HZ] ...
     rfgbench.py ... tx fsk4 --freq MHz --dibits FILE|--hex HEX [--shape c4fm|rrc|rc|nrz] [--baud B] [--dev HZ] ...
+    rfgbench.py ... tx iq --freq MHz --rate S/s --iq FILE.cs16|- [--carriers MHz...] [--ahead S] [--seconds S]
     rfgbench.py ... rx am --freq MHz --seconds S [--audio FILE.wav] [--env FILE.wav] [--records FILE] [--bw HZ] ...
 
 A tx fm or tx am SEGMENT is KIND:ARG:ARG..., with key=value arguments and @LEVEL anywhere (level 0-1 of the
@@ -1095,6 +1096,42 @@ def cmd_tx_fsk4(a) -> int:
     return stream(a.where, req, on, hold)
 
 
+def cmd_tx_iq(a) -> int:
+    """tx iq: the client's complex baseband (cs16) at --rate, several carriers in one keying (bench-api.md 14.6)."""
+    req: dict = {"op": "tx", "mode": "iq", "freq": a.freq, "rate": a.rate, "seconds": a.seconds, "stream": True,
+                 "session": a.session, "wait_max": a.wait_max, "label": a.label}
+    if a.carriers:
+        req["carriers"] = a.carriers
+    for k, v in (("ahead_s", a.ahead), ("power_dbm", a.power_dbm), ("power", a.power)):
+        if v is not None:
+            req[k] = v
+    for mhz in [a.freq] + (a.carriers or []):
+        check_reach(a, mhz, tx=True)
+    hold: dict = {}
+
+    def send():    # as it comes; the gateway reads as its ahead_s ring empties, a half-close at the end
+        try:
+            f = sys.stdin.buffer if a.iq == "-" else open(a.iq, "rb")
+            with f:
+                while True:
+                    b = f.read1(65536) if hasattr(f, "read1") else f.read(65536)
+                    if not b:
+                        break
+                    hold["conn"].s.sendall(b)
+            hold["conn"].s.shutdown(socket.SHUT_WR)
+        except OSError as e:
+            print(f"{NOTE} {e}", file=sys.stderr)
+
+    def on(d, _):
+        if "tx" in d:
+            threading.Thread(target=send, daemon=True).start()
+        print(json.dumps(d), flush=True)
+        if "done" in d:
+            return 1 if d["done"].get("cut") or d["done"].get("underruns") else 0
+        return None
+    return stream(a.where, req, on, hold)
+
+
 class _Wav:
     def __init__(self, path: str, rate: float) -> None:
         self.w = wave.open(path, "wb")
@@ -1630,6 +1667,23 @@ def main(argv=None) -> int:
                            help="seconds unkeyed between plays (0: back to back in one keying)")
             s.add_argument("--lead", type=float, default=None, help="bare carrier before, s (0.01)")
             s.add_argument("--tail", type=float, default=None, help="bare carrier after, s (0.01)")
+            s.add_argument("--power-dbm", type=float, default=None,
+                           help="dBm at the antenna, capped by the gateway's bench.tx max_dbm")
+            s.add_argument("--power", type=int, default=None, help="0-255 on the transmitter's range, capped the same")
+            s = modes.add_parser("iq", help="complex baseband (cs16) at its own rate: several carriers at once "
+                                            "(iqmix.py renders 4FSK ones)")
+            s.set_defaults(fn=cmd_tx_iq)
+            s.add_argument("--session", default=None)
+            s.add_argument("--wait-max", type=float, default=None, help="give up after this many seconds (exit 75)")
+            s.add_argument("--label", default=None)
+            s.add_argument("--freq", type=float, required=True, help="MHz: baseband 0 Hz")
+            s.add_argument("--carriers", type=float, nargs="+", default=None,
+                           help="MHz: every carrier in the samples (claimed, and the transmitter placed for all)")
+            s.add_argument("--rate", type=float, required=True,
+                           help="S/s: the gateway's tx_fs (info's window) divided by a whole number")
+            s.add_argument("--iq", required=True, help="cs16 file (I then Q, int16 LE), or - for stdin")
+            s.add_argument("--seconds", type=float, default=60, help="the most it keys (60)")
+            s.add_argument("--ahead", type=float, default=None, help="the gateway's buffer, s (0.25)")
             s.add_argument("--power-dbm", type=float, default=None,
                            help="dBm at the antenna, capped by the gateway's bench.tx max_dbm")
             s.add_argument("--power", type=int, default=None, help="0-255 on the transmitter's range, capped the same")

@@ -47,7 +47,12 @@ typedef struct {
     /* Everything is sent (the source keys no more). */
     bool (*done)(void *ctx);
     double peak_hz;          /* freq's largest |Hz|: a front end that sends frequency sets its scale from it */
-    double rate;             /* samples a second it renders at (the platform's sig_rate; 0: the transmitter's own) */
+    double rate;             /* samples a second it renders at (0: the platform's sig_rate); a rate of the mode's own
+                              * must divide the transmit stream's by a whole number (rdof_sdrmodem_signal refuses
+                              * another) */
+    /* The band it puts power in, Hz from the carrier (both 0: a channel around it). The transmitter's LO is placed
+     * so all of it is in reach; the bench line sets it from a job's carriers. */
+    double span_lo_hz, span_hi_hz;
     void *ctx;
 } rdof_sig_src_t;
 

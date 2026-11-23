@@ -1545,7 +1545,7 @@ static bool c2_start(const rdofradio_t3_cfg_t *t, int c, const rdof_sdrmodem_t *
         snprintf(err, cap, "carrier %d: the receiver has no channel on its inbound %.5f MHz", c, rx / 1e6);
         return false;
     }
-    const rdof_sdrmodem_io_t io = {c2_reply, c2_channel, c2_tune, NULL, NULL, NULL};
+    const rdof_sdrmodem_io_t io = {c2_reply, c2_channel, c2_tune, NULL, NULL, NULL, NULL};
     if (rdof_sdrmodem_init(&x->m, &io, DEV.rx_fs, DEV.tx_fs, true)) {
         snprintf(err, cap, "carrier %d: modem: %s", c, x->m.error);
         return false;

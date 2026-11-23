@@ -11,6 +11,7 @@
 
 #include "rdof/benchline.h"
 #include "fake_chs.h"
+#include "rdof/jsonp.h"
 #include "rdof/sdr/modes.h"
 
 static int checks, failures;
@@ -242,7 +243,9 @@ static void test_loop(int how)
     /* info names the modes */
     int c = ask(bl, "{\"op\":\"info\"}");
     take(bl, c);
-    CHECK(strstr(text, "\"signal_modes\":{\"tx\":[\"fm\",\"am\",\"fsk4\"],\"rx\":[\"fm\",\"am\",\"fsk4\"]}"), "%.300s", text);
+    CHECK(strstr(text, "\"signal_modes\":{\"tx\":[\"fm\",\"am\",\"fsk4\"],\"rx\":[\"fm\",\"am\",\"fsk4\"]}") ||
+              strstr(text, "\"signal_modes\":{\"tx\":[\"fm\",\"am\",\"fsk4\",\"iq\"],\"rx\":[\"fm\",\"am\",\"fsk4\"]}"),
+          "%.300s", text);
     rdof_bl_closed(bl, c, clock_s);
     ntext = 0;
 
@@ -441,6 +444,174 @@ static void test_fsk4_stream(void)
     rdof_bl_free(bl);
 }
 
+/* ── iq: the client's complex baseband, two C4FM carriers 50 kHz apart in one job ── */
+
+static int f_bands(void *ctx, double (*out)[2], int max)
+{
+    out[0][0] = 438.10e6, out[0][1] = 438.13e6;
+    return 1;
+}
+
+#define IQ_NSYM 624 /* the P25 sync's 24 symbols, then 600 random */
+static uint8_t iq_frame[2][IQ_NSYM / 4];
+
+/* Carrier k's frame through fsk4's own C4FM transmitter at FS: the frequency (Hz) and envelope, how many samples */
+static long iq_render_c4fm(int k, float *hz, float *env, long cap)
+{
+    static rdof_jnode_t nodes[64];
+    static char sbuf[4096];
+    static rdof_jdoc_t doc = {nodes, 64, 0, sbuf, sizeof sbuf, 0, ""};
+    char job[1024] = "{\"lead_s\":0.04,\"tail_s\":0.02,\"repeat\":2,\"hex\":\"";
+    for (int i = 0; i < IQ_NSYM / 4; i++)
+        snprintf(job + strlen(job), 3, "%02x", iq_frame[k][i]);
+    strcat(job, "\"}");
+    const int root = rdof_jparse(&doc, job, strlen(job));
+    double secs = 0;
+    char err[200] = "";
+    void *t = rdof_mode_fsk4.tx_new(&doc, root, FS, &secs, err, sizeof err);
+    CHECK(t != NULL, "fsk4 tx_new: %s", err);
+    if (!t)
+        return 0;
+    const rdof_sig_src_t src = rdof_mode_fsk4.tx_src(t);
+    long n = 0;
+    for (int got; n < cap && (got = src.freq(src.ctx, hz + n, env + n, (int)(cap - n < 4096 ? cap - n : 4096))) > 0;)
+        n += got;
+    rdof_mode_fsk4.tx_free(t);
+    return n;
+}
+
+/* One run: the job on the air, an fsk4 rx on carrier `listen` (0: 438.075, 1: 438.125): symbol errors from its first
+ * sync on against the frame sent there (-1: no dibits) */
+static int iq_run(const int16_t *x, long n, int listen, char *done, size_t dcap)
+{
+    rdof_bl_platform_t pl = PLAT;
+    pl.tx_bands = f_bands;
+    rdof_bl_t *bl = rdof_bl_new(&pl);
+    ntext = 0;
+    tx = (typeof(tx)){0};
+    air(96000, false);
+    char req[400];
+    snprintf(req, sizeof req, "{\"op\":\"rx\",\"mode\":\"fsk4\",\"freq\":%s,\"seconds\":2,\"sync\":\"5575f5ff77ff\"}",
+             listen ? "438.125" : "438.075");
+    const int rx = ask(bl, req);
+    const int c = ask(bl, "{\"op\":\"tx\",\"mode\":\"iq\",\"freq\":438.075,\"carriers\":[438.075,438.125],"
+                          "\"rate\":192000,\"seconds\":5,\"ahead_s\":0.05}");
+    size_t sent = 0;
+    const size_t bytes = (size_t)n * 4;
+    for (int i = 0; i < 3000 && !tx.done; i++) {
+        size_t room; /* as a socket's reader: all the engine takes */
+        while (sent < bytes && (room = rdof_bl_input_room(bl, c)) > 0) {
+            const size_t k = room < bytes - sent ? room : bytes - sent;
+            rdof_bl_input(bl, c, (const char *)x + sent, k, clock_s);
+            sent += k;
+            if (sent == bytes)
+                CHECK(rdof_bl_input_end(bl, c, clock_s), "a half-close ends the samples");
+        }
+        rdof_bl_tick(bl, clock_s);
+        air(1920, true);
+        take(bl, rx);
+    }
+    CHECK(tx.done && sent == bytes, "iq: done %d, sent %zu of %zu", tx.done, sent, bytes);
+    CHECK(tx.src.rate == 192000 && tx.src.span_lo_hz == -6250 && tx.src.span_hi_hz == 56250,
+          "the source: rate %.0f, span %.0f to %.0f", tx.src.rate, tx.src.span_lo_hz, tx.src.span_hi_hz);
+    for (int i = 0; i < 400 && !strstr(text, "{\"done\""); i++) {
+        air(1920, false);
+        rdof_bl_tick(bl, clock_s);
+        take(bl, rx);
+    }
+    /* the dibits from the first sync on */
+    static uint8_t got[4096];
+    long ng = 0;
+    for (const char *p = text; (p = strstr(p, "{\"dibits\":")) && ng < (long)sizeof got; p++) {
+        const char *h = strstr(p, "\"hex\":\"");
+        if (!h)
+            break;
+        for (h += 7; h[0] != '"' && h[1] && ng < (long)sizeof got; h += 2) {
+            unsigned v;
+            if (sscanf(h, "%2x", &v) != 1)
+                break;
+            got[ng++] = (uint8_t)v;
+        }
+    }
+    int errors = ng >= IQ_NSYM / 4 ? 0 : -1;
+    for (int k = 0; errors >= 0 && k < IQ_NSYM; k++)
+        errors += (got[k / 4] >> (6 - 2 * (k % 4)) & 3) != (iq_frame[listen][k / 4] >> (6 - 2 * (k % 4)) & 3);
+    rdof_bl_closed(bl, rx, clock_s);
+    ntext = 0;
+    rdof_bl_tick(bl, clock_s);
+    take(bl, c);
+    char l[2048] = "";
+    lines("{\"done\":", l, sizeof l);
+    snprintf(done, dcap, "%s", l);
+    rdof_bl_closed(bl, c, clock_s);
+    rdof_bl_free(bl);
+    return errors;
+}
+
+static void test_iq(void)
+{
+    if (!rdof_sig_find(rdof_sdr_modes, "iq")) {
+        printf("benchsig: no iq mode in this build (the C modules): skipped\n");
+        return;
+    }
+    static const uint8_t sync[6] = {0x55, 0x75, 0xf5, 0xff, 0x77, 0xff};
+    for (int k = 0; k < 2; k++) {
+        memcpy(iq_frame[k], sync, 6);
+        for (int i = 6; i < IQ_NSYM / 4; i++)
+            seed = seed * 1664525u + 1013904223u, iq_frame[k][i] = (uint8_t)(seed >> 13);
+    }
+    /* the two carriers summed: A at the job's freq, B 50 kHz above, each 0.45 of full scale */
+    enum { MAXN = 192000 };
+    static float hz[2][MAXN], env[2][MAXN];
+    static int16_t x[2 * MAXN];
+    const long na = iq_render_c4fm(0, hz[0], env[0], MAXN), nb = iq_render_c4fm(1, hz[1], env[1], MAXN);
+    const long n = na > nb ? na : nb;
+    double pa = 0, pb = 0;
+    for (long i = 0; i < n; i++) {
+        float re = 0, im = 0;
+        if (i < na) {
+            pa += 2 * M_PI * hz[0][i] / FS;
+            re += 0.45f * env[0][i] * (float)cos(pa), im += 0.45f * env[0][i] * (float)sin(pa);
+        }
+        if (i < nb) {
+            pb += 2 * M_PI * (hz[1][i] + 50000) / FS;
+            re += 0.45f * env[1][i] * (float)cos(pb), im += 0.45f * env[1][i] * (float)sin(pb);
+        }
+        x[2 * i] = (int16_t)lrintf(re * 32767), x[2 * i + 1] = (int16_t)lrintf(im * 32767);
+    }
+    char done[2048];
+    for (int k = 0; k < 2; k++) {
+        const int e = iq_run(x, n, k, done, sizeof done);
+        CHECK(e == 0, "carrier %c: %d symbol errors of %d", "AB"[k], e, IQ_NSYM);
+        CHECK(num(done, "samples_in") == n && num(done, "underruns") == 0 && num(done, "clipped") == 0, "%s", done);
+    }
+
+    /* refused: a carrier the bench doesn't send on, a rate that isn't given */
+    rdof_bl_platform_t pl = PLAT;
+    pl.tx_bands = f_bands;
+    rdof_bl_t *bl = rdof_bl_new(&pl);
+    static const struct {
+        const char *req, *code, *has;
+    } R[] = {
+        {"{\"op\":\"tx\",\"mode\":\"iq\",\"freq\":438.075,\"carriers\":[438.15],\"rate\":192000,\"seconds\":1}",
+         "refused", "carriers"},
+        {"{\"op\":\"tx\",\"mode\":\"iq\",\"freq\":438.075,\"carriers\":438.125,\"rate\":192000,\"seconds\":1}",
+         "bad_request", "carriers"},
+        {"{\"op\":\"tx\",\"mode\":\"iq\",\"freq\":438.075,\"seconds\":1}", "bad_request", "rate"},
+        {"{\"op\":\"tx\",\"mode\":\"iq\",\"freq\":438.075,\"rate\":192000}", "bad_request", "seconds"},
+    };
+    for (size_t i = 0; i < sizeof R / sizeof R[0]; i++) {
+        ntext = 0;
+        const int c = ask(bl, R[i].req);
+        take(bl, c);
+        char code[80];
+        snprintf(code, sizeof code, "\"code\":\"%s\"", R[i].code);
+        CHECK(strstr(text, code) && strstr(text, R[i].has), "%s -> %s", R[i].req, text);
+        rdof_bl_closed(bl, c, clock_s);
+    }
+    rdof_bl_free(bl);
+}
+
 static void test_refusals(void)
 {
     rdof_bl_t *bl = rdof_bl_new(&PLAT);
@@ -509,6 +680,7 @@ int main(void)
     test_loop(LOOP_RUN);
     test_pcm();
     test_fsk4_stream();
+    test_iq();
     test_refusals();
     test_am();
     rdof_bl_ring_free(&ring);

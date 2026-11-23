@@ -932,9 +932,9 @@ static void put_window(rdof_bl_t *bl, char *out, size_t cap)
     else
         snprintf(out, cap,
                  "{\"enabled\":true,\"lo\":%.6f,\"hi\":%.6f,\"center\":%.6f,\"fs\":%.1f,\"gain\":%.1f,"
-                 "\"dc_guard_khz\":%.1f,%s,\"tx_lo\":%.6f,\"tx_hi\":%.6f}",
+                 "\"dc_guard_khz\":%.1f,%s,\"tx_lo\":%.6f,\"tx_hi\":%.6f,\"tx_fs\":%.1f}",
                  w.lo_hz / 1e6, w.hi_hz / 1e6, w.center_hz / 1e6, w.fs, w.gain_db, w.dc_guard_hz / 1e3, pp,
-                 w.tx_lo_hz / 1e6, w.tx_hi_hz / 1e6);
+                 w.tx_lo_hz / 1e6, w.tx_hi_hz / 1e6, w.tx_fs);
 }
 
 static double expect_left(const rdof_bl_t *bl, double now)
@@ -3307,6 +3307,46 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     if (reach_tune(bl, c, root, mhz, false, true, now))
         return;
+    /* carriers: the other frequencies the source puts power on (an iq job's), each one the bench may send on and
+     * claimed with freq; the transmitter's LO placed to reach them all (the source's span) */
+    double more[RDOF_BL_CLAIMS];
+    int nmore = 0;
+    double span_lo = 0, span_hi = 0;
+    const int ca = rdof_jget(&bl->doc, root, "carriers");
+    if (ca >= 0) {
+        const rdof_jnode_t *a = rdof_jnode(&bl->doc, ca);
+        if (!a || a->type != RDOF_JARR) {
+            fail(bl, c, "bad_request", "carriers: a list of frequencies (MHz)");
+            return;
+        }
+        for (int i = 0; i < a->count; i++) {
+            const rdof_jnode_t *f = rdof_jnode(&bl->doc, rdof_jat(&bl->doc, ca, i));
+            if (!f || f->type != RDOF_JNUM) {
+                fail(bl, c, "bad_request", "carriers: a frequency isn't a number");
+                return;
+            }
+            if (!tx_ok(bl, f->num)) {
+                fail(bl, c, "refused", "%.4f MHz (carriers) isn't a transmit frequency of this bench", f->num);
+                return;
+            }
+            if (fabs(f->num - mhz) < 1e-7)
+                continue;
+            if (nmore == RDOF_BL_CLAIMS - 1) {
+                fail(bl, c, "bad_request", "carriers: %d frequencies at most with freq", RDOF_BL_CLAIMS);
+                return;
+            }
+            if (reach_tune(bl, c, root, f->num, false, true, now))
+                return;
+            more[nmore++] = f->num;
+            const double d = round((f->num - mhz) * 1e6); /* Hz: MHz as a double isn't exact */
+            span_lo = d < span_lo ? d : span_lo;
+            span_hi = d > span_hi ? d : span_hi;
+        }
+        if (nmore) { /* a channel's half either side of the outer ones */
+            span_lo -= 6250;
+            span_hi += 6250;
+        }
+    }
     sigtx_t *t = RDOF_BL_CALLOC(1, sizeof *t);
     if (!t) {
         fail(bl, c, "busy", "no memory for the job");
@@ -3322,7 +3362,10 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     t->m = m;
     t->src = m->tx_src(t->tx);
-    t->src.rate = fs;
+    if (!(t->src.rate > 0)) /* else the mode's own (iq's, the client's) */
+        t->src.rate = fs;
+    t->src.span_lo_hz = span_lo;
+    t->src.span_hi_hz = span_hi;
     t->freq_hz = (uint32_t)lround(mhz * 1e6);
     t->power = (rdof_bench_power_t){jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0), 1.0};
     t->max_s = jnum(bl, root, "max_s", t->seconds + STX_TAIL_S);
@@ -3331,9 +3374,14 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
     c->op = OP_TX;
     c->nfreqs = 1;
     c->freqs[0] = mhz;
+    char cl[16 * RDOF_BL_CLAIMS] = "";
+    for (int i = 0, n = 0; i < nmore; i++) {
+        c->freqs[c->nfreqs++] = more[i];
+        n += snprintf(cl + n, sizeof cl - (size_t)n, ",%.6f", more[i]);
+    }
     const uint64_t want = m->tx_in_want ? m->tx_in_want(t->tx) : 0;
-    emit(bl, c, "{\"tx\":{\"mode\":\"%s\",\"freq\":%.6f,\"seconds\":%.3f,\"input_bytes\":%llu}}", m->name, mhz,
-         t->seconds, (unsigned long long)want);
+    emit(bl, c, "{\"tx\":{\"mode\":\"%s\",\"freq\":%.6f,\"carriers\":[%.6f%s],\"rate\":%.1f,\"seconds\":%.3f,"
+         "\"input_bytes\":%llu}}", m->name, mhz, mhz, cl, t->src.rate, t->seconds, (unsigned long long)want);
     wait_start(bl, c, W_MODEM, root, now);
     if (c->expect_s <= 0)
         c->expect_s = t->seconds + 3.0;

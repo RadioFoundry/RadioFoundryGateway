@@ -1527,9 +1527,9 @@ starts `rdofradio` again 5 s after it exits.
 - **Size:** the flash (`mtd2`, jffs2, 896 KB) holds the program and the settings, about 690 KB of program at most.
   The bundle's program is xz (`xz -9e --check=crc32`, `lc=2,lp=2` for ARM code; no BCJ filter, which busybox's
   `unxz` can't decode), with its Rust at opt-level "z": 611 KB with the web page, Tier III and BrandMeister
-  (2026-11-21), where `gzip -9` gave 746 KB without BrandMeister. Keep about 70 KB of the flash free: near 60 KB jffs2
-  refuses small writes (settings, `netclock.state`). A bundle from before xz installed `rdofradio.gz`; `install.sh`
-  replaces it, and `run.sh` runs either.
+  (2026-11-21; 613 KB with the bench's `iq` mode, 2026-11-23), where `gzip -9` gave 746 KB without BrandMeister.
+  Keep about 70 KB of the flash free: near 60 KB jffs2 refuses small writes (settings, `netclock.state`). A bundle
+  from before xz installed `rdofradio.gz`; `install.sh` replaces it, and `run.sh` runs either.
 - The Pluto makes a new ssh host key at every boot, so the script doesn't check it.
 - At `--tx-gain 0` (the default) the start's calibration pulse isn't heard, so the outbound slot timing isn't
   measured.

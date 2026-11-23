@@ -531,7 +531,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   settings come back when the request ends. `"tune": false` refuses instead; while another request uses the window,
   or another session holds the tune, it is `busy`.
 - So do transmit jobs (`run`'s bench_tx jobs, `outbound`, `tx`) on a frequency past the transmitter's reach around
-  the center (`tx_lo_hz`-`tx_hi_hz` in the window: a W12 transmits within 1 MHz of where it receives), and a `run`
+  the center (`tx_lo_hz`-`tx_hi_hz` in the window, `tx_fs` its stream's rate: a W12 transmits within 1 MHz of where it receives), and a `run`
   job that hears (`listen`, `listen_after`) where no channel decodes DMR: the receiver tuned there for the job, back
   after it. A frequency `bench.tx` doesn't list is still `refused`.
 - `claim` refuses a frequency the bench doesn't list (no receiver channel, not in `bench.tx`). Receiving needs no
@@ -829,12 +829,12 @@ ARGS` (any interpreter, any directory) sends the job; `--file` and `--out` files
 ### 14.6 Signal modes: tx and rx
 
 A signal mode is a modulation other than DMR, as one table (`rdof/sigmode.h`; the list in `rdof/sdr/modes.h`): analog
-FM (`fm`), analog AM (`am`) and raw 4-level FSK (`fsk4`). `info`'s `signal_modes` lists them: `{"tx": [names], "rx": [names]}`. The fields
+FM (`fm`), analog AM (`am`), raw 4-level FSK (`fsk4`) and the client's complex baseband (`iq`, transmit only). `info`'s `signal_modes` lists them: `{"tx": [names], "rx": [names]}`. The fields
 after the op's own are the mode's.
 
 | op | request | replies |
 |---|---|---|
-| `tx` | `session`, `mode`, `freq`, `power_dbm` (or `power`), `max_s`, `wait_max`, the mode's fields; input bytes after the line | `{"tx": {"mode", "freq", "seconds", "input_bytes"}}`, queued / granted, `{"started": ID, "t"}`, `{"done": {"mode", "freq", "on_air_s", "input_bytes", "cut", ...}}` |
+| `tx` | `session`, `mode`, `freq`, `carriers` (`iq`), `power_dbm` (or `power`), `max_s`, `wait_max`, the mode's fields; input bytes after the line | `{"tx": {"mode", "freq", "carriers", "rate", "seconds", "input_bytes"}}`, queued / granted, `{"started": ID, "t"}`, `{"done": {"mode", "freq", "on_air_s", "input_bytes", "cut", ...}}` |
 | `rx` | `session`, `mode`, `freq`, `seconds`, `bw`, `squelch_dbfs`, `squelch_over_db`, the mode's fields | `{"rx": header}`, `{"rec": record}`, `{"pcm": {"stream", "seq", "n"}, "bytes": 2n}` + int16 LE, `{"gap": ...}`, `{"done": {"mode", "freq", "seconds", "samples", "gap_samples", "cpu_s", "summary"}}` |
 
 - `tx` is a transmit job: it waits for the modem as `run` does (`expect_s` its length plus 3 s), on a frequency of
@@ -1029,6 +1029,27 @@ Records, `t` in seconds from the stream's start (the header's `t0` is its UTC):
 
 The summary: `baud`, `filter`, `sync_len`, `squelch_dbfs`, `keyings`, `syncs`, `symbols`, `carrier` (up at the end),
 `dropped` (records lost to a full queue).
+
+I/Q (`iq`, transmit only) sends the client's complex baseband: cs16 (int16 I, then Q, little-endian; full scale
+32767) at the job's `rate`, baseband 0 Hz on `freq`. Nothing in it is a mode's: any modulation, any number of
+carriers in one keying, rendered by the client (`tools/bench/iqmix.py` sums 4FSK carriers with `fsk4`'s c4fm
+pulse). It's for what one carrier at a time can't do, as a trunked system's control channel and a voice channel
+from one transmitter. A board that sends frequency, not I/Q (a W12), doesn't list it.
+
+- Fields: `rate` (required: the transmit stream's rate divided by a whole number; `info`'s window gives it as
+  `tx_fs`, 192000 on a Pluto with its FPGA upconverter), `seconds` (required: the keying's ceiling, plus 2 s for
+  the first samples), `ahead_s` (0.25, 0.02-10), `stream` (always true), and `carriers`: every carrier in the
+  samples, MHz (`freq` may be one). Each must be a transmit frequency of this bench and is claimed for the job as
+  `freq` is; the transmitter is placed so that the span from the lowest to the highest, 6.25 kHz either side, fits
+  in its reach (a Pluto's LO moves to the span's center when it has to; with the upconverter its reach is a sixth
+  of the rate either side, 32 kHz at 192 kS/s: carriers up to about 50 kHz apart). A span it can't reach is
+  `refused`.
+- The samples stream as `fsk4`'s do: the gateway holds `ahead_s` of them, key-up waits for that much, the end of
+  the stream, or 2 s; a half-close ends it. When it runs dry it sends zeros and a `{"underrun":{"n","sample","t"}}`
+  record. Samples past unit magnitude are cut to it (`clipped`).
+- `done` adds `rate`, `stream`, `ahead_bytes`, `samples` (played, zeros included), `samples_in`, `underruns`,
+  `zero_samples`, `wait_s`, `peak` (the largest magnitude, full scale 1) and `clipped`.
+- The client's rate costs the transmitting thread a mix and a linear interpolation per stream sample, nothing more.
 
 Measured 2026-11-16, a W12 (power 128) to a Pluto 2 m away at -30 dBFS: C4FM and RRC at 4800 baud, 3072 random symbols
 each, 0 errors (C4FM behind `iad` +-1792 / +-599 Hz, EVM 5%); 2400 baud RRC at 1050 Hz with a 10-symbol sync in 80 ms

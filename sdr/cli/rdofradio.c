@@ -842,6 +842,41 @@ static bool io_tune(void *ctx, uint32_t hz, double *off)
     }
     return fabs(*off) < R.tx_rate * 0.4;
 }
+/* A signal spanning lo to hi Hz from hz (a bench iq job's carriers): the TX LO stays where all of it is in reach,
+ * else moves to the span's center. The reach is io_tune's (0.4 of the stream's rate, less 12.5 kHz), with the
+ * interpolator a sixth of its rate at most, as a trunked site's carriers (trunk_tx_offset): the CIC's first image of a
+ * carrier f off the LO is f less the rate away, and the further out f, the less it is cut. */
+static bool io_place(void *ctx, uint32_t hz, double lo, double hi, double *off)
+{
+    double reach = R.tx_rate * 0.4 - 12.5e3;
+    if (DX.started && reach > R.tx_rate / 6)
+        reach = R.tx_rate / 6;
+    if ((hi - lo) / 2 > reach)
+        return false;
+    const double a = (double)hz + lo, b = (double)hz + hi;
+    if (a < R.tx_lo - reach || b > R.tx_lo + reach) {
+        if (R.full && !RP.on)
+            return false; /* the TX LO is the duplex modem's, fixed */
+        const double to = (double)hz + (lo + hi) / 2;
+        if (!dev->set_tx_freq || dev->set_tx_freq(dev, to)) {
+            fprintf(stderr, "transmit: can't move the TX LO to %.4f MHz: %s\n", to / 1e6, dev->error);
+            return false;
+        }
+        R.tx_lo = to;
+        if (R.verbose)
+            fprintf(stderr, "transmit: the TX LO to %.4f MHz, %.1f to %+.1f kHz from %.4f MHz in reach\n", to / 1e6,
+                    lo / 1e3, hi / 1e3, hz / 1e6);
+    }
+    *off = (double)hz - R.tx_lo;
+    if (!R.full) {
+        R.tx_hz = hz;
+        R.tx_ch = channel_of(hz);
+        R.tx_img = channel_of(2 * R.rx.center_hz - hz);
+        if (R.tx_img == R.tx_ch)
+            R.tx_img = -1;
+    }
+    return true;
+}
 static bool mm_write(const uint8_t *d, size_t n);
 static void mm_turn(void);
 static bool p_write(void *ctx, const uint8_t *d, size_t n)
@@ -2249,6 +2284,7 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->ppm_tol = isfinite(xtal_ppm) ? xtal_tol : 0;
     w->iq_scale_db = 20 * log10(BL.ring.scale > 0 ? BL.ring.scale : 1);
     /* tx_lo_hz, tx_hi_hz 0: a job tunes anywhere, a repeater's TX LO moving for it (owner_yield) */
+    w->tx_fs = R.tx_rate;
 }
 
 static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)
@@ -7731,7 +7767,7 @@ int main(int argc, char **argv)
     /* the modem, its client, and the repeater or the transceiver over them */
     const bool rx_only = R.split || R.mmdvm || listen_only;
     const rdof_sdrmodem_io_t io = {io_reply, io_channel, rx_only ? NULL : io_tune, &R, R.split ? split_now48 : NULL,
-                                   rx_only ? NULL : io_tx_level};
+                                   rx_only ? NULL : io_tx_level, rx_only ? NULL : io_place};
     /* the nominal rate when the device's is within 2 S/s of it, as the receiver takes it (below 2.083 MS/s an
        AD9361 reports 1295999 for 1296000, which the modulator can't phase) */
     R.tx_rate = fabs(got - rate) <= 2.0 ? dev->tx_rate * rate / got : dev->tx_rate;

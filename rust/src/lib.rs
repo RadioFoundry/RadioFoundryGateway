@@ -53,6 +53,8 @@ pub mod rawburst;
 #[cfg(feature = "legacy")]
 pub mod repeater;
 #[cfg(feature = "legacy")]
+pub mod sigiq;
+#[cfg(feature = "legacy")]
 pub mod slotgrid;
 #[cfg(feature = "legacy")]
 pub mod status;

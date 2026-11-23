@@ -318,7 +318,7 @@ const char *sdr_modem_bench_open(void (*reply)(void *ctx, const uint8_t *frame, 
         fe.ops->tx_set(fe.ctx, NULL, 0);
     bench_reply = reply;
     bench_ctx = ctx;
-    const rdof_sdrmodem_io_t io = {bench_io_reply, io_channel, io_tx_tune, NULL, NULL, NULL}; /* power: the job's */
+    const rdof_sdrmodem_io_t io = {bench_io_reply, io_channel, io_tx_tune, NULL, NULL, NULL, NULL}; /* power: the job's */
     if ((why = modem_up(&io, power_dbm)) != NULL) {
         bench_reply = NULL;
         unpark();
@@ -510,7 +510,7 @@ static void start_task(void *arg)
     } else if (r->cfg->sdr_duplex == RDOF_SDR_DUPLEX_FULL && c->duplex != RDOF_FE_FULL_DUPLEX) {
         fail(r, "duplex: full, but the SDR's front end is half duplex");
     } else {
-        const rdof_sdrmodem_io_t io = {io_reply, io_channel, io_tx_tune, NULL, NULL, io_tx_level};
+        const rdof_sdrmodem_io_t io = {io_reply, io_channel, io_tx_tune, NULL, NULL, io_tx_level, NULL};
         if (r->cfg->slot_timing.utc) /* the repeater's own slot_timing over the SDR's */
             slot_timing_setup(&r->cfg->slot_timing);
         if ((why = modem_up(&io, roamer_dbm())) != NULL) {

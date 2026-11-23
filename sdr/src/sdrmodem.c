@@ -1505,8 +1505,23 @@ bool rdof_sdrmodem_signal(rdof_sdrmodem_t *m, uint32_t hz, const rdof_sig_src_t 
                    : rdof_sdrmodem_transmitting(m) ? "the modem is sending DMR"
                    : !src->freq && !src->iq      ? "the source renders nothing"
                                                  : NULL;
+    /* a rate of the source's own: the stream's divided by a whole number, so each of its samples spreads evenly */
+    char rate_no[128];
+    if (!no && src->rate > 0) { /* (the stream's own rate within 0.1 %: a front end's rate, rounded) */
+        const double d = round((double)m->tx_fs / src->rate);
+        if (d < 1 || fabs((double)m->tx_fs / d - src->rate) > (d > 1 ? 1e-6 : 1e-3) * src->rate) {
+            snprintf(rate_no, sizeof rate_no, "the source's %.0f S/s isn't the transmit stream's %u S/s divided by a "
+                     "whole number", src->rate, (unsigned)m->tx_fs);
+            no = rate_no;
+        }
+    }
+    const bool span = src->span_lo_hz != 0 || src->span_hi_hz != 0;
     double off = 0;
-    if (!no && (!m->io.tx_tune || !m->io.tx_tune(m->io.ctx, hz, &off)))
+    if (!no && span && !m->io.tx_place)
+        no = "this transmitter sends one carrier at a time";
+    else if (!no && span && !m->io.tx_place(m->io.ctx, hz, src->span_lo_hz, src->span_hi_hz, &off))
+        no = "the transmitter can't reach all of the carriers at once (too far apart)";
+    else if (!no && !span && (!m->io.tx_tune || !m->io.tx_tune(m->io.ctx, hz, &off)))
         no = "the transmitter can't tune there";
     if (no) {
         snprintf(why, cap, "%s", no);

@@ -2483,6 +2483,61 @@ static void test_signal_ppm(void)
     rdof_sdrmodem_free(&m);
 }
 
+/* A source of its own rate and span (the bench's iq): a rate the stream's doesn't divide is refused, as is a span on a
+ * transmitter with no tx_place; with one, the LO goes where it says and the I/Q comes out at the offset it gives. */
+static double sp_lo, sp_hi;
+static bool sp_place(void *ctx, uint32_t hz, double lo, double hi, double *off)
+{
+    sp_lo = lo, sp_hi = hi;
+    *off = -20000;
+    return true;
+}
+typedef struct {
+    long n, sent;
+} sp_src_t;
+static int sp_iq(void *ctx, float *iq, int n)
+{
+    sp_src_t *s = ctx;
+    int k = 0;
+    for (; k < n && s->sent < s->n; k++, s->sent++)
+        iq[2 * k] = 0.5f, iq[2 * k + 1] = 0;
+    return k;
+}
+static bool sp_done(void *ctx) { return ((sp_src_t *)ctx)->sent >= ((sp_src_t *)ctx)->n; }
+
+static void test_signal_span(void)
+{
+    static rdof_sdrmodem_t m;
+    char why[160];
+    sp_src_t s = {9600, 0};
+    rdof_sig_src_t src = {.iq = sp_iq, .done = sp_done, .rate = 100000, .ctx = &s};
+    const rdof_sdrmodem_io_t one = {no_reply, NULL, sg_tune, NULL, NULL};
+    CHECK(rdof_sdrmodem_init(&m, &one, SG_FS, SG_FS, false) == 0, "init");
+    CHECK(!rdof_sdrmodem_signal(&m, 438487500, &src, why, sizeof why) && strstr(why, "whole number"),
+          "100 kS/s on 864 kS/s: %s", why);
+    src.rate = 96000, src.span_lo_hz = -6250, src.span_hi_hz = 56250;
+    CHECK(!rdof_sdrmodem_signal(&m, 438487500, &src, why, sizeof why) && strstr(why, "one carrier"),
+          "a span with no tx_place: %s", why);
+    rdof_sdrmodem_free(&m);
+    const rdof_sdrmodem_io_t place = {no_reply, NULL, sg_tune, NULL, NULL, NULL, sp_place};
+    CHECK(rdof_sdrmodem_init(&m, &place, SG_FS, SG_FS, false) == 0, "init");
+    CHECK(rdof_sdrmodem_signal(&m, 438487500, &src, why, sizeof why), "signal: %s", why);
+    CHECK(sp_lo == -6250 && sp_hi == 56250, "placed for %.0f to %.0f", sp_lo, sp_hi);
+    static rdof_cf_t x[SG_FS / 4];
+    long got = 0;
+    for (int64_t pos = 1000; got + 1000 <= SG_FS / 4 && rdof_sdrmodem_signal_state(&m) == 1; pos += 1000, got += 1000)
+        rdof_sdrmodem_pull_iq(&m, pos, x + got, 1000);
+    double sum = 0;
+    long n = 0;
+    for (long j = 20; j + 1 < 9600 * 9 - 20; j++, n++)
+        sum += atan2(x[j + 1].im * x[j].re - x[j + 1].re * x[j].im, x[j + 1].re * x[j].re + x[j + 1].im * x[j].im) *
+               SG_FS / (2 * M_PI);
+    CHECK(fabs(sum / n + 20000) < 1.0 && fabs(hypot(x[100].re, x[100].im) - 0.5) < 1e-3,
+          "the I/Q at %.2f Hz (not -20000), |x| %.4f", sum / n, hypot(x[100].re, x[100].im));
+    rdof_sdrmodem_signal(&m, 0, NULL, why, sizeof why);
+    rdof_sdrmodem_free(&m);
+}
+
 int main(void)
 {
     char report[1024];
@@ -2515,6 +2570,7 @@ int main(void)
     test_write_from_reply();
     test_signal(true);
     test_signal_ppm();
+    test_signal_span();
     test_signal(false);
     for (int full = 0; full < 2; full++) {
         int f = rdof_sdrmodem_loopback(full, report, sizeof report);

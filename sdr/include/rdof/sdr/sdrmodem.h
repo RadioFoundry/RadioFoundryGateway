@@ -130,6 +130,10 @@ typedef struct {
     /* Optional: SET_FREQ's RF level (0..255) for the transmitter, after tx_tune. The host takes it as a level of
      * its device's map (rdof_txpower_sdr_map: 255 its tx.power_dbm). */
     void (*tx_level)(void *ctx, int level);
+    /* Optional: tune the transmitter for a signal whose power spans lo_hz to hi_hz from hz (a source's span):
+     * false if the front end can't reach all of it; else hz's offset from the modulator's center in *offset_hz.
+     * NULL: a source with a span is refused. */
+    bool (*tx_place)(void *ctx, uint32_t hz, double lo_hz, double hi_hz, double *offset_hz);
 } rdof_sdrmodem_io_t;
 
 typedef struct {
