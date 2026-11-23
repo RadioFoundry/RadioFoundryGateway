@@ -98,7 +98,6 @@ Details: [reference.md](docs/reference.md).
 
 ## Acknowledgements
 
-- [SAMS0N1TE](https://github.com/SAMS0N1TE/lr2021-sdr): discovered and documented the LR2021's raw I/Q mode
 - ETSI: the DMR standards (TS 102 361)
 - Semtech: the LR2021 datasheet
 - Jonathan Naylor (G4KLX): MMDVM and its modem protocol
@@ -111,3 +110,4 @@ Details: [reference.md](docs/reference.md).
 - Realtek, Rafael Micro and [webrtlsdr](https://github.com/jtarrio/webrtlsdr): RTL-SDR register details
 - Meshtastic and MeshCore: W12 board details
 - Espressif: ESP-IDF and esp-dsp
+- lr2021-sdr: discovered and documented the LR2021's raw I/Q mode
