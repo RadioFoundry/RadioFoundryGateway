@@ -6,7 +6,7 @@
 
 ## What it does
 
-| | |
+| Function | Description |
 |---|---|
 | **Tier III trunked site** | Open-source DMR Tier III site controller (ETSI TS 102 361-4) |
 | **Tier II repeater and hotspot** | Duplex, simplex, split duplex, single-frequency repeater |
