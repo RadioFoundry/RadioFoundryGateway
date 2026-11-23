@@ -30,12 +30,15 @@
 
 | Radio | Receive | Transmit |
 |---|---|---|
-| MMDVM modem (hotspot or repeater) | 1 channel | 1 channel |
-| Handheld in hotspot mode | 1 channel | 1 channel |
+| RadioFoundry radio | 1 channel per radio | 1 channel per radio |
+| MMDVM modem (hotspot or repeater) | 1 channel per modem | 1 channel per modem |
+| OpenGD77 radio in hotspot mode | 1 channel per radio | 1 channel per radio |
 | RTL-SDR | Up to 16 channels | No |
 | LR2021 (W12) | Up to 6 channels | 1 channel |
 | PlutoSDR or Pluto+ | Up to 15 channels | Up to 8 channels |
 | SoapySDR devices | Up to 16 channels | Varies |
+
+Connect several radios or modems for several channels, and mix them with SDRs.
 
 ## Tier III
 
