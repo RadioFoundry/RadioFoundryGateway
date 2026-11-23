@@ -38,7 +38,7 @@
 | PlutoSDR or Pluto+ | Up to 15 channels | Up to 8 channels |
 | SoapySDR devices | Up to 16 channels | Varies |
 
-Connect several radios or modems for several channels, and mix them with SDRs.
+Use several radios or modems for several channels (up to 2 on an ESP32-S3, 16 on a computer), alongside SDRs.
 
 ## Tier III
 
