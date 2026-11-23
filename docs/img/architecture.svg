@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1090" height="560" viewBox="0 0 1090 560" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker></defs>
+<rect x="0" y="0" width="1090" height="560" rx="12" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+<rect x="20" y="48" width="220" height="382" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="130" y="74" font-size="14" font-weight="700" fill="#1f2328" text-anchor="middle">Radios</text>
+<rect x="34" y="112" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="130.0" y="130.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">MMDVM modems</text>
+<text x="130.0" y="145.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">hotspot and repeater HATs</text>
+<rect x="34" y="164" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="130.0" y="182.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">Handheld radios</text>
+<text x="130.0" y="197.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">in hotspot mode</text>
+<rect x="34" y="216" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="130.0" y="234.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">RTL-SDR</text>
+<text x="130.0" y="249.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">receive only</text>
+<rect x="34" y="268" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="130.0" y="286.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">LR2021</text>
+<text x="130.0" y="301.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">on the Meshnology W12</text>
+<rect x="34" y="320" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="130.0" y="338.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">PlutoSDR or Pluto+</text>
+<text x="130.0" y="353.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">receive and transmit</text>
+<rect x="34" y="372" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="130.0" y="390.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">SoapySDR devices</text>
+<text x="130.0" y="405.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">LimeSDR, HackRF, USRP</text>
+<rect x="20" y="456" width="220" height="84" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="130" y="480" font-size="14" font-weight="700" fill="#1f2328" text-anchor="middle">Time sources</text>
+<rect x="34" y="492" width="90" height="36" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="79.0" y="514.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">GNSS PPS</text>
+<rect x="136" y="492" width="90" height="36" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="181.0" y="514.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">NTP</text>
+<rect x="290" y="24" width="500" height="516" rx="12" fill="#eef4ff" stroke="#7a9cd6" stroke-width="1.5"/>
+<text x="540.0" y="50" font-size="16" font-weight="700" fill="#0b3d91" text-anchor="middle">RadioFoundry Gateway</text>
+<text x="540.0" y="70" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">ESP32-S3 · Raspberry Pi · Linux · macOS · PlutoSDR</text>
+<rect x="306" y="112" width="96" height="302" rx="8" fill="#dbe7ff" stroke="#7a9cd6" stroke-width="1"/>
+<text x="354" y="217.0" font-size="13" font-weight="700" fill="#0b3d91" text-anchor="middle">Radio</text>
+<text x="354" y="234.0" font-size="13" font-weight="700" fill="#0b3d91" text-anchor="middle">interfaces</text>
+<text x="354" y="259.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">MMDVM</text>
+<text x="354" y="274.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">protocol</text>
+<text x="354" y="289.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle"></text>
+<text x="354" y="304.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">SDR</text>
+<text x="354" y="319.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">channelizer</text>
+<text x="354" y="334.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">and modulator</text>
+<rect x="678" y="112" width="96" height="302" rx="8" fill="#dbe7ff" stroke="#7a9cd6" stroke-width="1"/>
+<text x="726" y="210.0" font-size="13" font-weight="700" fill="#0b3d91" text-anchor="middle">Network</text>
+<text x="726" y="227.0" font-size="13" font-weight="700" fill="#0b3d91" text-anchor="middle">interfaces</text>
+<text x="726" y="252.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">call routing</text>
+<text x="726" y="267.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">and rules</text>
+<text x="726" y="282.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle"></text>
+<text x="726" y="297.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">Homebrew</text>
+<text x="726" y="312.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">MQTT</text>
+<text x="726" y="327.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">bench line</text>
+<text x="726" y="342.0" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">IP</text>
+<text x="540.0" y="100" font-size="10" font-weight="700" fill="#3d4f73" text-anchor="middle">APPLICATIONS</text>
+<rect x="438" y="112" width="204" height="42" rx="6" fill="#ffffff" stroke="#7a9cd6" stroke-width="1"/>
+<text x="540.0" y="130.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">Tier III site</text>
+<text x="540.0" y="145.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">controller</text>
+<line x1="404" y1="133.0" x2="436" y2="133.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="644" y1="133.0" x2="676" y2="133.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="438" y="164" width="204" height="42" rx="6" fill="#ffffff" stroke="#7a9cd6" stroke-width="1"/>
+<text x="540.0" y="182.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">Repeater</text>
+<text x="540.0" y="197.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">and hotspot</text>
+<line x1="404" y1="185.0" x2="436" y2="185.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="644" y1="185.0" x2="676" y2="185.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="438" y="216" width="204" height="42" rx="6" fill="#ffffff" stroke="#7a9cd6" stroke-width="1"/>
+<text x="540.0" y="234.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">Roamer</text>
+<text x="540.0" y="249.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">mobile transceiver</text>
+<line x1="404" y1="237.0" x2="436" y2="237.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="644" y1="237.0" x2="676" y2="237.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="438" y="268" width="204" height="42" rx="6" fill="#ffffff" stroke="#7a9cd6" stroke-width="1"/>
+<text x="540.0" y="286.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">SDR receiver</text>
+<text x="540.0" y="301.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">many channels</text>
+<line x1="404" y1="289.0" x2="436" y2="289.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="644" y1="289.0" x2="676" y2="289.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="438" y="320" width="204" height="42" rx="6" fill="#ffffff" stroke="#7a9cd6" stroke-width="1"/>
+<text x="540.0" y="338.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">Test bench</text>
+<text x="540.0" y="353.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">TCP 7373</text>
+<line x1="404" y1="341.0" x2="436" y2="341.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="644" y1="341.0" x2="676" y2="341.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="438" y="372" width="204" height="42" rx="6" fill="#ffffff" stroke="#7a9cd6" stroke-width="1"/>
+<text x="540.0" y="390.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">DMR-IP gateway</text>
+<text x="540.0" y="405.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">radio data</text>
+<line x1="404" y1="393.0" x2="436" y2="393.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="644" y1="393.0" x2="676" y2="393.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<rect x="306" y="472" width="468" height="52" rx="8" fill="#dbe7ff" stroke="#7a9cd6" stroke-width="1"/>
+<text x="540.0" y="494" font-size="13" font-weight="700" fill="#0b3d91" text-anchor="middle">Clock discipline and UTC slot grid</text>
+<text x="540.0" y="511" font-size="11" font-weight="400" fill="#3d4f73" text-anchor="middle">crystal rate and temperature, steered to GNSS or NTP</text>
+<line x1="240" y1="510" x2="304" y2="510" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="354" y1="470" x2="354" y2="416" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="540.0" y1="470" x2="540.0" y2="416" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)"/>
+<rect x="840" y="48" width="220" height="382" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="950" y="74" font-size="14" font-weight="700" fill="#1f2328" text-anchor="middle">Networks and clients</text>
+<rect x="854" y="112" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="950.0" y="130.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">BrandMeister</text>
+<text x="950.0" y="145.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">hotspot, repeater or site</text>
+<rect x="854" y="164" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="950.0" y="182.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">HBlink4</text>
+<text x="950.0" y="197.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">a peer per radio</text>
+<rect x="854" y="216" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="950.0" y="234.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">MQTT broker</text>
+<text x="950.0" y="249.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">status and dashboards</text>
+<rect x="854" y="268" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="950.0" y="286.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">Other sites</text>
+<text x="950.0" y="301.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">site-to-site MQTT network</text>
+<rect x="854" y="320" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="950.0" y="338.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">Test clients</text>
+<text x="950.0" y="353.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">rfgbench, HIL tests</text>
+<rect x="854" y="372" width="192" height="42" rx="6" fill="#ffffff" stroke="#8c959f" stroke-width="1"/>
+<text x="950.0" y="390.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">IP networks</text>
+<text x="950.0" y="405.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">radio data services</text>
+<line x1="228" y1="133.0" x2="304" y2="133.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="776" y1="133.0" x2="852" y2="133.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="228" y1="185.0" x2="304" y2="185.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="776" y1="185.0" x2="852" y2="185.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="228" y1="237.0" x2="304" y2="237.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="776" y1="237.0" x2="852" y2="237.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="228" y1="289.0" x2="304" y2="289.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="776" y1="289.0" x2="852" y2="289.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="228" y1="341.0" x2="304" y2="341.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="776" y1="341.0" x2="852" y2="341.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="228" y1="393.0" x2="304" y2="393.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+<line x1="776" y1="393.0" x2="852" y2="393.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+</svg>

@@ -27,37 +27,7 @@ Open-source DMR infrastructure software for existing radio hardware.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    subgraph Radios["Radios"]
-        SDR["SDRs<br/>RTL-SDR · LR2021 · PlutoSDR"]
-        MOD["MMDVM modems<br/>hotspot and repeater HATs"]
-        HS["Handhelds in hotspot mode<br/>OpenGD77 / RadioFoundry"]
-    end
-    subgraph Time["Time sources"]
-        PPS["GNSS PPS"]
-        NTP["NTP servers ×6"]
-    end
-    subgraph GW["RadioFoundry Gateway<br/>ESP32-S3 · Linux · macOS · PlutoSDR"]
-        CLK["Clock discipline<br/>rate · temperature"]
-        GRID["UTC slot grid"]
-        R["Tier III site · Repeater<br/>Roamer · SDR receiver"]
-        IP["DMR-IP gateway"]
-        BENCH["Test bench<br/>TCP 7373"]
-    end
-    PPS --> CLK
-    NTP --> CLK
-    CLK --> GRID --> R
-    SDR <--> R
-    MOD <--> R
-    HS <--> R
-    R <--> BENCH
-    R <--> NETS["BrandMeister · HBlink4"]
-    R <--> MQ["MQTT broker<br/>dashboards, other sites"]
-    R <--> IP
-    IP <--> NET["Internet / LAN<br/>servers, apps"]
-    BENCH <--> TOOLS["Test clients<br/>rfgbench, HIL tests"]
-```
+![Architecture: radios and time sources on the left, the gateway's interfaces and applications in the center, networks and clients on the right](docs/img/architecture.svg)
 
 ## Supported radios
 
