@@ -123,6 +123,7 @@ typedef struct {
     double die_c;
     double tx_lo_hz, tx_hi_hz; /* where the transmitter tunes now (one synthesizer, a fixed TX LO); 0, 0: anywhere it can */
     double tx_fs;        /* the transmit stream's rate (S/s; 0: not given): an iq job's rate divides it */
+    double tx_reach_hz;  /* how far from its LO the transmitter sends (Hz; 0: not given): a span of carriers fits in twice it */
     double iq_scale_db;  /* the captures' cs8 full scale under the ADC's (the ring's scale, in dB; 0: the same) */
 } rdof_bl_window_t;
 

@@ -842,15 +842,21 @@ static bool io_tune(void *ctx, uint32_t hz, double *off)
     }
     return fabs(*off) < R.tx_rate * 0.4;
 }
+/* How far either side of the TX LO a span of carriers may go (io_place, the bench window's tx_reach_hz) */
+static double tx_place_reach(void)
+{
+    double reach = R.tx_rate * 0.4 - 12.5e3;
+    if (DX.started && reach > R.tx_rate / 6)
+        reach = R.tx_rate / 6;
+    return reach;
+}
 /* A signal spanning lo to hi Hz from hz (a bench iq job's carriers): the TX LO stays where all of it is in reach,
  * else moves to the span's center. The reach is io_tune's (0.4 of the stream's rate, less 12.5 kHz), with the
  * interpolator a sixth of its rate at most, as a trunked site's carriers (trunk_tx_offset): the CIC's first image of a
  * carrier f off the LO is f less the rate away, and the further out f, the less it is cut. */
 static bool io_place(void *ctx, uint32_t hz, double lo, double hi, double *off)
 {
-    double reach = R.tx_rate * 0.4 - 12.5e3;
-    if (DX.started && reach > R.tx_rate / 6)
-        reach = R.tx_rate / 6;
+    const double reach = tx_place_reach();
     if ((hi - lo) / 2 > reach)
         return false;
     const double a = (double)hz + lo, b = (double)hz + hi;
@@ -2285,6 +2291,7 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->iq_scale_db = 20 * log10(BL.ring.scale > 0 ? BL.ring.scale : 1);
     /* tx_lo_hz, tx_hi_hz 0: a job tunes anywhere, a repeater's TX LO moving for it (owner_yield) */
     w->tx_fs = R.tx_rate;
+    w->tx_reach_hz = R.tx_rate > 0 ? tx_place_reach() : 0;
 }
 
 static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)

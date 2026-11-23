@@ -531,8 +531,8 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   settings come back when the request ends. `"tune": false` refuses instead; while another request uses the window,
   or another session holds the tune, it is `busy`.
 - So do transmit jobs (`run`'s bench_tx jobs, `outbound`, `tx`) on a frequency past the transmitter's reach around
-  the center (`tx_lo_hz`-`tx_hi_hz` in the window, `tx_fs` its stream's rate: a W12 transmits within 1 MHz of where it receives), and a `run`
-  job that hears (`listen`, `listen_after`) where no channel decodes DMR: the receiver tuned there for the job, back
+  the center (`tx_lo_hz`-`tx_hi_hz` in the window, `tx_fs` its stream's rate, `tx_reach_hz` how far from its LO it
+  sends a span of carriers: a W12 transmits within 1 MHz of where it receives), and a `run` job that hears (`listen`, `listen_after`) where no channel decodes DMR: the receiver tuned there for the job, back
   after it. A frequency `bench.tx` doesn't list is still `refused`.
 - `claim` refuses a frequency the bench doesn't list (no receiver channel, not in `bench.tx`). Receiving needs no
   claim; the HIL tools claim anyway, and a claim keeps another session's job off the frequency.
@@ -1058,9 +1058,10 @@ sends only their data. A board that sends frequency, not I/Q (a W12), doesn't li
   the first samples), `ahead_s` (0.25, 0.02-10), `stream` (always true), and `carriers`: every carrier in the
   samples, MHz (`freq` may be one). Each must be a transmit frequency of this bench and is claimed for the job as
   `freq` is; the transmitter is placed so that the span from the lowest to the highest, 6.25 kHz either side, fits
-  in its reach (a Pluto's LO moves to the span's center when it has to; with the upconverter its reach is a sixth
-  of the rate either side, 32 kHz at 192 kS/s: carriers up to about 50 kHz apart). A span it can't reach is
-  `refused`.
+  in its reach, `info`'s `tx_reach_hz` either side (a Pluto's LO moves to the span's center when it has to). With
+  the upconverter the reach is a sixth of the stream's rate: 32 kHz at 192 kS/s, carriers up to about 50 kHz apart;
+  16 kHz at 96 kS/s (the stream a 768 kS/s window gets), about 20 kHz apart. Without it, 0.4 of the rate less 12.5
+  kHz: 295 kHz at 768 kS/s. A span past it is `refused` when the job comes in.
 - The samples stream as `fsk4`'s do: the gateway holds `ahead_s` of them, key-up waits for that much, the end of
   the stream, or 2 s; a half-close ends it. When it runs dry it sends zeros and a `{"underrun":{"n","sample","t"}}`
   record. Samples past unit magnitude are cut to it (`clipped`).

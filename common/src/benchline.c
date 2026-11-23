@@ -938,9 +938,9 @@ static void put_window(rdof_bl_t *bl, char *out, size_t cap)
     else
         snprintf(out, cap,
                  "{\"enabled\":true,\"lo\":%.6f,\"hi\":%.6f,\"center\":%.6f,\"fs\":%.1f,\"gain\":%.1f,"
-                 "\"dc_guard_khz\":%.1f,%s,\"tx_lo\":%.6f,\"tx_hi\":%.6f,\"tx_fs\":%.1f}",
+                 "\"dc_guard_khz\":%.1f,%s,\"tx_lo\":%.6f,\"tx_hi\":%.6f,\"tx_fs\":%.1f,\"tx_reach_hz\":%.0f}",
                  w.lo_hz / 1e6, w.hi_hz / 1e6, w.center_hz / 1e6, w.fs, w.gain_db, w.dc_guard_hz / 1e3, pp,
-                 w.tx_lo_hz / 1e6, w.tx_hi_hz / 1e6, w.tx_fs);
+                 w.tx_lo_hz / 1e6, w.tx_hi_hz / 1e6, w.tx_fs, w.tx_reach_hz);
 }
 
 static double expect_left(const rdof_bl_t *bl, double now)
@@ -3372,6 +3372,14 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
         if (nmore) { /* a channel's half either side of the outer ones */
             span_lo -= 6250;
             span_hi += 6250;
+            rdof_bl_window_t w;
+            get_window(bl, &w);
+            if (w.tx_reach_hz > 0 && (span_hi - span_lo) / 2 > w.tx_reach_hz) {
+                fail(bl, c, "refused", "carriers: %.1f kHz from the lowest to the highest (a channel's half either "
+                     "side), over the %.1f kHz the transmitter reaches now (twice %.1f kHz)", (span_hi - span_lo) / 1e3,
+                     2 * w.tx_reach_hz / 1e3, w.tx_reach_hz / 1e3);
+                return;
+            }
         }
     }
     sigtx_t *t = RDOF_BL_CALLOC(1, sizeof *t);

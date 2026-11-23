@@ -36,10 +36,11 @@ static int checks, failures;
 static rdof_bl_ring_t ring;
 static double clock_s;
 
+static double tx_reach = 32000; /* a Pluto's with its upconverter at 192 kS/s */
 static void f_window(void *ctx, rdof_bl_window_t *w)
 {
     *w = (rdof_bl_window_t){.running = true, .center_hz = CENTER, .fs = FS, .lo_hz = 438.01e6, .hi_hz = 438.19e6,
-                            .tx_fs = FS};
+                            .tx_fs = FS, .tx_reach_hz = tx_reach};
 }
 static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 {
@@ -639,17 +640,21 @@ static void test_iq(void)
             {"{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"carriers\":[{\"hex\":\"00\"}]}", "freq"},
             {"{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"carriers\":[438.125],\"hex\":\"00\"}",
              "carriers as frequencies"},
+            {"{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"carriers\":[{\"freq\":438.075,\"hex\":\"00\"},"
+             "{\"freq\":438.125,\"hex\":\"00\"}]}", "62.5 kHz from the lowest"}, /* reach 16 kHz: 96 kS/s */
         };
         rdof_bl_platform_t pl = PLAT;
         pl.tx_bands = f_bands;
         rdof_bl_t *bl = rdof_bl_new(&pl);
         for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+            tx_reach = i + 1 == sizeof bad / sizeof bad[0] ? 16000 : 32000;
             ntext = 0;
             const int c = ask(bl, bad[i][0]);
             take(bl, c);
             CHECK(strstr(text, "\"error\"") && strstr(text, bad[i][1]), "%s -> %s", bad[i][0], text);
             rdof_bl_closed(bl, c, clock_s);
         }
+        tx_reach = 32000;
         rdof_bl_free(bl);
     }
 
