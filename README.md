@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Tier III trunked site** | The only open-source DMR Tier III site controller we know of |
+| **Tier III trunked site** | Open-source DMR Tier III site controller (ETSI TS 102 361-4) |
 | **Tier II repeater and hotspot** | Duplex, simplex, split duplex, single-frequency repeater |
 | **Multi-channel receiver** | Up to 16 channels at once |
 | **Test bench** | Radio test and measurement over the network |
