@@ -30,48 +30,45 @@ Open-source DMR infrastructure software for existing radio hardware.
 ```mermaid
 flowchart LR
     subgraph Radios["Radios"]
-        SDR["SDRs<br/>RTL-SDR · LR2021 · PlutoSDR · SoapySDR"]
+        SDR["SDRs<br/>RTL-SDR · LR2021 · PlutoSDR"]
         MOD["MMDVM modems<br/>hotspot and repeater HATs"]
         HS["Handhelds in hotspot mode<br/>OpenGD77 / RadioFoundry"]
     end
     subgraph Time["Time sources"]
         PPS["GNSS PPS"]
-        NTP["NTP servers"]
+        NTP["NTP servers ×6"]
     end
     subgraph GW["RadioFoundry Gateway<br/>ESP32-S3 · Linux · macOS · PlutoSDR"]
-        CLK["Clock discipline<br/>UTC slot grid"]
-        APPS["Repeater · Roamer<br/>SDR receiver · Parrot"]
-        T3["Tier III site<br/>controller"]
+        CLK["Clock discipline<br/>rate · temperature"]
+        GRID["UTC slot grid"]
+        R["Tier III site · Repeater<br/>Roamer · SDR receiver"]
         IP["DMR-IP gateway"]
-        BENCH["Bench line<br/>TCP 7373"]
+        BENCH["Test bench<br/>TCP 7373"]
     end
     PPS --> CLK
     NTP --> CLK
-    CLK --> APPS
-    CLK --> T3
-    Radios <--> APPS
-    Radios <--> T3
-    Radios <--> BENCH
-    APPS <--> IP
-    T3 <--> IP
-    IP <--> NET["Internet / LAN"]
-    APPS <--> NETS["HBlink4 · BrandMeister"]
-    T3 <--> NETS
-    APPS --> MQ["MQTT<br/>dashboards, other sites"]
-    T3 <--> MQ
-    BENCH <--> TOOLS["Test tools<br/>rfgbench · HIL tests"]
+    CLK --> GRID --> R
+    SDR <--> R
+    MOD <--> R
+    HS <--> R
+    R <--> BENCH
+    R <--> NETS["BrandMeister · HBlink4"]
+    R <--> MQ["MQTT broker<br/>dashboards, other sites"]
+    R <--> IP
+    IP <--> NET["Internet / LAN<br/>servers, apps"]
+    BENCH <--> TOOLS["Test clients<br/>rfgbench, HIL tests"]
 ```
 
 ## Supported radios
 
 | Radio | Receive | Transmit | Duplex |
 |---|---|---|---|
-| MMDVM modem (MMDVM_HS HAT, ZUMspot, repeater board), stock firmware | Yes | Yes | Half or full |
-| Handheld in hotspot mode ([OpenGD77](https://www.opengd77.com/), [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry)) | Yes | Yes | Half or full |
-| RTL-SDR (R820T / R828D) | Multi-channel | No | N/A |
-| LR2021 (on the W12) | Multi-channel | Yes | Half |
-| PlutoSDR or Pluto+ | Multi-channel | Multi-carrier | Half or full |
-| SoapySDR devices (LimeSDR, HackRF, USRP and others) | Multi-channel | Device-dependent | Device-dependent |
+| MMDVM modem (MMDVM_HS HAT, ZUMspot, repeater board), stock firmware | One channel | One channel | Half or full |
+| Handheld in hotspot mode ([OpenGD77](https://www.opengd77.com/), [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry)) | One channel | One channel | Half or full |
+| RTL-SDR (R820T / R828D) | Several channels | No | N/A |
+| LR2021 (on the W12) | Several channels | One channel | Half |
+| PlutoSDR or Pluto+ | Several channels | Several channels | Half or full |
+| SoapySDR devices (LimeSDR, HackRF, USRP and others) | Several channels | Device-dependent | Device-dependent |
 
 ## Tier III
 
@@ -92,7 +89,7 @@ radios from other manufacturers have not been tested yet. Specification: [tier3.
 
 - **Receive:** I/Q capture, level triggers, decoded DMR bursts with bit error rate and timing, frequency tracking,
   and transmitter power ramp measurement
-- **Transmit:** FM, AM, DMR, P25, NXDN, dPMR, M17, D-STAR and raw I/Q, with several carriers at once
+- **Transmit:** FM, AM, DMR, P25, NXDN, dPMR, M17, D-STAR and raw I/Q, with several channels at once
 - **Test services:** a DMR repeater, P25 and NXDN repeaters on an MMDVM modem, and a data responder
 - **Accuracy:** the reference crystal is corrected from GNSS or NTP, and each reading reports its uncertainty
 - **Shared access:** sessions, claims and queues let several clients use one instrument; discovery by DNS-SD
