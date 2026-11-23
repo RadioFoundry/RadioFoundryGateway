@@ -78,7 +78,7 @@ Configuration: [settings.md](docs/settings.md) and [examples](config/examples/RE
 | Tier III | On air, two linked sites and BrandMeister |
 | Tier II repeater and hotspot | On air |
 | SDR receive and transmit | On air |
-| Test bench | In use |
+| Test bench | In daily use by RadioFoundry's hardware-in-the-loop test suite |
 
 Details: [reference.md](docs/reference.md).
 
