@@ -425,6 +425,24 @@ int main(void)
         CHECK(strstr(rep, "\"underruns\":1,") && !strstr(rep, "\"zero_symbols\":0,"), "zeros when dry: %s", rep);
         CHECK(m->tx_record(tx, rec, sizeof rec) > 0 && strstr(rec, "\"fill\":\"zero\""), "rec %s", rec);
         m->tx_free(tx);
+
+        /* one bit a symbol: a byte of ones is 8 symbols at +3, nothing before them */
+        tx = job("{\"shape\":\"nrz\",\"bits\":1,\"stream\":true,\"seconds\":1}", &secs);
+        static const uint8_t ones = 0xff;
+        CHECK(m->tx_in(tx, &ones, 1) == 1, "a byte in");
+        m->tx_in_end(tx, false);
+        const rdof_sig_src_t s3 = m->tx_src(tx);
+        n = 0;
+        for (int k; n < 48000 && (k = s3.freq(s3.ctx, hz + n, env + n, 480)) > 0;)
+            n += k;
+        m->tx_report(tx, rep, sizeof rep);
+        const long lead1 = lround(0.012 * FS);
+        int off1 = 0;
+        for (int j = 0; j < 8; j++)
+            off1 += fabs(hz[lead1 + j * 10 + 5] - 1800.0) > 0.5;
+        CHECK(strstr(rep, "\"symbols_in\":8,") && off1 == 0 && n == 2 * lead1 + 80, "bits 1: %d of 8 off, %ld samples: %s",
+              off1, n, rep);
+        m->tx_free(tx);
     }
 
     /* the peak, for a front end that sends frequency (the W12's limit is 4064 Hz): the symbols' own, the worst any
@@ -550,6 +568,30 @@ int main(void)
         printf("rx rrc 0.5: errors %d/%d dev %.1f evm %.2f%%\n", em, ns, o.dev, o.evm);
         CHECK(o.keyings == 1 && em == 0 && fabs(o.dev - 2400) < 40 && o.evm < 5, "rrc 0.5: %d errors, dev %.1f, evm %.2f",
               em, o.dev, o.evm);
+        /* each 4FSK air interface in bench-api.md's table, its fields as given there, through the receiver's matching
+         * filter: every symbol back, at its deviation */
+        static const struct {
+            const char *name, *tx, *rx;
+            double dev;
+        } air[] = {
+            {"p25", "", "", 1800},
+            {"dmr", "\"shape\":\"rrc\",\"dev_hz\":1944,", "\"shape\":\"rrc\",", 1944},
+            {"nxdn96", "\"shape\":\"rrc\",\"dev_hz\":2400,", "\"shape\":\"rrc\",", 2400},
+            {"nxdn48", "\"shape\":\"rrc\",\"baud\":2400,\"dev_hz\":1050,", "\"shape\":\"rrc\",\"baud\":2400,", 1050},
+            {"m17", "\"shape\":\"rrc\",\"rolloff\":0.5,\"dev_hz\":2400,", "\"shape\":\"rrc\",\"rolloff\":0.5,", 2400},
+        };
+        for (size_t i = 0; i < sizeof air / sizeof air[0]; i++) {
+            snprintf(text, sizeof text, "{%s\"repeat\":2,\"hex\":\"%s\"}", air[i].tx, hexf);
+            char rq[160];
+            snprintf(rq, sizeof rq, "{%s\"sync\":\"5575f5ff77ff\"}", air[i].rx);
+            through(text, FS, rq, 30, &o, &end);
+            const int ea = dibit_errors(&o, frame, ns);
+            printf("rx %s: errors %d/%d dev %.1f evm %.2f%%\n", air[i].name, ea, ns, o.dev, o.evm);
+            CHECK(o.keyings == 1 && o.syncs >= 1 && ea == 0 && fabs(o.dev - air[i].dev) < 0.02 * air[i].dev &&
+                      o.evm < 5,
+                  "%s: %d keyings, %d syncs, %d errors, dev %.1f (%.0f), evm %.2f", air[i].name, o.keyings, o.syncs,
+                  ea, o.dev, air[i].dev, o.evm);
+        }
         /* GMSK-like (D-STAR's): gauss, BT 0.5, one bit a symbol, +-1200 Hz; invert flips it */
         for (int inv = 0; inv < 2; inv++) {
             snprintf(text, sizeof text, "{\"shape\":\"gauss\",\"invert\":%s,\"hex\":\"%s\"}", inv ? "true" : "false",

@@ -977,20 +977,21 @@ bench's radios may run, as `fsk4` fields:
 | NXDN (2400 baud) | `shape` `rrc`, `baud` 2400, `dev_hz` 1050 |
 | M17 | `shape` `rrc`, `rolloff` 0.5, `dev_hz` 2400 |
 | D-STAR (GMSK) | `shape` `gauss`, `bt` 0.5, `bits` 1, `dev_hz` 1200 (the `gauss` defaults) |
-| YSF | 4800 baud 4FSK: its pulse and deviation as its spec gives them |
+| dPMR | `shape` `rrc`, `baud` 2400, `dev_hz` 1050 |
+| YSF | 4800 baud 4FSK: `shape` and `dev_hz` from its spec (not yet checked on the bench) |
 
-The pulse is a table over 16 symbols either side for `rrc`, 12 for `c4fm` and `rc`, 4 for `gauss` (cut at 8, an RRC's tails put
-about 45 Hz of intersymbol interference on DMR's levels), from the shape's spectrum, scaled to exactly 1 at the center
+The pulse is a table over 16 symbols either side for `rrc`, 12 for `c4fm` and `rc`, 4 for `gauss` (cut at 8, an
+RRC's tails put about 45 Hz of intersymbol interference on DMR's levels), from the shape's spectrum, scaled to exactly 1 at the center
 behind its receive filter. Rendered at 48 kS/s, the levels behind that filter come out within 1 Hz (`c4fm`, `rc`,
 `nrz`) and 6 Hz (`rrc`, the 16-symbol cut).
 
 `fsk4` `tx` fields: the symbols, either `hex` (the bytes in the request) or `symbols` (how many) with the bytes after
 the request line (`ceil(symbols / 4)`; `symbols` also trims `hex`), `baud` (4800; 600-9600), `shape` (`c4fm`),
-`dev_hz` (1800; 1944 with `rrc`), `dev_scale_pct` (100), `offset_hz` (0: the carrier from `freq`), `clip_hz` (0: none;
+`dev_hz` (1800; 1944 with `rrc`, 1200 with `gauss`), `rolloff`, `bt`, `bits`, `invert` (above), `dev_scale_pct` (100), `offset_hz` (0: the carrier from `freq`), `clip_hz` (0: none;
 the deviation's limit), `repeat` (1), `gap_s` (0: the plays back to back in one keying; else each play its own keying,
 this far apart, carrier off between), `lead_s` and `tail_s` (bare carrier before and after, 0.01; each with a 2 ms
 raised-cosine ramp of the envelope ahead of it). Symbols that haven't come in by key-up hold the carrier off (keyed)
-for up to 2 s; any still missing go as 0 (`symbols_short`). `done` adds `shape`, `baud`, `dev_hz` (scaled),
+for up to 2 s; any still missing go as 0 (`symbols_short`). `done` adds `shape`, `rolloff`, `bt`, `bits`, `baud`, `dev_hz` (scaled),
 `peak_hz`, `offset_hz`, `symbols`, `repeat`, `bursts`, `seconds`, `symbols_in`, `symbols_short`, `wait_s`, `clip_hz`
 and `clipped` (samples cut to it).
 
@@ -1072,9 +1073,9 @@ Pluto, else `unsupported`): `carriers` as objects, each a carrier's job. A trunk
 a voice channel (P25, DMR Tier III) from one SDR, the voice keying when the grant goes out:
 
 ```json
-{"op":"tx","mode":"fsk4","freq":461.0375,"repeat":40,"carriers":[
-  {"freq":461.0375,"hex":"<the control channel's frames>"},
-  {"freq":461.0875,"hex":"<the voice frames>","start_s":0.36,"repeat":10}]}
+{"op":"tx","mode":"fsk4","freq":438.5,"repeat":40,"carriers":[
+  {"freq":438.5,"hex":"<the control channel's frames>"},
+  {"freq":438.55,"hex":"<the voice frames>","start_s":0.36,"repeat":10}]}
 ```
 
 - Each object has `freq` (MHz), `start_s` (0: when it keys, from the job's key-up), `level` (its share of full
@@ -1087,10 +1088,77 @@ a voice channel (P25, DMR Tier III) from one SDR, the voice keying when the gran
   long as the longest carrier (`seconds`). A carrier that has ended, or hasn't started, is silent.
 - The `tx` header's `carriers` lists the frequencies; `done` adds `"carriers":[{"freq","start_s","level", the
   mode's report}, ...]`.
+- When the LO moves for the span it goes to the span's center: two carriers then sit either side of it, each on the
+  other's I/Q image, and a third in the middle on the LO's leakage. Both are well under the carriers on a calibrated
+  transmitter, but neither is measured on the Pluto yet.
 
 Measured 2026-11-16, a W12 (power 128) to a Pluto 2 m away at -30 dBFS: C4FM and RRC at 4800 baud, 3072 random symbols
 each, 0 errors (C4FM behind `iad` +-1792 / +-599 Hz, EVM 5%); 2400 baud RRC at 1050 Hz with a 10-symbol sync in 80 ms
 bursts, 0 errors, EVM 4%.
+
+Examples, one per air interface. The client builds the frames (sync, headers, FEC); `hex` is them as dibits packed 4
+to a byte (D-STAR's: bits, 8 to a byte). Each `tx` here is one line on the bench connection; `rfgbench.py tx fsk4`
+takes the same fields as options (`--dibits FILE`, `--shape`, `--dev`, `--rolloff`, `--bits`, `--repeat` ...).
+
+```json
+{"op":"tx","mode":"fsk4","freq":438.5,"hex":"5575f5ff77ff..."}
+{"op":"tx","mode":"fsk4","freq":438.5,"shape":"rrc","dev_hz":1944,"lead_s":0.04,"hex":"..."}
+{"op":"tx","mode":"fsk4","freq":438.5,"shape":"rrc","dev_hz":2400,"hex":"..."}
+{"op":"tx","mode":"fsk4","freq":438.5,"shape":"rrc","baud":2400,"dev_hz":1050,"hex":"..."}
+{"op":"tx","mode":"fsk4","freq":438.5,"shape":"rrc","rolloff":0.5,"dev_hz":2400,"hex":"..."}
+{"op":"tx","mode":"fsk4","freq":438.5,"shape":"gauss","hex":"..."}
+```
+
+In order: P25 phase 1 (C4FM: the defaults), DMR (a burst's sync near its start: `lead_s` for a W12's key-up), NXDN
+at 4800 baud, NXDN or dPMR at 2400 baud, M17, D-STAR (GMSK: `gauss` sends one bit a symbol at 1200 Hz). A DMR
+burst the gateway can build itself goes through the `dmr` mode instead; `fsk4` is for frames it doesn't know.
+
+The matching `rx`, the radio's frames back as dibits from each `sync` (the air interface's sync pattern, as hex):
+
+```json
+{"op":"rx","mode":"fsk4","freq":438.5,"seconds":10,"sync":"5575f5ff77ff"}
+{"op":"rx","mode":"fsk4","freq":438.5,"seconds":10,"shape":"rrc","sync":"<the DMR sync, 48 bits>"}
+{"op":"rx","mode":"fsk4","freq":438.5,"seconds":10,"shape":"rrc","baud":2400,"sync":"cdf59","sync_len":10}
+{"op":"rx","mode":"fsk4","freq":438.5,"seconds":10,"shape":"rrc","rolloff":0.5,"sync":"<the M17 sync>"}
+```
+
+P25, DMR, NXDN at 2400 baud and M17. NXDN at 4800 baud is DMR's line with its own sync. D-STAR's two levels
+aren't sliced (no `rx` for it).
+
+Several carriers in one keying (a Pluto): a trunked site's control channel with a voice channel keyed on a grant.
+P25 (C4FM, the defaults), the voice channel starting 0.36 s in, at a lower level:
+
+```json
+{"op":"tx","mode":"fsk4","freq":438.5,"repeat":40,"carriers":[
+  {"freq":438.5,"hex":"<control channel frames, the grant among them>"},
+  {"freq":438.55,"hex":"<voice frames>","start_s":0.36,"level":0.4,"repeat":20}]}
+```
+
+DMR Tier III, a TSCC with a traffic channel: the job's `shape` and `dev_hz` are both carriers':
+
+```json
+{"op":"tx","mode":"fsk4","freq":438.5,"shape":"rrc","dev_hz":1944,"repeat":50,"carriers":[
+  {"freq":438.5,"hex":"<TSCC bursts, the grant among them>"},
+  {"freq":438.55,"hex":"<traffic channel bursts>","start_s":0.24,"repeat":30}]}
+```
+
+The same from `rfgbench.py`, each carrier's frames in a file of dibits and its own fields after it:
+
+```sh
+rfgbench.py --bench HOST tx fsk4 --freq 438.5 --repeat 40 \
+    --carrier 438.5:cc.bin --carrier 438.55:voice.bin:start_s=0.36:level=0.4:repeat=20
+rfgbench.py --bench HOST tx fsk4 --freq 438.5 --shape rrc --dev 1944 --repeat 50 \
+    --carrier 438.5:tscc.bin --carrier 438.55:tch.bin:start_s=0.24:repeat=30
+```
+
+`repeat` loops a carrier's frames: a control channel's frames repeat while the voice channel's carrier plays its
+call. Each carrier's frames are in the request, so a whole call goes in one job: a request line holds 192 KiB, about
+390 000 symbols of `hex` over all the carriers (80 s at 4800 baud) before `repeat`. Two carriers up to about 50 kHz
+apart (the Pluto's reach). A radio on each frequency, or one scanning both, hears the whole system.
+
+Checked 2026-11-23, rdofradio on a simulated SDR (2.4 MS/s): two C4FM carriers 50 kHz apart, the second 0.2 s in at
+`level` 0.4, through `rfgbench.py tx fsk4 --carrier`: each demodulated from the transmitted samples with 0 of 3072
+symbols wrong, outer deviation 1792-1794 Hz. Not yet on the air.
 
 ### 14.7 Frequency correction
 

@@ -225,14 +225,19 @@ def xtal_note(w: dict) -> str:
     return f"crystal {ppm:+.3f} ppm from {how}{f' against {ref}' if ref and src == 'clock' else ''}{at}"
 
 
+_INFO: dict = {}
+
+
 def check_reach(a, mhz: float, tx: bool) -> None:
     """Warn on stderr when mhz is past where the gateway can transmit (tx) or receive now, with the commands that move
     the receiver there. Each platform reports its own: the window's lo-hi (its rate), and tx_lo-tx_hi where its
     transmitter is tied to the receiver (a W12: 1 MHz either side of the center; 0, 0: it tunes on its own)."""
-    try:
-        d = request(a.where, {"op": "info"})
-    except OSError:
-        return
+    if a.where not in _INFO:   # once a run: a job's carriers each check against the same info
+        try:
+            _INFO[a.where] = request(a.where, {"op": "info"})
+        except OSError:
+            return
+    d = _INFO[a.where]
     w = d.get("window") or {}
     if mhz is None:
         return
@@ -1129,12 +1134,16 @@ def cmd_tx_iq(a) -> int:
             req[k] = v
     for mhz in [a.freq] + (a.carriers or []):
         check_reach(a, mhz, tx=True)
+    try:    # before the request: a file that can't be read would leave the job keyed on zeros until --seconds
+        src = sys.stdin.buffer if a.iq == "-" else open(a.iq, "rb")
+    except OSError as e:
+        print(f"{NOTE} {e}", file=sys.stderr)
+        return 1
     hold: dict = {}
 
     def send():    # as it comes; the gateway reads as its ahead_s ring empties, a half-close at the end
         try:
-            f = sys.stdin.buffer if a.iq == "-" else open(a.iq, "rb")
-            with f:
+            with src as f:
                 while True:
                     b = f.read1(65536) if hasattr(f, "read1") else f.read(65536)
                     if not b:

@@ -485,7 +485,7 @@ static long iq_render_c4fm(int k, float *hz, float *env, long cap)
  * sync on against the frame sent there (-1: no dibits) */
 static double f_sig_rate48(void *ctx) { return 48000; }
 
-static int iq_run(const char *txreq, const int16_t *x, long n, int listen, char *done, size_t dcap)
+static int iq_run(const char *txreq, const char *rxx, const int16_t *x, long n, int listen, char *done, size_t dcap)
 {
     rdof_bl_platform_t pl = PLAT;
     pl.tx_bands = f_bands;
@@ -495,8 +495,8 @@ static int iq_run(const char *txreq, const int16_t *x, long n, int listen, char 
     tx = (typeof(tx)){0};
     air(96000, false);
     char req[400];
-    snprintf(req, sizeof req, "{\"op\":\"rx\",\"mode\":\"fsk4\",\"freq\":%s,\"seconds\":2,\"sync\":\"5575f5ff77ff\"}",
-             listen ? "438.125" : "438.075");
+    snprintf(req, sizeof req, "{\"op\":\"rx\",\"mode\":\"fsk4\",\"freq\":%s,\"seconds\":2,%s\"sync\":\"5575f5ff77ff\"}",
+             listen ? "438.125" : "438.075", rxx);
     const int rx = ask(bl, req);
     const int c = ask(bl, txreq);
     size_t sent = 0;
@@ -585,7 +585,7 @@ static void test_iq(void)
     char done[2048];
     for (int k = 0; k < 2; k++) {
         const int e = iq_run("{\"op\":\"tx\",\"mode\":\"iq\",\"freq\":438.075,\"carriers\":[438.075,438.125],"
-                             "\"rate\":192000,\"seconds\":5,\"ahead_s\":0.05}", x, n, k, done, sizeof done);
+                             "\"rate\":192000,\"seconds\":5,\"ahead_s\":0.05}", "", x, n, k, done, sizeof done);
         CHECK(e == 0, "carrier %c: %d symbol errors of %d", "AB"[k], e, IQ_NSYM);
         CHECK(num(done, "samples_in") == n && num(done, "underruns") == 0 && num(done, "clipped") == 0, "%s", done);
     }
@@ -604,12 +604,29 @@ static void test_iq(void)
     }
     snprintf(req + at, sizeof req - (size_t)at, "]}");
     for (int k = 0; k < 2; k++) {
-        const int e = iq_run(req, NULL, 0, k, done, sizeof done);
+        const int e = iq_run(req, "", NULL, 0, k, done, sizeof done);
         CHECK(e == 0, "fsk4 carrier %c: %d symbol errors of %d", "AB"[k], e, IQ_NSYM);
         CHECK(strstr(done, "\"mode\":\"fsk4\"") && strstr(done, "\"carriers\":[{\"freq\":438.075000,\"start_s\":0.000,"
                                                                 "\"level\":0.500,\"shape\":\"c4fm\"") &&
                   strstr(done, "{\"freq\":438.125000,\"start_s\":0.100,\"level\":0.400,"),
               "%s", done);
+    }
+    /* a DMR Tier III site's control channel and a traffic channel: the job's fields (DMR's pulse and deviation) are
+     * both carriers', the traffic channel keys 60 ms in */
+    at = snprintf(req, sizeof req, "{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"shape\":\"rrc\","
+                                   "\"dev_hz\":1944,\"repeat\":2,\"carriers\":[");
+    for (int k = 0; k < 2; k++) {
+        at += snprintf(req + at, sizeof req - (size_t)at, "%s{\"freq\":%s,%s\"hex\":\"", k ? "," : "",
+                       k ? "438.125" : "438.075", k ? "\"start_s\":0.06," : "");
+        for (int i = 0; i < IQ_NSYM / 4; i++)
+            at += snprintf(req + at, sizeof req - (size_t)at, "%02x", iq_frame[k][i]);
+        at += snprintf(req + at, sizeof req - (size_t)at, "\"}");
+    }
+    snprintf(req + at, sizeof req - (size_t)at, "]}");
+    for (int k = 0; k < 2; k++) {
+        const int e = iq_run(req, "\"shape\":\"rrc\",", NULL, 0, k, done, sizeof done);
+        CHECK(e == 0, "dmr carrier %c: %d symbol errors of %d", "AB"[k], e, IQ_NSYM);
+        CHECK(strstr(done, "\"level\":0.500,\"shape\":\"rrc\"") && strstr(done, "\"dev_hz\":1944.0"), "%s", done);
     }
     {
         static const char *bad[][2] = {
@@ -620,6 +637,8 @@ static void test_iq(void)
             {"{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"carriers\":[{\"freq\":438.15,\"hex\":\"00\"}]}",
              "isn't a transmit frequency"},
             {"{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"carriers\":[{\"hex\":\"00\"}]}", "freq"},
+            {"{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"carriers\":[438.125],\"hex\":\"00\"}",
+             "carriers as frequencies"},
         };
         rdof_bl_platform_t pl = PLAT;
         pl.tx_bands = f_bands;

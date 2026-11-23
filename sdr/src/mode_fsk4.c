@@ -240,7 +240,7 @@ static const char *stream_cfg(fsk4_tx_t *t, const rdof_jdoc_t *d, int job)
         }
         t->nidle = (uint32_t)(L / 2) << t->shb;
     }
-    t->sub = 4;
+    t->sub = 1 << t->shb; /* no byte yet: the first decide takes one */
     return NULL;
 }
 
@@ -263,9 +263,10 @@ static const char *fsk4_cfg(fsk4_tx_t *t, const rdof_jdoc_t *d, int job, char *w
     t->shb = t->bits == 1 ? 3 : 2;
     t->baud = rdof_sig_num(d, job, "baud", 4800);
     t->dev_hz = rdof_sig_num(d, job, "dev_hz", t->shape == SH_RRC ? 1944 : t->shape == SH_GAUSS ? 1200 : 1800);
-    if (rdof_sig_flag(d, job, "invert"))
-        t->scale = -1; /* below: the sign on dev_scale_pct's */
-    t->scale = (t->scale < 0 ? -1 : 1) * rdof_sig_num(d, job, "dev_scale_pct", 100) / 100;
+    const double pct = rdof_sig_num(d, job, "dev_scale_pct", 100);
+    if (!(pct > 0 && pct <= 200))
+        return "fsk4 dev_hz: up to 5000; dev_scale_pct 1-200";
+    t->scale = (rdof_sig_flag(d, job, "invert") ? -1 : 1) * pct / 100;
     t->offset_hz = rdof_sig_num(d, job, "offset_hz", 0);
     t->lead_s = rdof_sig_num(d, job, "lead_s", 0.01);
     t->tail_s = rdof_sig_num(d, job, "tail_s", 0.01);
@@ -1253,7 +1254,7 @@ static size_t fsk4_rx_summary(void *rx, char *out, size_t cap)
 
 const rdof_sig_mode_t rdof_mode_fsk4 = {
     .name = "fsk4",
-    .about = "4-level FSK as raw dibits (P25 C4FM, DMR, NXDN): c4fm, rrc, rc or nrz pulses; measured on receive",
+    .about = "4-level FSK as raw dibits (P25 C4FM, DMR, NXDN): c4fm, rrc, rc, nrz or gauss pulses; measured on receive",
     .tx_new = fsk4_tx_new,
     .tx_free = fsk4_tx_free,
     .tx_src = fsk4_tx_src,

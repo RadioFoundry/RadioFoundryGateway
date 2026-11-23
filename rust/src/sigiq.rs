@@ -60,7 +60,8 @@ struct IqTx {
     peak: f32,
     clipped: u64,
     underruns: AtomicU32,
-    under_at: AtomicU32, // the last one's sample, from the first
+    under_at: AtomicU32, // the last one's sample, from the first: its low and high 32 bits (no 64-bit atomics on
+    under_hi: AtomicU32, // the ESP32-S3; read after the job, or once a record, where a torn pair can't matter)
     reported: u32,
 }
 
@@ -155,6 +156,7 @@ pub unsafe extern "C" fn rdof_sigiq_tx_new(
         clipped: 0,
         underruns: AtomicU32::new(0),
         under_at: AtomicU32::new(0),
+        under_hi: AtomicU32::new(0),
         reported: 0,
     });
     *seconds = secs + WAIT_S;
@@ -225,6 +227,7 @@ unsafe extern "C" fn iq_render(ctx: *mut c_void, out: *mut f32, n: c_int) -> c_i
             if !t.starved {
                 t.starved = true;
                 t.under_at.store(t.pos as u32, Ordering::Relaxed);
+                t.under_hi.store((t.pos >> 32) as u32, Ordering::Relaxed);
                 t.underruns.fetch_add(1, Ordering::Release);
             }
             t.zero += 1;
@@ -317,13 +320,13 @@ pub unsafe extern "C" fn rdof_sigiq_tx_record(tx: *mut c_void, out: *mut c_char,
         return 0;
     }
     t.reported = u;
-    let at = t.under_at.load(Ordering::Relaxed);
+    let at = t.under_at.load(Ordering::Relaxed) as u64 | (t.under_hi.load(Ordering::Relaxed) as u64) << 32;
     let n = snprintf(
         out,
         cap,
-        c"{\"underrun\":{\"n\":%u,\"sample\":%u,\"t\":%.4f}}".as_ptr(),
+        c"{\"underrun\":{\"n\":%u,\"sample\":%.0f,\"t\":%.4f}}".as_ptr(),
         u as core::ffi::c_uint,
-        at as core::ffi::c_uint,
+        at as f64,
         at as f64 / t.rate,
     );
     if n > 0 && (n as usize) < cap {

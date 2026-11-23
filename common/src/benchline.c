@@ -3336,6 +3336,10 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
                                                                             : "this build sends one carrier at a time");
             return;
         }
+        if (!multi && strcmp(m->name, "iq")) { /* a mode's one source puts power on freq alone */
+            fail(bl, c, "bad_request", "carriers as frequencies: iq's; %s's as objects ({\"freq\", ...})", m->name);
+            return;
+        }
         for (int i = 0; i < a->count; i++) {
             const int ei = rdof_jat(&bl->doc, ca, i);
             const rdof_jnode_t *f = rdof_jnode(&bl->doc, multi ? rdof_jget(&bl->doc, ei, "freq") : ei);
@@ -3349,7 +3353,10 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
                 fail(bl, c, "refused", "%.4f MHz (carriers) isn't a transmit frequency of this bench", f->num);
                 return;
             }
-            if (fabs(f->num - mhz) < 1e-7)
+            bool seen = fabs(f->num - mhz) < 1e-7; /* claimed once, however many carriers are on it */
+            for (int k = 0; k < nmore && !seen; k++)
+                seen = fabs(f->num - more[k]) < 1e-7;
+            if (seen)
                 continue;
             if (nmore == RDOF_BL_CLAIMS - 1) {
                 fail(bl, c, "bad_request", "carriers: %d frequencies at most with freq", RDOF_BL_CLAIMS);
@@ -3484,7 +3491,7 @@ static void tick_tx(rdof_bl_t *bl, conn_t *c, double now)
     bl->p.sig_close(bl->p.ctx);
     t->open = false;
     bl->tx_conn = -1;
-    char rep[2048] = ""; /* several carriers: each one's */
+    char rep[STX_MULTI ? 4096 : 600] = ""; /* several carriers: each one's (8 fsk4 reports pass 2 KB) */
     if (t->m->tx_report && !t->m->tx_report(t->tx, rep, sizeof rep))
         rep[0] = 0;
     rdof_bl_window_t w; /* the carrier is set for the crystal as best known: how far that may be off */
