@@ -110,4 +110,4 @@ Details: [reference.md](docs/reference.md).
 - Realtek, Rafael Micro and [webrtlsdr](https://github.com/jtarrio/webrtlsdr): RTL-SDR register details
 - Meshtastic and MeshCore: W12 board details
 - Espressif: ESP-IDF and esp-dsp
-- lr2021-sdr: discovered and documented the LR2021's raw I/Q mode
+- lr2021-sdr: initial discovery of the LR2021's raw I/Q mode
