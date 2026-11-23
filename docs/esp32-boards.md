@@ -101,7 +101,7 @@ the radio; many boards power it only when a solder jumper (often `USB-OTG`) is b
 
 With no Wi-Fi networks stored, or none joined within 20 s, the board opens an access point:
 
-| | |
+| Setting | Value |
 |---|---|
 | Network | `radiofoundry-XXXX` (`XXXX` from its MAC) |
 | Password | `radiofoundry` |
