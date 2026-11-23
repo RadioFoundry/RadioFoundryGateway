@@ -23,6 +23,12 @@
 #include "rdof/layer2.h"
 #include "rdof/mmdvm.h"
 #include "rdof/pdu.h"
+#if defined(RDOF_RUST) && RDOF_RUST
+#include "rdof/sigmulti.h"
+#define STX_MULTI 1 /* several carriers, each its own transmitter (rust's sigmulti.rs) */
+#else
+#define STX_MULTI 0
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -3019,6 +3025,7 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
 
 typedef struct sigtx {
     const rdof_sig_mode_t *m;
+    const char *name;         /* the mode's (m is the carriers' table when there are several) */
     void *tx;
     rdof_sig_src_t src;
     uint32_t freq_hz;
@@ -3307,22 +3314,35 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     if (reach_tune(bl, c, root, mhz, false, true, now))
         return;
-    /* carriers: the other frequencies the source puts power on (an iq job's), each one the bench may send on and
-     * claimed with freq; the transmitter's LO placed to reach them all (the source's span) */
+    /* carriers: the frequencies the source puts power on, each one the bench may send on and claimed with freq; the
+     * transmitter's LO placed to reach them all (the source's span). Numbers: an iq job's, the client's samples hold
+     * them. Objects: each carrier its own transmitter of the mode ({"freq", "start_s", "level", the mode's fields}),
+     * summed (sigmulti) */
     double more[RDOF_BL_CLAIMS];
     int nmore = 0;
     double span_lo = 0, span_hi = 0;
+    bool multi = false;
     const int ca = rdof_jget(&bl->doc, root, "carriers");
     if (ca >= 0) {
         const rdof_jnode_t *a = rdof_jnode(&bl->doc, ca);
-        if (!a || a->type != RDOF_JARR) {
-            fail(bl, c, "bad_request", "carriers: a list of frequencies (MHz)");
+        if (!a || a->type != RDOF_JARR || !a->count) {
+            fail(bl, c, "bad_request", "carriers: a list of frequencies (MHz), or of carriers ({\"freq\", ...})");
+            return;
+        }
+        const rdof_jnode_t *first = rdof_jnode(&bl->doc, rdof_jat(&bl->doc, ca, 0));
+        multi = first && first->type == RDOF_JOBJ;
+        if (multi && (!STX_MULTI || !strcmp(m->name, "iq"))) {
+            fail(bl, c, "unsupported", "carriers as objects: %s", STX_MULTI ? "iq's samples are one source already"
+                                                                            : "this build sends one carrier at a time");
             return;
         }
         for (int i = 0; i < a->count; i++) {
-            const rdof_jnode_t *f = rdof_jnode(&bl->doc, rdof_jat(&bl->doc, ca, i));
-            if (!f || f->type != RDOF_JNUM) {
-                fail(bl, c, "bad_request", "carriers: a frequency isn't a number");
+            const int ei = rdof_jat(&bl->doc, ca, i);
+            const rdof_jnode_t *f = rdof_jnode(&bl->doc, multi ? rdof_jget(&bl->doc, ei, "freq") : ei);
+            const rdof_jnode_t *e = rdof_jnode(&bl->doc, ei);
+            if (!e || e->type != (multi ? RDOF_JOBJ : RDOF_JNUM) || !f || f->type != RDOF_JNUM) {
+                fail(bl, c, "bad_request", multi ? "carriers: objects, each with its freq (MHz)"
+                                                 : "carriers: a frequency isn't a number");
                 return;
             }
             if (!tx_ok(bl, f->num)) {
@@ -3354,14 +3374,25 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     char why[200] = "";
     const double fs = bl->p.sig_rate ? bl->p.sig_rate(bl->p.ctx) : 48000.0; /* the transmitter's */
-    t->tx = m->tx_new(&bl->doc, root, fs, &t->seconds, why, sizeof why);
+    t->m = m;
+    t->name = m->name;
+#if STX_MULTI
+    static const rdof_sig_mode_t multi_mode = {.name = "carriers", .tx_free = rdof_sigmulti_tx_free,
+                                               .tx_src = rdof_sigmulti_tx_src, .tx_report = rdof_sigmulti_tx_report};
+    if (multi) {
+        rdof_bl_window_t w;
+        get_window(bl, &w);
+        t->tx = rdof_sigmulti_tx_new(m, &bl->doc, root, ca, mhz, fs, w.tx_fs, &t->seconds, why, sizeof why);
+        t->m = &multi_mode;
+    } else
+#endif
+        t->tx = m->tx_new(&bl->doc, root, fs, &t->seconds, why, sizeof why);
     if (!t->tx) {
         free(t);
         fail(bl, c, "bad_request", "%s", why[0] ? why : "the mode refused its parameters");
         return;
     }
-    t->m = m;
-    t->src = m->tx_src(t->tx);
+    t->src = t->m->tx_src(t->tx);
     if (!(t->src.rate > 0)) /* else the mode's own (iq's, the client's) */
         t->src.rate = fs;
     t->src.span_lo_hz = span_lo;
@@ -3379,7 +3410,7 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
         c->freqs[c->nfreqs++] = more[i];
         n += snprintf(cl + n, sizeof cl - (size_t)n, ",%.6f", more[i]);
     }
-    const uint64_t want = m->tx_in_want ? m->tx_in_want(t->tx) : 0;
+    const uint64_t want = t->m->tx_in_want ? t->m->tx_in_want(t->tx) : 0;
     emit(bl, c, "{\"tx\":{\"mode\":\"%s\",\"freq\":%.6f,\"carriers\":[%.6f%s],\"rate\":%.1f,\"seconds\":%.3f,"
          "\"input_bytes\":%llu}}", m->name, mhz, mhz, cl, t->src.rate, t->seconds, (unsigned long long)want);
     wait_start(bl, c, W_MODEM, root, now);
@@ -3453,7 +3484,7 @@ static void tick_tx(rdof_bl_t *bl, conn_t *c, double now)
     bl->p.sig_close(bl->p.ctx);
     t->open = false;
     bl->tx_conn = -1;
-    char rep[600] = "";
+    char rep[2048] = ""; /* several carriers: each one's */
     if (t->m->tx_report && !t->m->tx_report(t->tx, rep, sizeof rep))
         rep[0] = 0;
     rdof_bl_window_t w; /* the carrier is set for the crystal as best known: how far that may be off */
@@ -3461,7 +3492,7 @@ static void tick_tx(rdof_bl_t *bl, conn_t *c, double now)
     char pp[256];
     put_ppm_at(pp, sizeof pp, &w, t->freq_hz);
     emit(bl, c, "{\"done\":{\"mode\":\"%s\",\"freq\":%.6f,\"on_air_s\":%.3f,\"input_bytes\":%llu,\"cut\":%s,%s%s}}",
-         t->m->name, t->freq_hz / 1e6, now - t->started, (unsigned long long)t->taken, late ? "true" : "false", pp, rep);
+         t->name, t->freq_hz / 1e6, now - t->started, (unsigned long long)t->taken, late ? "true" : "false", pp, rep);
     c->state = C_DONE;
 }
 

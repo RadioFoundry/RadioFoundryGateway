@@ -55,6 +55,8 @@ pub mod repeater;
 #[cfg(feature = "legacy")]
 pub mod sigiq;
 #[cfg(feature = "legacy")]
+pub mod sigmulti;
+#[cfg(feature = "legacy")]
 pub mod slotgrid;
 #[cfg(feature = "legacy")]
 pub mod status;

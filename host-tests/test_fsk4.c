@@ -542,6 +542,55 @@ int main(void)
         CHECK(o.keyings == 1 && o.syncs >= 1 && en == 0, "nxdn: %d keyings, %d syncs, %d errors", o.keyings, o.syncs,
               en);
         CHECK(fabs(o.dev - 1050) < 30, "nxdn: dev %.1f", o.dev);
+        /* M17-like: RRC with roll-off 0.5, outer 2400 Hz, through the receiver's matched RRC of the same roll-off */
+        snprintf(text, sizeof text, "{\"shape\":\"rrc\",\"rolloff\":0.5,\"dev_hz\":2400,\"repeat\":2,\"hex\":\"%s\"}",
+                 hexf);
+        through(text, FS, "{\"shape\":\"rrc\",\"rolloff\":0.5,\"sync\":\"5575f5ff77ff\"}", 30, &o, &end);
+        const int em = dibit_errors(&o, frame, ns);
+        printf("rx rrc 0.5: errors %d/%d dev %.1f evm %.2f%%\n", em, ns, o.dev, o.evm);
+        CHECK(o.keyings == 1 && em == 0 && fabs(o.dev - 2400) < 40 && o.evm < 5, "rrc 0.5: %d errors, dev %.1f, evm %.2f",
+              em, o.dev, o.evm);
+        /* GMSK-like (D-STAR's): gauss, BT 0.5, one bit a symbol, +-1200 Hz; invert flips it */
+        for (int inv = 0; inv < 2; inv++) {
+            snprintf(text, sizeof text, "{\"shape\":\"gauss\",\"invert\":%s,\"hex\":\"%s\"}", inv ? "true" : "false",
+                     hex_of(bytes, NSYM / 4));
+            double secs = 0;
+            void *tx = job(text, &secs);
+            if (!tx)
+                break;
+            const long n = render(tx, NULL), lead = lround(0.012 * FS);
+            CHECK(n == 2 * lead + 8 * NSYM / 4 * 10, "gauss: %ld samples", n);
+            int wrong = 0;
+            double run_max = 0;
+            for (int k = 20; k < 2 * NSYM - 20; k++) {
+                const int bit = bytes[k / 8] >> (7 - k % 8) & 1;
+                const double v = hz[lead + k * 10 + 5] * (inv ? -1 : 1);
+                wrong += (v > 0) != bit;
+                run_max = fmax(run_max, fabs(v));
+            }
+            CHECK(wrong == 0 && fabs(run_max - 1200) < 5, "gauss%s: %d bits wrong, a run reaches %.1f Hz",
+                  inv ? " inverted" : "", wrong, run_max);
+            char rep[512];
+            CHECK(m->tx_report(tx, rep, sizeof rep) > 0 && strstr(rep, "\"bits\":1") &&
+                      strstr(rep, "\"symbols\":800") && strstr(rep, "\"dev_hz\":1200.0"), "gauss report %s", rep);
+            m->tx_free(tx);
+        }
+        /* one bit a symbol after the request: 800 symbols are 100 bytes */
+        {
+            double secs;
+            void *tx = job("{\"shape\":\"gauss\",\"symbols\":800}", &secs);
+            CHECK(tx && m->tx_in_want(tx) == 100, "gauss: 100 bytes wanted");
+            if (tx)
+                m->tx_free(tx);
+        }
+        {
+            char err[200];
+            const char *bad = "{\"shape\":\"rrc\",\"rolloff\":1.5,\"hex\":\"00\"}";
+            const int root = rdof_jparse(&doc, bad, strlen(bad));
+            double secs;
+            void *tx = m->tx_new(&doc, root, FS, &secs, err, sizeof err);
+            CHECK(!tx && strstr(err, "rolloff"), "rolloff 1.5 refused: %s", err);
+        }
         /* noise alone: nothing */
         through("{\"shape\":\"c4fm\",\"lead_s\":0,\"tail_s\":0,\"dev_scale_pct\":1,\"hex\":\"00\"}", FS,
                 "{\"sync\":\"cdf59\",\"sync_len\":10}", -30, &o, &end);

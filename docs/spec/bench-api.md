@@ -962,8 +962,24 @@ mapping P25 and DMR share), a symbol `a` being `a dev_hz / 3` of deviation at it
 | `rrc` | square-root raised cosine, roll-off 0.2 | the matched RRC (DMR, NXDN) |
 | `rc` | raised cosine, roll-off 0.2 | nothing (the discriminator itself) |
 | `nrz` | a rectangle one symbol long | nothing |
+| `gauss` | a one-symbol rectangle through a Gaussian of bandwidth-time `bt` (GMSK's) | nothing (not exact: Gaussian ISI) |
 
-The pulse is a table over 16 symbols either side for `rrc`, 12 for `c4fm` and `rc` (cut at 8, an RRC's tails put
+`rolloff` (0.2; 0.05-1) is the raised cosine's in `c4fm`, `rrc` and `rc`; `bt` (0.5; 0.2-1) the Gaussian's. `bits`
+(2; 1 by default with `gauss`) is the bits a symbol: 2 are the dibits above; 1 is two levels, 8 symbols a byte, the
+first in bit 7, 1 being +`dev_hz` and 0 -`dev_hz`. `invert` flips the deviation's sign. The air interfaces the
+bench's radios may run, as `fsk4` fields:
+
+| Air interface | Fields |
+|---|---|
+| P25 phase 1 (C4FM) | `shape` `c4fm`, `dev_hz` 1800 (the defaults) |
+| DMR | `shape` `rrc`, `dev_hz` 1944 |
+| NXDN (4800 baud) | `shape` `rrc`, `dev_hz` 2400 |
+| NXDN (2400 baud) | `shape` `rrc`, `baud` 2400, `dev_hz` 1050 |
+| M17 | `shape` `rrc`, `rolloff` 0.5, `dev_hz` 2400 |
+| D-STAR (GMSK) | `shape` `gauss`, `bt` 0.5, `bits` 1, `dev_hz` 1200 (the `gauss` defaults) |
+| YSF | 4800 baud 4FSK: its pulse and deviation as its spec gives them |
+
+The pulse is a table over 16 symbols either side for `rrc`, 12 for `c4fm` and `rc`, 4 for `gauss` (cut at 8, an RRC's tails put
 about 45 Hz of intersymbol interference on DMR's levels), from the shape's spectrum, scaled to exactly 1 at the center
 behind its receive filter. Rendered at 48 kS/s, the levels behind that filter come out within 1 Hz (`c4fm`, `rc`,
 `nrz`) and 6 Hz (`rrc`, the 16-symbol cut).
@@ -1001,8 +1017,9 @@ A W12 loses about the first 30 ms of each keying (measured 2026-11-16 on a Pluto
 40-50 ms `lead_s`), so a burst whose sync is at its start needs `lead_s` 0.04 or more there.
 
 `fsk4` `rx` measures a radio's 4FSK and gives back its symbols. The discriminator goes through a receive filter
-(`filter`: `iad`, a one-symbol integrate-and-dump; `rrc`, the matched RRC cut at 4 symbols either side; `none`; by
-default the one `shape` (`c4fm`) is exact behind: `c4fm` `iad`, `rrc` `rrc`, else `none`). A squelch on the power in
+(`filter`: `iad`, a one-symbol integrate-and-dump; `rrc`, the matched RRC of `rolloff` (0.2), cut at 4 symbols either
+side; `none`; by default the one `shape` (`c4fm`) is exact behind: `c4fm` `iad`, `rrc` `rrc`, else `none`). It
+slices four levels: two-level (`bits` 1) signals aren't sliced. A squelch on the power in
 1 ms blocks finds each keying (it ends after 3 blocks under). While the carrier is up the receiver looks for `sync`
 (the client's dibits as hex, packed as for `tx`; `sync_len` symbols of it, 8-64, all by default): the Pearson
 correlation of symbol-spaced samples with the pattern, at least `sync_min` (0.9), its peak placed to a fraction of a
@@ -1032,9 +1049,8 @@ The summary: `baud`, `filter`, `sync_len`, `squelch_dbfs`, `keyings`, `syncs`, `
 
 I/Q (`iq`, transmit only) sends the client's complex baseband: cs16 (int16 I, then Q, little-endian; full scale
 32767) at the job's `rate`, baseband 0 Hz on `freq`. Nothing in it is a mode's: any modulation, any number of
-carriers in one keying, rendered by the client (`tools/bench/iqmix.py` sums 4FSK carriers with `fsk4`'s c4fm
-pulse). It's for what one carrier at a time can't do, as a trunked system's control channel and a voice channel
-from one transmitter. A board that sends frequency, not I/Q (a W12), doesn't list it.
+carriers in one keying, rendered by the client. For carriers of a mode the bench has, `carriers` as objects (below)
+sends only their data. A board that sends frequency, not I/Q (a W12), doesn't list it.
 
 - Fields: `rate` (required: the transmit stream's rate divided by a whole number; `info`'s window gives it as
   `tx_fs`, 192000 on a Pluto with its FPGA upconverter), `seconds` (required: the keying's ceiling, plus 2 s for
@@ -1050,6 +1066,27 @@ from one transmitter. A board that sends frequency, not I/Q (a W12), doesn't lis
 - `done` adds `rate`, `stream`, `ahead_bytes`, `samples` (played, zeros included), `samples_in`, `underruns`,
   `zero_samples`, `wait_s`, `peak` (the largest magnitude, full scale 1) and `clipped`.
 - The client's rate costs the transmitting thread a mix and a linear interpolation per stream sample, nothing more.
+
+Several carriers of one mode (any mode that transmits but `iq`; Rust builds on a transmitter that sends I/Q, as a
+Pluto, else `unsupported`): `carriers` as objects, each a carrier's job. A trunked system's control channel and
+a voice channel (P25, DMR Tier III) from one SDR, the voice keying when the grant goes out:
+
+```json
+{"op":"tx","mode":"fsk4","freq":461.0375,"repeat":40,"carriers":[
+  {"freq":461.0375,"hex":"<the control channel's frames>"},
+  {"freq":461.0875,"hex":"<the voice frames>","start_s":0.36,"repeat":10}]}
+```
+
+- Each object has `freq` (MHz), `start_s` (0: when it keys, from the job's key-up), `level` (its share of full
+  scale, 1/N by default; the levels add to 1 at most) and any of the mode's fields; the job's own fields are every
+  carrier's defaults. Each carrier's data is in the request (`hex`): a carrier can't take input after it.
+- `freq` is the baseband's 0 Hz and is claimed with the carriers (make it one of them). Each carrier is checked,
+  claimed and reached as `iq`'s are: the same span rule (on a Pluto, carriers up to about 50 kHz apart).
+- The gateway renders each carrier as the mode does alone (at the platform's rate, 48 kS/s on rdofradio), spreads
+  it over the transmit stream's samples (`tx_fs`) linearly and mixes it to its offset: the sum is one keying, as
+  long as the longest carrier (`seconds`). A carrier that has ended, or hasn't started, is silent.
+- The `tx` header's `carriers` lists the frequencies; `done` adds `"carriers":[{"freq","start_s","level", the
+  mode's report}, ...]`.
 
 Measured 2026-11-16, a W12 (power 128) to a Pluto 2 m away at -30 dBFS: C4FM and RRC at 4800 baud, 3072 random symbols
 each, 0 errors (C4FM behind `iad` +-1792 / +-599 Hz, EVM 5%); 2400 baud RRC at 1050 Hz with a 10-symbol sync in 80 ms

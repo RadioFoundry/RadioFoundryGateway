@@ -23,7 +23,8 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... tx fm --freq MHz [SEGMENT...] [--pcm FILE] [--ctcss HZ | --dcs 023N] [--dev HZ] [--sub-dev HZ] ...
     rfgbench.py ... rx fm --freq MHz --seconds S [--audio FILE.wav] [--disc FILE.wav] [--records FILE] [--dtmf] [--tones] [--aprs] ...
     rfgbench.py ... tx am --freq MHz [SEGMENT...] [--pcm FILE] [--depth 0-1] [--offset HZ] ...
-    rfgbench.py ... tx fsk4 --freq MHz --dibits FILE|--hex HEX [--shape c4fm|rrc|rc|nrz] [--baud B] [--dev HZ] ...
+    rfgbench.py ... tx fsk4 --freq MHz --dibits FILE|--hex HEX [--shape c4fm|rrc|rc|nrz|gauss] [--rolloff A] ...
+    rfgbench.py ... tx fsk4 --freq MHz --carrier MHz:FILE[:start_s=S:level=L...] --carrier ...   several at once
     rfgbench.py ... tx iq --freq MHz --rate S/s --iq FILE.cs16|- [--carriers MHz...] [--ahead S] [--seconds S]
     rfgbench.py ... rx am --freq MHz --seconds S [--audio FILE.wav] [--env FILE.wav] [--records FILE] [--bw HZ] ...
 
@@ -1032,7 +1033,24 @@ def cmd_tx_fsk4(a) -> int:
     req: dict = {"op": "tx", "mode": "fsk4", "freq": a.freq, "session": a.session, "wait_max": a.wait_max,
                  "label": a.label}
     data = b""
-    if a.stream:   # open-ended: the dibits as they come (a file or stdin), a half-close at their end
+    if a.carrier:   # several carriers, each its own symbols in the request (bench-api.md 14.6)
+        if a.stream:
+            print(f"{NOTE} --carrier takes its symbols in the request, not --stream", file=sys.stderr)
+            return 1
+        req["carriers"] = []
+        for spec in a.carrier:
+            mhz, path, *kv = spec.split(":")
+            try:
+                with open(path, "rb") as f:
+                    cr: dict = {"freq": float(mhz), "hex": f.read().hex()}
+                for item in kv:
+                    k, _, v = item.partition("=")
+                    cr[k] = v if k in ("shape",) else json.loads(v)
+            except (OSError, ValueError) as e:
+                print(f"{NOTE} --carrier {spec}: {e}", file=sys.stderr)
+                return 1
+            req["carriers"].append(cr)
+    elif a.stream:   # open-ended: the dibits as they come (a file or stdin), a half-close at their end
         if not a.dibits or a.symbols or a.repeat or a.gap is not None:
             print(f"{NOTE} --stream takes --dibits FILE or - (stdin), not --symbols, --repeat or --gap",
                   file=sys.stderr)
@@ -1057,12 +1075,16 @@ def cmd_tx_fsk4(a) -> int:
         req["hex"] = a.hex
         if a.symbols:
             req["symbols"] = a.symbols
-    for k, v in (("baud", a.baud), ("shape", a.shape), ("dev_hz", a.dev), ("dev_scale_pct", a.dev_scale),
+    if a.invert:
+        req["invert"] = True
+    for k, v in (("baud", a.baud), ("shape", a.shape), ("rolloff", a.rolloff), ("bt", a.bt), ("bits", a.bits),
+                 ("dev_hz", a.dev), ("dev_scale_pct", a.dev_scale),
                  ("offset_hz", a.offset), ("clip_hz", a.clip), ("repeat", a.repeat), ("gap_s", a.gap),
                  ("lead_s", a.lead), ("tail_s", a.tail), ("power_dbm", a.power_dbm), ("power", a.power)):
         if v is not None:
             req[k] = v
-    check_reach(a, a.freq, tx=True)
+    for mhz in [a.freq] + [c["freq"] for c in req.get("carriers", [])]:
+        check_reach(a, mhz, tx=True)
     hold: dict = {}
 
     def send():    # all at once: TCP's flow control paces it
@@ -1646,6 +1668,10 @@ def main(argv=None) -> int:
             g.add_argument("--dibits", default=None,
                            help="a file of dibits, 4 a byte, first in bits 7-6 (01 +3, 00 +1, 10 -1, 11 -3)")
             g.add_argument("--hex", default=None, help="the same bytes as hex, in the request")
+            g.add_argument("--carrier", action="append", default=None, metavar="MHZ:FILE[:KEY=VALUE...]",
+                           help="one of several carriers (repeat it): its frequency, its dibits file, and its own "
+                                "fields (start_s=S, level=L, repeat=N, shape=..., dev_hz=...); the other options are "
+                                "every carrier's")
             s.add_argument("--stream", action="store_true",
                            help="open-ended: --dibits FILE or - (stdin) sent as it comes, its end the keying's end; "
                                 "an {\"underrun\"} record each time it runs dry")
@@ -1655,7 +1681,13 @@ def main(argv=None) -> int:
                            help="--stream: bytes played whole while it runs dry (default: level 0)")
             s.add_argument("--symbols", type=int, default=None, help="how many of the bytes' dibits (all)")
             s.add_argument("--baud", type=float, default=None, help="symbols a second (4800)")
-            s.add_argument("--shape", choices=("c4fm", "rrc", "rc", "nrz"), default=None, help="pulse shape (c4fm)")
+            s.add_argument("--shape", choices=("c4fm", "rrc", "rc", "nrz", "gauss"), default=None,
+                           help="pulse shape (c4fm); gauss: GMSK's, one bit a symbol by default")
+            s.add_argument("--rolloff", type=float, default=None, help="c4fm, rrc, rc: the roll-off (0.2; M17 0.5)")
+            s.add_argument("--bt", type=float, default=None, help="gauss: bandwidth-time (0.5)")
+            s.add_argument("--bits", type=int, choices=(1, 2), default=None,
+                           help="bits a symbol: 2 (dibits) or 1 (two levels, 8 a byte, 1 = +dev)")
+            s.add_argument("--invert", action="store_true", help="the deviation's sign flipped")
             s.add_argument("--dev", type=float, default=None,
                            help="the outer level's deviation, Hz (1800; 1944 with rrc)")
             s.add_argument("--dev-scale", type=float, default=None, help="percent of --dev (100)")
@@ -1670,8 +1702,8 @@ def main(argv=None) -> int:
             s.add_argument("--power-dbm", type=float, default=None,
                            help="dBm at the antenna, capped by the gateway's bench.tx max_dbm")
             s.add_argument("--power", type=int, default=None, help="0-255 on the transmitter's range, capped the same")
-            s = modes.add_parser("iq", help="complex baseband (cs16) at its own rate: several carriers at once "
-                                            "(iqmix.py renders 4FSK ones)")
+            s = modes.add_parser("iq", help="complex baseband (cs16) at its own rate: any modulation, several "
+                                            "carriers at once")
             s.set_defaults(fn=cmd_tx_iq)
             s.add_argument("--session", default=None)
             s.add_argument("--wait-max", type=float, default=None, help="give up after this many seconds (exit 75)")

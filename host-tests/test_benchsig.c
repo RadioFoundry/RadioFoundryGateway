@@ -38,7 +38,8 @@ static double clock_s;
 
 static void f_window(void *ctx, rdof_bl_window_t *w)
 {
-    *w = (rdof_bl_window_t){.running = true, .center_hz = CENTER, .fs = FS, .lo_hz = 438.01e6, .hi_hz = 438.19e6};
+    *w = (rdof_bl_window_t){.running = true, .center_hz = CENTER, .fs = FS, .lo_hz = 438.01e6, .hi_hz = 438.19e6,
+                            .tx_fs = FS};
 }
 static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 {
@@ -482,10 +483,13 @@ static long iq_render_c4fm(int k, float *hz, float *env, long cap)
 
 /* One run: the job on the air, an fsk4 rx on carrier `listen` (0: 438.075, 1: 438.125): symbol errors from its first
  * sync on against the frame sent there (-1: no dibits) */
-static int iq_run(const int16_t *x, long n, int listen, char *done, size_t dcap)
+static double f_sig_rate48(void *ctx) { return 48000; }
+
+static int iq_run(const char *txreq, const int16_t *x, long n, int listen, char *done, size_t dcap)
 {
     rdof_bl_platform_t pl = PLAT;
     pl.tx_bands = f_bands;
+    pl.sig_rate = f_sig_rate48; /* a mode's sources at 48 kS/s, spread 4 to 1 over the 192 kS/s stream */
     rdof_bl_t *bl = rdof_bl_new(&pl);
     ntext = 0;
     tx = (typeof(tx)){0};
@@ -494,8 +498,7 @@ static int iq_run(const int16_t *x, long n, int listen, char *done, size_t dcap)
     snprintf(req, sizeof req, "{\"op\":\"rx\",\"mode\":\"fsk4\",\"freq\":%s,\"seconds\":2,\"sync\":\"5575f5ff77ff\"}",
              listen ? "438.125" : "438.075");
     const int rx = ask(bl, req);
-    const int c = ask(bl, "{\"op\":\"tx\",\"mode\":\"iq\",\"freq\":438.075,\"carriers\":[438.075,438.125],"
-                          "\"rate\":192000,\"seconds\":5,\"ahead_s\":0.05}");
+    const int c = ask(bl, txreq);
     size_t sent = 0;
     const size_t bytes = (size_t)n * 4;
     for (int i = 0; i < 3000 && !tx.done; i++) {
@@ -511,7 +514,7 @@ static int iq_run(const int16_t *x, long n, int listen, char *done, size_t dcap)
         air(1920, true);
         take(bl, rx);
     }
-    CHECK(tx.done && sent == bytes, "iq: done %d, sent %zu of %zu", tx.done, sent, bytes);
+    CHECK(tx.done && sent == bytes, "done %d, sent %zu of %zu: %.300s", tx.done, sent, bytes, text);
     CHECK(tx.src.rate == 192000 && tx.src.span_lo_hz == -6250 && tx.src.span_hi_hz == 56250,
           "the source: rate %.0f, span %.0f to %.0f", tx.src.rate, tx.src.span_lo_hz, tx.src.span_hi_hz);
     for (int i = 0; i < 400 && !strstr(text, "{\"done\""); i++) {
@@ -581,9 +584,54 @@ static void test_iq(void)
     }
     char done[2048];
     for (int k = 0; k < 2; k++) {
-        const int e = iq_run(x, n, k, done, sizeof done);
+        const int e = iq_run("{\"op\":\"tx\",\"mode\":\"iq\",\"freq\":438.075,\"carriers\":[438.075,438.125],"
+                             "\"rate\":192000,\"seconds\":5,\"ahead_s\":0.05}", x, n, k, done, sizeof done);
         CHECK(e == 0, "carrier %c: %d symbol errors of %d", "AB"[k], e, IQ_NSYM);
         CHECK(num(done, "samples_in") == n && num(done, "underruns") == 0 && num(done, "clipped") == 0, "%s", done);
+    }
+
+    /* the same two frames as fsk4 carriers: the gateway renders each (48 kS/s), sums them at 192 kS/s; B keys 0.1 s
+     * later at its own level */
+    static char req[4096];
+    int at = snprintf(req, sizeof req, "{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"lead_s\":0.04,"
+                                       "\"tail_s\":0.02,\"repeat\":2,\"carriers\":[");
+    for (int k = 0; k < 2; k++) {
+        at += snprintf(req + at, sizeof req - (size_t)at, "%s{\"freq\":%s,%s\"hex\":\"", k ? "," : "",
+                       k ? "438.125" : "438.075", k ? "\"start_s\":0.1,\"level\":0.4," : "");
+        for (int i = 0; i < IQ_NSYM / 4; i++)
+            at += snprintf(req + at, sizeof req - (size_t)at, "%02x", iq_frame[k][i]);
+        at += snprintf(req + at, sizeof req - (size_t)at, "\"}");
+    }
+    snprintf(req + at, sizeof req - (size_t)at, "]}");
+    for (int k = 0; k < 2; k++) {
+        const int e = iq_run(req, NULL, 0, k, done, sizeof done);
+        CHECK(e == 0, "fsk4 carrier %c: %d symbol errors of %d", "AB"[k], e, IQ_NSYM);
+        CHECK(strstr(done, "\"mode\":\"fsk4\"") && strstr(done, "\"carriers\":[{\"freq\":438.075000,\"start_s\":0.000,"
+                                                                "\"level\":0.500,\"shape\":\"c4fm\"") &&
+                  strstr(done, "{\"freq\":438.125000,\"start_s\":0.100,\"level\":0.400,"),
+              "%s", done);
+    }
+    {
+        static const char *bad[][2] = {
+            {"{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"carriers\":[{\"freq\":438.075,\"hex\":\"00\"},"
+             "{\"freq\":438.125,\"hex\":\"00\",\"level\":0.8}]}", "levels"},
+            {"{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"carriers\":[{\"freq\":438.125,\"symbols\":8}]}",
+             "in the request"},
+            {"{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"carriers\":[{\"freq\":438.15,\"hex\":\"00\"}]}",
+             "isn't a transmit frequency"},
+            {"{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"carriers\":[{\"hex\":\"00\"}]}", "freq"},
+        };
+        rdof_bl_platform_t pl = PLAT;
+        pl.tx_bands = f_bands;
+        rdof_bl_t *bl = rdof_bl_new(&pl);
+        for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+            ntext = 0;
+            const int c = ask(bl, bad[i][0]);
+            take(bl, c);
+            CHECK(strstr(text, "\"error\"") && strstr(text, bad[i][1]), "%s -> %s", bad[i][0], text);
+            rdof_bl_closed(bl, c, clock_s);
+        }
+        rdof_bl_free(bl);
     }
 
     /* refused: a carrier the bench doesn't send on, a rate that isn't given */

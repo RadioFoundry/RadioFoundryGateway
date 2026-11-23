@@ -44,29 +44,29 @@
 #define SPAN 16                  /* symbols either side, at most (the table) */
 #define TAB (PH * SPAN + 1)      /* g(0) .. g(SPAN), g even */
 _Static_assert(PH == 64, "the render takes the phase row from the fraction's top 6 bits");
-#define ALPHA 0.2
+#define ALPHA 0.2                /* the roll-off by default (rolloff) */
 #define RAMP_S 0.002             /* the envelope's raised-cosine ramp, key-up and key-down */
 #define MAX_BYTES (256u * 1024u) /* a million symbols: 218 s at 4800 */
 #define WAIT_S 2.0               /* for the symbols to come in before the first key-up */
 
-enum { SH_C4FM, SH_RRC, SH_RC, SH_NRZ };
-static const char *const shape_names[] = {"c4fm", "rrc", "rc", "nrz"};
+enum { SH_C4FM, SH_RRC, SH_RC, SH_NRZ, SH_GAUSS, SH_N };
+static const char *const shape_names[SH_N] = {"c4fm", "rrc", "rc", "nrz", "gauss"};
 
-/* The raised cosine's spectrum (T = 1, area 1) at f >= 0 */
-static double rc_spec(double f)
+/* The raised cosine's spectrum (T = 1, area 1), roll-off a, at f >= 0 */
+static double rc_spec(double f, double a)
 {
-    const double f1 = (1 - ALPHA) / 2, f2 = (1 + ALPHA) / 2;
+    const double f1 = (1 - a) / 2, f2 = (1 + a) / 2;
     if (f <= f1)
         return 1;
     if (f >= f2)
         return 0;
-    return 0.5 * (1 + cos(RDOF_PI / ALPHA * (f - f1)));
+    return 0.5 * (1 + cos(RDOF_PI / a * (f - f1)));
 }
 
 /* The pulse's spectrum at f >= 0 */
-static double spec(int shape, double f)
+static double spec(int shape, double f, double a)
 {
-    const double h = rc_spec(f);
+    const double h = rc_spec(f, a);
     if (shape == SH_RRC)
         return sqrt(h);
     if (shape == SH_C4FM && f > 0)
@@ -74,20 +74,29 @@ static double spec(int shape, double f)
     return h;
 }
 
-/* g at t = i / PH, i = 0 .. TAB-1, scaled to 1 behind the shape's receive filter */
-static void build_pulse(int shape, float *g)
+/* g at t = i / PH, i = 0 .. TAB-1, scaled to 1 behind the shape's receive filter; a: the roll-off (c4fm, rrc, rc),
+ * bt: the Gaussian's bandwidth-time product (gauss) */
+static void build_pulse(int shape, double a, double bt, float *g)
 {
     if (shape == SH_NRZ) {
         for (int i = 0; i < TAB; i++)
             g[i] = i < PH / 2 ? 1.0f : i == PH / 2 ? 0.5f : 0.0f;
         return;
     }
-    /* g(t) = 2 * integral over 0 .. (1 + ALPHA) / 2 of spec(f) cos(2 pi f t) df, by Simpson's rule */
+    if (shape == SH_GAUSS) { /* a one-symbol rectangle through the Gaussian (GMSK's): a long run reaches exactly 1 */
+        const double k = RDOF_PI * bt * sqrt(2 / log(2.0));
+        for (int i = 0; i < TAB; i++) {
+            const double t = (double)i / PH;
+            g[i] = (float)(0.5 * (erf(k * (t + 0.5)) - erf(k * (t - 0.5))));
+        }
+        return;
+    }
+    /* g(t) = 2 * integral over 0 .. (1 + a) / 2 of spec(f) cos(2 pi f t) df, by Simpson's rule */
     enum { NF = 240 };
-    const double fmax = (1 + ALPHA) / 2, df = fmax / NF;
+    const double fmax = (1 + a) / 2, df = fmax / NF;
     float w[NF + 1];
     for (int k = 0; k <= NF; k++)
-        w[k] = (float)(spec(shape, k * df) * (k == 0 || k == NF ? 1 : k % 2 ? 4 : 2) * df / 3 * 2);
+        w[k] = (float)(spec(shape, k * df, a) * (k == 0 || k == NF ? 1 : k % 2 ? 4 : 2) * df / 3 * 2);
     for (int i = 0; i < TAB; i++) {
         const float t = (float)i / PH;
         float s = 0;
@@ -113,7 +122,7 @@ static void build_pulse(int shape, float *g)
         g[i] = (float)(g[i] / r);
 }
 
-static int span_of(int shape) { return shape == SH_RRC ? 16 : shape == SH_NRZ ? 1 : 12; }
+static int span_of(int shape) { return shape == SH_RRC ? 16 : shape == SH_NRZ ? 1 : shape == SH_GAUSS ? 4 : 12; }
 
 /* g(t), t in symbols, cut at span */
 static inline float pulse(const float *g, float t, int span)
@@ -130,6 +139,8 @@ static inline float pulse(const float *g, float t, int span)
 
 typedef struct {
     int shape, span;
+    int bits, shb;               /* bits a symbol (2: dibits; 1: two levels, +-3); log2 of the symbols in a byte */
+    double rolloff, bt;
     double clip_hz;              /* the deviation's limit (0: none) */
     uint64_t clipped;            /* samples cut to it */
     double baud, dev_hz, scale, offset_hz, lead_s, tail_s, gap_s, fs;
@@ -168,11 +179,18 @@ typedef struct {
     uint32_t reported;
 } fsk4_tx_t;
 
+/* Symbol j of a byte as a level: dibits 00 01 10 11 are +1 +3 -1 -3; single bits 1 and 0 are +3 and -3 */
+static int8_t sym_level(const fsk4_tx_t *t, uint8_t byte, unsigned j)
+{
+    static const int8_t lv[4] = {1, 3, -1, -3};
+    if (t->bits == 1)
+        return byte >> (7 - j) & 1 ? 3 : -3;
+    return lv[byte >> (6 - 2 * j) & 3];
+}
+
 static int dibit(const fsk4_tx_t *t, uint32_t k)
 {
-    const unsigned b = t->sym[k >> 2] >> (6 - 2 * (k & 3)) & 3;
-    static const int lv[4] = {1, 3, -1, -3}; /* 00 01 10 11 */
-    return lv[b];
+    return sym_level(t, t->sym[k >> t->shb], k & ((1u << t->shb) - 1));
 }
 
 /* Symbols given as hex in the request (as long as the request line allows): NULL, or why not */
@@ -191,7 +209,7 @@ static const char *hex_in(fsk4_tx_t *t, const char *hex, double nsym)
         t->sym[i / 2] = (uint8_t)v;
     }
     t->have = t->nbytes;
-    t->nsym = nsym > 0 && nsym <= 4.0 * t->nbytes ? (uint32_t)nsym : 4 * t->nbytes;
+    t->nsym = nsym > 0 && nsym <= (double)(t->nbytes << t->shb) ? (uint32_t)nsym : t->nbytes << t->shb;
     return NULL;
 }
 
@@ -203,7 +221,7 @@ static const char *stream_cfg(fsk4_tx_t *t, const rdof_jdoc_t *d, int job)
         return "fsk4 stream: seconds (0-3600), the most it keys";
     if (!(ahead >= 0.02 && ahead <= 10))
         return "fsk4 stream: ahead_s 0.02-10";
-    uint32_t c = (uint32_t)ceil(ahead * t->baud / 4);
+    uint32_t c = (uint32_t)ceil(ahead * t->baud / (1 << t->shb));
     t->cap = c < 16 ? 16 : c;
     if (!(t->ring = rdof_sdr_alloc(t->cap)))
         return "no memory for the symbols";
@@ -220,7 +238,7 @@ static const char *stream_cfg(fsk4_tx_t *t, const rdof_jdoc_t *d, int job)
                 return "fsk4 idle_hex: hex digits";
             t->idle[i / 2] = (uint8_t)v;
         }
-        t->nidle = (uint32_t)(2 * L);
+        t->nidle = (uint32_t)(L / 2) << t->shb;
     }
     t->sub = 4;
     return NULL;
@@ -232,14 +250,22 @@ static const char *fsk4_cfg(fsk4_tx_t *t, const rdof_jdoc_t *d, int job, char *w
     if (!rdof_sig_text(d, job, "shape", shape, sizeof shape))
         snprintf(shape, sizeof shape, "c4fm");
     t->shape = -1;
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < SH_N; i++)
         if (!strcmp(shape, shape_names[i]))
             t->shape = i;
     if (t->shape < 0)
-        return "fsk4 shape: c4fm, rrc, rc or nrz";
+        return "fsk4 shape: c4fm, rrc, rc, nrz or gauss";
+    t->rolloff = rdof_sig_num(d, job, "rolloff", ALPHA);
+    t->bt = rdof_sig_num(d, job, "bt", 0.5);
+    t->bits = (int)rdof_sig_num(d, job, "bits", t->shape == SH_GAUSS ? 1 : 2);
+    if (!(t->rolloff >= 0.05 && t->rolloff <= 1) || !(t->bt >= 0.2 && t->bt <= 1) || (t->bits != 1 && t->bits != 2))
+        return "fsk4 rolloff: 0.05-1; bt: 0.2-1; bits: 1 or 2";
+    t->shb = t->bits == 1 ? 3 : 2;
     t->baud = rdof_sig_num(d, job, "baud", 4800);
-    t->dev_hz = rdof_sig_num(d, job, "dev_hz", t->shape == SH_RRC ? 1944 : 1800);
-    t->scale = rdof_sig_num(d, job, "dev_scale_pct", 100) / 100;
+    t->dev_hz = rdof_sig_num(d, job, "dev_hz", t->shape == SH_RRC ? 1944 : t->shape == SH_GAUSS ? 1200 : 1800);
+    if (rdof_sig_flag(d, job, "invert"))
+        t->scale = -1; /* below: the sign on dev_scale_pct's */
+    t->scale = (t->scale < 0 ? -1 : 1) * rdof_sig_num(d, job, "dev_scale_pct", 100) / 100;
     t->offset_hz = rdof_sig_num(d, job, "offset_hz", 0);
     t->lead_s = rdof_sig_num(d, job, "lead_s", 0.01);
     t->tail_s = rdof_sig_num(d, job, "tail_s", 0.01);
@@ -250,7 +276,7 @@ static const char *fsk4_cfg(fsk4_tx_t *t, const rdof_jdoc_t *d, int job, char *w
     const double rep = rdof_sig_num(d, job, "repeat", 1);
     if (!(t->baud >= 600 && t->baud <= 9600))
         return "fsk4 baud: 600 to 9600";
-    if (!(t->dev_hz > 0 && t->dev_hz <= 5000) || !(t->scale > 0 && t->scale <= 2))
+    if (!(t->dev_hz > 0 && t->dev_hz <= 5000) || !(fabs(t->scale) > 0 && fabs(t->scale) <= 2))
         return "fsk4 dev_hz: up to 5000; dev_scale_pct 1-200";
     if (!(fabs(t->offset_hz) <= 5000))
         return "fsk4 offset_hz: -5000 to 5000";
@@ -268,12 +294,12 @@ static const char *fsk4_cfg(fsk4_tx_t *t, const rdof_jdoc_t *d, int job, char *w
     const rdof_jnode_t *hn = rdof_jnode(d, rdof_jget(d, job, "hex"));
     if (hn && hn->type == RDOF_JSTR && hn->str[0])
         return hex_in(t, hn->str, nsym);
-    if (!(nsym >= 1 && nsym <= 4.0 * MAX_BYTES)) {
-        snprintf(why, cap, "fsk4: hex, or symbols (1 to %u) and the dibits after the request", 4 * MAX_BYTES);
+    if (!(nsym >= 1 && nsym <= (double)(MAX_BYTES << t->shb))) {
+        snprintf(why, cap, "fsk4: hex, or symbols (1 to %u) and the symbols after the request", MAX_BYTES << t->shb);
         return why;
     }
     t->nsym = (uint32_t)nsym;
-    t->nbytes = (t->nsym + 3) / 4;
+    t->nbytes = (t->nsym + (1u << t->shb) - 1) >> t->shb;
     if (!(t->sym = rdof_sdr_zalloc(t->nbytes)))
         return "no memory for the symbols";
     return NULL;
@@ -302,7 +328,7 @@ static double peak_hz(const fsk4_tx_t *t)
             double s = 0;
             for (int k = -t->span; k <= t->span; k++)
                 s += fabs(pulse(t->g, (float)p / PH + (float)k, t->span));
-            worst = fmax(worst, s * 3 * unit + fabs(t->offset_hz));
+            worst = fmax(worst, s * 3 * fabs(unit) + fabs(t->offset_hz));
         }
     }
     return t->clip_hz > 0 && worst > t->clip_hz ? t->clip_hz : worst;
@@ -332,7 +358,7 @@ static void *fsk4_tx_new(const rdof_jdoc_t *d, int job, double fs, double *secon
     t->fs = fs;
     t->sps = fs / t->baud;
     t->span = span_of(t->shape);
-    build_pulse(t->shape, t->g);
+    build_pulse(t->shape, t->rolloff, t->bt, t->g);
     const int nt = 2 * t->span;
     t->rows = rdof_sdr_zalloc(sizeof(float) * (size_t)(PH + 1) * (size_t)nt);
     if (!t->rows) {
@@ -383,23 +409,18 @@ static void fsk4_tx_free(void *tx)
 
 /* ── stream ── */
 
-static int8_t level_of(unsigned b)
-{
-    static const int8_t lv[4] = {1, 3, -1, -3}; /* 00 01 10 11 */
-    return lv[b & 3];
-}
-
 /* The next symbol decided: the client's, the idle block's or 0; or none more (ended) */
 static void stream_decide(fsk4_tx_t *t)
 {
     int8_t a = 0;
     if (t->in_idle) { /* an idle block plays whole */
-        a = level_of(t->idle[t->idle_pos >> 2] >> (6 - 2 * (t->idle_pos & 3)));
+        a = sym_level(t, t->idle[t->idle_pos >> t->shb], t->idle_pos & ((1u << t->shb) - 1));
         if (++t->idle_pos == t->nidle)
             t->in_idle = false, t->idle_pos = 0;
         t->fill++;
     } else {
-        if (t->sub == 4) {
+        const int per = 1 << t->shb;
+        if (t->sub == per) {
             const uint_fast32_t w = atomic_load_explicit(&t->rw, memory_order_acquire);
             const uint_fast32_t r = atomic_load_explicit(&t->rr, memory_order_relaxed);
             if (w != r) {
@@ -408,8 +429,8 @@ static void stream_decide(fsk4_tx_t *t)
                 t->sub = 0;
             }
         }
-        if (t->sub < 4) {
-            a = level_of(t->cur >> (6 - 2 * t->sub));
+        if (t->sub < per) {
+            a = sym_level(t, t->cur, (unsigned)t->sub);
             t->sub++, t->sym_in++, t->starved = false;
         } else if (atomic_load_explicit(&t->eof, memory_order_acquire) &&
                    atomic_load_explicit(&t->rw, memory_order_acquire) ==
@@ -560,7 +581,7 @@ static int fsk4_freq(void *ctx, float *hz, float *env, int n)
         float s0 = 0, s1 = 0;
         uint32_t j = k0 <= k1 ? (uint32_t)(k0 % t->nsym) : 0;
         for (int64_t k = k0; k <= k1; k++) {
-            if ((j >> 2) < t->have) {
+            if ((j >> t->shb) < t->have) {
                 const int m = (int)(k - c) + t->span - 1;
                 const float a = (float)dibit(t, j);
                 s0 += a * r0[m];
@@ -595,7 +616,7 @@ static uint64_t fsk4_tx_in_want(void *tx)
     if (t->stream) { /* until the client ends it: as much as the job could play */
         if (atomic_load(&t->eof))
             return 0;
-        const uint64_t most = (uint64_t)ceil(t->seconds * t->baud / 4) + 1,
+        const uint64_t most = (uint64_t)ceil(t->seconds * t->baud / (1 << t->shb)) + 1,
                        w = atomic_load_explicit(&t->rw, memory_order_relaxed);
         return w < most ? most - w : 1;
     }
@@ -660,24 +681,25 @@ static size_t fsk4_tx_report(void *tx, char *out, size_t cap)
     const fsk4_tx_t *t = tx;
     if (t->stream) {
         const int n = snprintf(out, cap,
-                               ",\"shape\":\"%s\",\"baud\":%.1f,\"dev_hz\":%.1f,\"peak_hz\":%.0f,\"offset_hz\":%.1f,"
-                               "\"stream\":true,\"ahead_bytes\":%u,\"symbols\":%llu,\"symbols_in\":%llu,"
+                               ",\"shape\":\"%s\",\"rolloff\":%.2f,\"bt\":%.2f,\"bits\":%d,\"baud\":%.1f,"
+                               "\"dev_hz\":%.1f,\"peak_hz\":%.0f,\"offset_hz\":%.1f,\"stream\":true,\"ahead_bytes\":%u,\"symbols\":%llu,\"symbols_in\":%llu,"
                                "\"underruns\":%u,\"idle_symbols\":%llu,\"zero_symbols\":%llu,\"wait_s\":%.3f,"
                                "\"clip_hz\":%.0f,\"clipped\":%llu",
-                               shape_names[t->shape], t->baud, t->dev_hz * t->scale, t->peak, t->offset_hz, (unsigned)t->cap,
+                               shape_names[t->shape], t->rolloff, t->bt, t->bits, t->baud, fabs(t->dev_hz * t->scale),
+                               t->peak, t->offset_hz, (unsigned)t->cap,
                                (unsigned long long)t->decided, (unsigned long long)t->sym_in,
                                (unsigned)atomic_load(&t->underruns), (unsigned long long)t->fill,
                                (unsigned long long)t->zero, (double)t->waited / t->fs, t->clip_hz,
                                (unsigned long long)t->clipped);
         return n > 0 && (size_t)n < cap ? (size_t)n : 0;
     }
-    const uint32_t in = t->have * 4 < t->nsym ? t->have * 4 : t->nsym;
+    const uint32_t in = (t->have << t->shb) < t->nsym ? t->have << t->shb : t->nsym;
     const int n = snprintf(out, cap,
-                           ",\"shape\":\"%s\",\"baud\":%.1f,\"dev_hz\":%.1f,\"peak_hz\":%.0f,\"offset_hz\":%.1f,"
-                           "\"symbols\":%u,\"repeat\":%u,\"bursts\":%u,\"seconds\":%.3f,\"symbols_in\":%u,"
+                           ",\"shape\":\"%s\",\"rolloff\":%.2f,\"bt\":%.2f,\"bits\":%d,\"baud\":%.1f,"
+                           "\"dev_hz\":%.1f,\"peak_hz\":%.0f,\"offset_hz\":%.1f,\"symbols\":%u,\"repeat\":%u,\"bursts\":%u,\"seconds\":%.3f,\"symbols_in\":%u,"
                            "\"symbols_short\":%llu,\"wait_s\":%.3f,\"clip_hz\":%.0f,\"clipped\":%llu",
-                           shape_names[t->shape], t->baud, t->dev_hz * t->scale, t->peak, t->offset_hz,
-                           (unsigned)t->nsym, t->repeat, t->bursts, (double)t->total / t->fs, (unsigned)in,
+                           shape_names[t->shape], t->rolloff, t->bt, t->bits, t->baud, fabs(t->dev_hz * t->scale), t->peak,
+                           t->offset_hz, (unsigned)t->nsym, t->repeat, t->bursts, (double)t->total / t->fs, (unsigned)in,
                            (unsigned long long)(t->nsym - in) * t->repeat, (double)t->waited / t->fs, t->clip_hz,
                            (unsigned long long)t->clipped);
     return n > 0 && (size_t)n < cap ? (size_t)n : 0;
@@ -1055,15 +1077,16 @@ static void *fsk4_rx_new(const rdof_jdoc_t *d, int req, double fs, double squelc
     const double baud = rdof_sig_num(d, req, "baud", 4800);
     const double sq = rdof_sig_num(d, req, "squelch_dbfs", squelch_dbfs);
     const double smin = rdof_sig_num(d, req, "sync_min", 0.9);
+    const double rolloff = rdof_sig_num(d, req, "rolloff", ALPHA);
     int sh = -1, fl = -1;
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < SH_N; i++)
         if (!strcmp(shape, shape_names[i]))
             sh = i;
     for (int i = 0; i < 3; i++)
         if (!strcmp(filt, filt_names[i]))
             fl = i;
-    if (sh < 0 || (filt[0] && fl < 0)) {
-        snprintf(error, ecap, "fsk4 shape: c4fm, rrc, rc or nrz; filter: none, iad or rrc");
+    if (sh < 0 || (filt[0] && fl < 0) || !(rolloff >= 0.05 && rolloff <= 1)) {
+        snprintf(error, ecap, "fsk4 shape: c4fm, rrc, rc, nrz or gauss; filter: none, iad or rrc; rolloff 0.05-1");
         return NULL;
     }
     if (fl < 0)
@@ -1132,7 +1155,7 @@ static void *fsk4_rx_new(const rdof_jdoc_t *d, int req, double fs, double squelc
         r->h = rdof_sdr_alloc(sizeof(float) * (size_t)r->nh);
         float *g = rdof_sdr_alloc(sizeof(float) * TAB);
         if (g && r->h) {
-            build_pulse(SH_RRC, g);
+            build_pulse(SH_RRC, rolloff, 0, g);
             /* the matched filter, scaled so that the transmitter's RRC pulse comes out at exactly 1 */
             double e = 0;
             for (int i = 0; i < r->nh; i++)

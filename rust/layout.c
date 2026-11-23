@@ -82,6 +82,7 @@ static const rdof_rust_layout_t c_layouts[] = {
     L(rdof_benchtx_track_t),
     L(rdof_modem_port_t),
     L(rdof_sig_src_t),
+    L(rdof_sig_mode_t),
     L(rdof_modem_t),
     L(rdof_mrelay_t),
     L(rdof_mrelay_heard_t),
