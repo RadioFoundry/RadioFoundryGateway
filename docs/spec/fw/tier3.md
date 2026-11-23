@@ -6,10 +6,10 @@ the road to multi-site roaming, what is built and what isn't, and how it is test
 
 Status: built and on main since 2026-11-16 (PR #9). The site runs in rdofradio on a PlutoSDR (up to four carriers
 out of one SDR; two on air), on a stock duplex MMDVM modem (one carrier, [tier3-hat.md](tier3-hat.md)), on split
-radios (host-tested only) and on simulated air. It has run on air with radios at two sites over the MQTT
-network: registration, calls, short and packet data, power save, roaming between the sites and the other services in section 13. A site can also log in to
-a BrandMeister master (5.11), checked on the real master. Every radio tested runs RadioFoundry's MS engine: no
-standard Tier III radio from another maker has been tried.
+radios (host-tested only) and on simulated air. It has run on air with radios at two sites over the MQTT network:
+registration, calls, short and packet data, power save, roaming between the sites and the other services in section
+13. A site can also log in to a BrandMeister master (5.11), checked on the real master. Every radio tested runs
+RadioFoundry's MS engine: no standard Tier III radio from another maker has been tried.
 
 Sources: ETSI TS 102 361-1 (air interface), -2 (voice), -4 (trunking, V1.12.1). Clause numbers below are 361-4's
 unless marked. Clean room: the ETSI text and our own MIT code only. MS authentication (6.4.8, 6.4.4.1.5) is built
