@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 #
-# Install RadioFoundry Gateway's rdofradio on a PlutoSDR (or a 7010 / 7020 clone) running ADI's firmware v0.3x,
+# Install RadioFoundry Gateway's rdofradio on a PlutoSDR or Pluto+ running ADI's firmware v0.3x,
 # so it starts at boot and again whenever it exits. Everything goes in the Pluto's persistent flash, /mnt/jffs2
 # (about 300 KB); the firmware runs /mnt/jffs2/autorun.sh at boot. The FPGA's bitstream for the board (fpga/, for
 # --fpga-chz and --fpga-duc) doesn't fit there: it goes in rdof/ on the SD card's boot partition (the one with

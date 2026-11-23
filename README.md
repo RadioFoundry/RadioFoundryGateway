@@ -16,8 +16,8 @@ an ESP32-S3, a Raspberry Pi or another Linux / macOS box, and on a PlutoSDR's ow
   and dual capacity direct mode.
 - 📏 **A radio test and measurement bench** on TCP port 7373: captures, triggers, decoded bursts, carrier tracking,
   PA ramps, and transmit and receive jobs in FM, AM, DMR, P25, NXDN, dPMR, M17 and D-STAR, several carriers at once.
-- 📡 **Hear many channels at once:** up to 6 on an ESP32-S3, 10+ on a Raspberry Pi, 16 on a PlutoSDR clone with the
-  FPGA channelizer.
+- 📡 **Hear many channels at once:** up to 6 on an ESP32-S3, 10+ on a Raspberry Pi, 16 on a PlutoSDR or Pluto+ with
+  the FPGA channelizer.
 - 🔗 **Networks:** HBlink4, BrandMeister (a hotspot, a repeater or a whole trunked site as one login), MQTT, and a
   site-to-site MQTT network, with rules for which calls go where.
 - 🛰️ **UTC-disciplined timing:** GNSS PPS or NTP. DMR slots and SDR samples are locked to UTC, the groundwork for
@@ -116,8 +116,8 @@ plus one SDR** on an ESP32-S3, more on a host.
 | MMDVM modem (MMDVM_HS hats, ZUMspot, a repeater's MMDVM board), stock firmware | UART or USB | ✅ | ✅ | half or full |
 | Any SoapySDR device (Linux / macOS): RTL-SDR and PlutoSDR tested; LimeSDR, HackRF, USRP B200 and others ([list](docs/reference.md)) | `rdofsdr` | ✅ multi-channel | — | — |
 | A SoapySDR device that transmits, or an AD9361 / AD9363 through libiio | `rdofradio` | ✅ | ✅ | half or full |
-| PlutoSDR family (7010 / 7020, stock firmware), on its own ARM | `rdofradio --iio local:` | ✅ multi-channel | ✅ multi-carrier | half or full |
-| PlutoSDR 7010 clone with the FPGA channelizer and upconverter (`tools/pluto/fpga/`) | `rdofradio --fpga-chz` | ✅ 16 channels | ✅ multi-carrier | half or full |
+| PlutoSDR or Pluto+ (stock firmware), on its own ARM | `rdofradio --iio local:` | ✅ multi-channel | ✅ multi-carrier | half or full |
+| PlutoSDR or Pluto+ with the FPGA channelizer and upconverter (`tools/pluto/fpga/`) | `rdofradio --fpga-chz` | ✅ 16 channels | ✅ multi-carrier | half or full |
 
 Some combinations:
 
@@ -126,7 +126,7 @@ Some combinations:
 | A Raspberry Pi with an MMDVM hat | A hotspot or repeater with a web page and the bench line, on BrandMeister, HBlink4 or MQTT |
 | A duplex MMDVM hat + an RTL-SDR | A one-carrier Tier III site, or a repeater that also measures its own input |
 | A PlutoSDR alone | A full duplex repeater, or a Tier III site with up to 4 carriers, on the stock firmware |
-| A PlutoSDR 7010 clone | Up to 16 monitored channels and a bench instrument for transmit tests |
+| A PlutoSDR or Pluto+ with the FPGA channelizer | Up to 16 monitored channels and a bench instrument for transmit tests |
 | ESP32-S3 + RTL-SDR | A 5-channel receive site feeding HBlink4 and MQTT |
 | Meshnology W12 | A 6-channel monitor **and** a half-duplex roamer on one board, with GNSS time; a bench instrument |
 | ESP32-S3 + two handhelds | A **split duplex** repeater: one radio receives, the other transmits |
@@ -240,7 +240,7 @@ Running on hardware:
 - **Repeaters and hotspots:** a duplex MMDVM_HS hat with an RTL-SDR, as a repeater and a bench line, run as a service.
 - **SDR receive and transmit:** the SuperMini, N16R8 and W12. The W12 also transmits as a roamer and as a bench
   instrument.
-- **PlutoSDR:** a 7010 clone with the FPGA channelizer and upconverter, as a Tier III site and a bench instrument,
+- **PlutoSDR:** a Pluto+ with the FPGA channelizer and upconverter, as a Tier III site and a bench instrument,
   multi-carrier transmit included.
 
 Host-tested, not yet run with radios: Tier III carriers on split radios, three or four carriers on one SDR,

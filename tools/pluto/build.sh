@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 #
-# rdofradio and rdofsdr for a PlutoSDR (and its 7010 / 7020 clones) as it comes, firmware v0.3x: nothing to
+# rdofradio and rdofsdr for a PlutoSDR or Pluto+ as it comes, firmware v0.3x: nothing to
 # install on it. Built in Debian 9's container, whose glibc (2.24) is older than the firmware's (2.25), against
 # the firmware's own libiio and libad9361 (from ADI's sysroot for v0.38: their headers and libraries, nothing
 # else), and libmosquitto 2.1 (EPL-2.0 / EDL-1.0) built here and linked in statically, without TLS (the firmware has

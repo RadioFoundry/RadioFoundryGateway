@@ -1508,8 +1508,8 @@ a host tool ([hostweb/README.md](../hostweb/README.md)). Build with `-DRDOF_HOST
 ## PlutoSDR
 
 `rdofradio --iio URI` drives an AD9361 or AD9363 through libiio 0.x (`sdr/cli/rdofradio_iio.c`), with no SoapySDR. A
-PlutoSDR's firmware has libiio and libad9361, so a build for its ARM runs on a stock Pluto (or a Zynq 7010 / 7020
-clone on ADI's firmware) with nothing installed. `ip:192.168.2.1` or `usb:` reach a Pluto from a host. Setting one up
+PlutoSDR's firmware has libiio and libad9361, so a build for its ARM runs on a stock PlutoSDR or Pluto+
+(on ADI's firmware) with nothing installed. `ip:192.168.2.1` or `usb:` reach a Pluto from a host. Setting one up
 step by step: [plutosdr.md](plutosdr.md).
 
 **Build:** `tools/pluto/build.sh` (an x86_64 host with Docker) builds in Debian 9, whose glibc is older than the
@@ -1563,7 +1563,7 @@ starts `rdofradio` again 5 s after it exits.
 - **The SD card:** a program too big for the flash goes in `rdof/` on the card's `RDOF` partition. `install.sh` makes
   it once, after the boot partition, which isn't touched (it reads a write back first, to catch a fake card).
   `run.sh` mounts it read-only and runs the newer of the two places' programs, by a sequence number beside each
-  (`host-tests/pluto_bundle.sh`). The tested clone's card fails the check: labeled 128 MB, it says 3.76 GiB, and past
+  (`host-tests/pluto_bundle.sh`). The tested Pluto+'s card fails the check: labeled 128 MB, it says 3.76 GiB, and past
   121 MiB keeps writes only at the front of each MiB (2026-11-15). There a program too big for the flash runs from RAM
   until a genuine card goes in. Bulk reads of that card while rdofradio ran rebooted the Pluto twice.
 - **Size:** the flash (`mtd2`, jffs2, 896 KB) holds the program and the settings, about 690 KB of program at most.
@@ -1576,12 +1576,12 @@ starts `rdofradio` again 5 s after it exits.
 - The Pluto makes a new ssh host key at every boot, so the script doesn't check it.
 - At `--tx-gain 0` (the default) the start's calibration pulse isn't heard, so the outbound slot timing isn't
   measured.
-- Tested on a Pluto+ style clone (Z7010, 1 GB, Ethernet, SD boot, v0.38): the page answers about 25 s after power-on.
+- Tested on a Pluto+ (Z7010, 1 GB, Ethernet, SD boot, v0.38): the page answers about 25 s after power-on.
 
 ### FPGA channelizer
 
 `--fpga-chz [ADDR]` (with `--iio`) decodes from the FPGA channelizer block (`chzhw.h`) in place of the ARM's
-channelizer: every channel at once, 15 on the 7010 clone where the ARM manages 10. It probes the block (at
+channelizer: every channel at once, 15 on the Pluto+ where the ARM manages 10. It probes the block (at
 `0x7C480000` unless ADDR is given) and plans the rate as usual, up to 48 kS/s times the most the block decimates
 (24.576 MS/s with its CIC: R D at most 512).
 
@@ -1631,7 +1631,7 @@ stream at 192 kS/s, or 96 kS/s when the rate isn't a multiple of 192 kS/s, and t
 - With `--split-tx` or `--mmdvm` the SDR doesn't transmit, and it's left unused.
 - Without the block nothing answers at ADDR, and a read there is a bus error: both options need the bitstream.
 
-Measured on the 7010 clone (2026-11-03 and 04):
+Measured on the Pluto+ (2026-11-03 and 04):
 
 | Run | Result |
 |---|---|
@@ -1643,7 +1643,7 @@ Measured on the 7010 clone (2026-11-03 and 04):
 ### The bitstream
 
 The bitstream for both blocks is kept in `tools/pluto/fpga/` as `rfg-pluto-<board>.bit.bin` (MIT and ADI BSD; its
-README and `MANIFEST` say where it was built from). There is one for `fishball7010` (a 7010 Pluto+ style clone with
+README and `MANIFEST` say where it was built from). There is one for `fishball7010` (a Pluto+ with
 32-bit DDR, 1 GB and Ethernet) so far; `rdof/sdr/plutofpga.h` also knows `plutoplus` and `adalm-pluto`.
 
 With `--iio local:`, `--fpga-chz` or `--fpga-duc` loads it before anything else (`sdr/cli/rdofradio_fpga.h`):
@@ -1659,7 +1659,7 @@ With `--iio local:`, `--fpga-chz` or `--fpga-duc` loads it before anything else 
    brings the stock design back.
 
 With none for the board both options are off and the ARM channelizes: the channels that don't fit its window are left
-out, in the settings' order, the unit's kept (15 configured on the clone: 10 kept, at 1.296 MS/s).
+out, in the settings' order, the unit's kept (15 configured on the Pluto+: 10 kept, at 1.296 MS/s).
 
 `install.sh` writes the board's bitstream to `rdof/` on the SD card's boot partition (the one with `BOOT.bin`, which
 it never touches), only when it differs; the flash has no room for it. It then adds `--fpga-chz --fpga-duc` to

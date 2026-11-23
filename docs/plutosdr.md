@@ -1,16 +1,16 @@
 # PlutoSDR
 
 `rdofradio` runs on the PlutoSDR's own ARM as a DMR repeater, a transceiver or a DMR Tier III trunked site, with its
-web page, MQTT and the bench line. It runs on ADI's stock firmware (v0.3x) on a PlutoSDR or a Zynq 7010 / 7020
-clone, through the firmware's own libiio and libad9361: nothing else to install on the Pluto.
+web page, MQTT and the bench line. It runs on ADI's stock firmware (v0.3x) on a PlutoSDR or Pluto+,
+through the firmware's own libiio and libad9361: nothing else to install on the Pluto.
 
 A Pluto on a PC's USB, driven from the PC, is the host tools' job instead: [linux-macos.md](linux-macos.md).
 
 | | ARM alone | With the FPGA channelizer |
 |---|---|---|
-| Boards | any Pluto or 7010 / 7020 clone on stock firmware | a 7010 clone with 1 GB of 32-bit DDR and Ethernet (`fishball7010`), so far |
+| Boards | any PlutoSDR or Pluto+ on stock firmware | a Pluto+ with 1 GB of 32-bit DDR and Ethernet (`fishball7010`), so far |
 | Channels | about 10 (at 1.296 MS/s) | 15 |
-| Tested | a Rev.C and a 7010 clone, firmware v0.38: full and half duplex with handhelds; a Tier III site with a radio | the 7010 clone: 15 channels in loopback |
+| Tested | a Rev.C and a Pluto+, firmware v0.38: full and half duplex with handhelds; a Tier III site with a radio | the Pluto+: 15 channels in loopback |
 
 ## 1. Build
 
@@ -62,7 +62,7 @@ tar -xzf build/pluto/rdof-pluto-bundle-VERSION.tar.gz && cd rdof-pluto-bundle-VE
 - `my.json` is a settings file with an `iio` device ([settings.md](settings.md); start from `config.example.json` or
   `config/examples/standalone-pluto-duplex.json`). `install.sh` checks it on the Pluto before it installs anything.
 - It asks for the root password. `--host root@<address>` for a Pluto that isn't at 192.168.2.1.
-- The page answers about 25 s after power-on (tested on a 7010 clone).
+- The page answers about 25 s after power-on (tested on a Pluto+).
 - Every option, and where each file goes: [the bundle's README](../tools/pluto/bundle/README.md).
 
 The device flags (RX and TX gain, the page's address, the clock, the bench) are in `/mnt/jffs2/rdof/flags`; the

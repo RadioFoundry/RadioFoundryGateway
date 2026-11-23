@@ -7,7 +7,7 @@ was built from.
 
 | Board | File |
 |---|---|
-| Zynq 7010 clone with 1 GB of 32-bit DDR, Ethernet and LVDS (fishball7010) | `rfg-pluto-fishball7010.bit.bin` |
+| Pluto+ (Zynq 7010) with 1 GB of 32-bit DDR, Ethernet and LVDS (fishball7010) | `rfg-pluto-fishball7010.bit.bin` |
 
 License: MIT for rfg-pluto's own design ([LICENSE](LICENSE)), ADI's BSD for the parts from ADI's HDL
 ([LICENSE_ADIBSD](LICENSE_ADIBSD)).

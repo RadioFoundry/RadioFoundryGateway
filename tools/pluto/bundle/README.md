@@ -1,7 +1,7 @@
 # RadioFoundry Gateway for the PlutoSDR
 
-`rdofradio` (a DMR repeater or a DMR Tier III trunked site on the SDR, with its web page) for a PlutoSDR or a Zynq
-7010 / 7020 clone on ADI's firmware v0.3x as it comes. Nothing else to install on the Pluto: it uses the firmware's
+`rdofradio` (a DMR repeater or a DMR Tier III trunked site on the SDR, with its web page) for a PlutoSDR or a
+Pluto+ on ADI's firmware v0.3x as it comes. Nothing else to install on the Pluto: it uses the firmware's
 own libiio and libad9361.
 The guide, from building to the FPGA channelizer: [docs/plutosdr.md](../../../docs/plutosdr.md).
 
@@ -35,7 +35,7 @@ again 5 s after it exits.
 - `run.sh` mounts it read-only at `/tmp/rdof/sd` (read-write only while it writes an image). Each place has a sequence
   number (`seq` beside the image): the newer image runs, the other is the fallback when it won't unpack.
 
-**The FPGA bitstream** (`fpga/`, for `--fpga-chz` and `--fpga-duc`: every channel at once, 15 on a 7010 clone in
+**The FPGA bitstream** (`fpga/`, for `--fpga-chz` and `--fpga-duc`: every channel at once, 15 on a Pluto+ in
 place of about 10) doesn't fit in the flash.
 
 - `install.sh` writes the board's to `rdof/` on the SD card's boot partition (the one with `BOOT.bin`), only when the
