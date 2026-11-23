@@ -107,7 +107,7 @@ What runs:
 | `rdofradio_e2e_brandmeister`, `rdofradio_e2e_homebrew` | no RF, three processes (`host-tests/e2e_login.sh`): rdofradio on `fakemodem` logs in to `fakebm`, a radio's private call goes up, the parrot's echo goes out on air, RPTCL at exit |
 | `rdofradio_e2e_ipgw` | no RF, no network (`host-tests/e2e_ipgw.sh`): `config/examples`' standalone MMDVM settings, simplex then duplex: a radio's confirmed UDP text goes out through the IP gateway to a listener, its ACK and the listener's reply go out on air |
 | `rdofradio_e2e_examples` | each file in `config/examples` as written, on simulated hardware, with its clock, bench and network (`host-tests/test_examples.py`) |
-| `rdofradio_e2e_mqttnet` | two boxes on `fakemodem`s joined by the MQTT network through a local broker (`host-tests/e2e_mqttnet.sh`) |
+| `rdofradio_e2e_mqttnet` | two gateways on `fakemodem`s joined by the MQTT network through a local broker (`host-tests/e2e_mqttnet.sh`) |
 | `mmdvm_bench_tests` | the whole bench line on `fakemodem` (`host-tests/test_mmdvm_bench.py`) |
 | `fpga_usb_tx_e2e` | the Pluto's FPGA channelizer with a USB radio transmitting, no Pluto (`host-tests/test_fpga_usb_tx.py`): `--sim-sdr`'s simulated block hears `e2e_288k.cu8`; `--listen`, a `--split-tx` repeater, two split repeaters from a `--config` (each radio repeats its own input's call), `--mmdvm` with the bench's taps and a raw capture, all with `--fpga-chz --fpga-duc` |
 | `rdofradio_e2e_t3_composite_sim` | a composite TSCC on the simulated Pluto (`--sim-sdr --fpga-chz --fpga-duc`, `host-tests/e2e_t3_composite_sim.py`): the lend in the log, `trunk.composite.lends` in the MQTT status (a broker on this host when there is one), and in what it sent (`rdofsdr`) both slots on the grid, voice on both while lent, P_SYS_Parms with Payload Channel Type 1 for the lend and C_SYS_Parms around it |
@@ -236,7 +236,7 @@ Flashing each board for the first time: [esp32-boards.md](esp32-boards.md).
 | `host-tests/` | the host build of `common/`, `sdr/`, `rtlsdr/` and the components' portable parts, the tests, the golden fixtures, the fake radios (`fake_radio.c`) |
 | `systest/` | the system tests: `radiosim`, `radiolink.c`, `test_radiosim.c` |
 | `hil-tests/` | hardware-in-the-loop tests (pytest) |
-| `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`, `burstramp.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `linux-arm64/` (rdofradio cross-built for a Debian 13 arm64 box with the Rust modules, its run script and systemd unit), `rtl_probe/` (the RTL-SDR driver on a Linux host over usbfs, for bench checks), `config_check.py`, `hblink4_sctp_check.sh`, `lr2021_lab.py` (LR2021 experiments over a board's `/api/lr2021/*`), `rtl_fir_design.py` |
+| `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`, `burstramp.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `linux-arm64/` (rdofradio cross-built for a Debian 13 arm64 host with the Rust modules, its run script and systemd unit), `rtl_probe/` (the RTL-SDR driver on a Linux host over usbfs, for bench checks), `config_check.py`, `hblink4_sctp_check.sh`, `lr2021_lab.py` (LR2021 experiments over a board's `/api/lr2021/*`), `rtl_fir_design.py` |
 | `config/` | the settings' JSON schema (`rdof-config.schema.json`); `examples/`: settings to start from ([README](../config/examples/README.md)) |
 | `docs/` | the guides ([README](README.md)), this reference, the specs (`spec/`) |
 | `LICENSES/`, `PROVENANCE.md` | third-party license texts, and where each piece of copied or ported code came from |
@@ -259,7 +259,7 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `hblink`, `hbpeer` | DMRC, DMRD, DMRT, DMRK, the HBlink sink; the peer's state machine |
 | `tracker` | the call tracker: MMDVMHost-style JSON, raw bursts, frames for HBlink4 |
 | `netcalls`, `status` | network calls, `tx`, status and Receiver messages |
-| `site`, `idset` | the settings parser (version 3), ID sets, the box's `rules` as what each network may not carry ([config-v3.md](spec/fw/config-v3.md) §8.1), the resolved view (C only) |
+| `site`, `idset` | the settings parser (version 3), ID sets, the gateway's `rules` as what each network may not carry ([config-v3.md](spec/fw/config-v3.md) §8.1), the resolved view (C only) |
 | `siteplan` | one parse of the settings into what runs: units, devices, checks ([config-v3.md](spec/fw/config-v3.md) §12, §13.1) (C only) |
 | `t3rf`, `t3cfg`, `t3unit`, `t3sim` | Rust only (`rust/src/t3*.rs`, the `tier3` feature, in `rdof_common` with `RDOF_TIER3`; C API in `rdof/t3*.h`): a trunked site's radio layer (control blocks and UDT blocks to bursts and back, packet data repeated on its channels, the CACH, the carriers' slots); its settings into the controller's (`rdof/t3.h`: [tier3.md](spec/fw/tier3.md); the controller, its short data, packet data, talkgroup lists (list subscription, DGNA) and supplementary services (stun/revive/kill, ALS, call diversion), `t3site`, `t3sdata`, `t3pdata` (and `t3pdrate`, packet data blocks at each rate and the selective retry; `t3pdnet`, packet data across sites), `t3tglist`, `t3supp`, `t3udt`, are the `t3` feature); the Reverse Channel burst (`t3rc`); the controller's own parts in child modules (`t3emerg` pre-emption, `t3status` status delivery, `t3bcast` the other C_BCASTs (Vote_Now with VOTE_BLK, the neighbors' TSCC channels in Chan_Freq), mass re-registration and power save, `t3tscc` C_MOVE and the hibernating TSCC, `t3duplex` full-duplex calls, `t3composite` the composite TSCC, `t3intr` transmit interrupt, `t3pcheck` the radio check and selective clear on a payload channel, `t3auth`/`t3authsite` authentication, `t3park` the field-site behaviors on a payload channel); the site's BrandMeister login (`t3bm`); a carrier on a stock duplex MMDVM modem (`t3hat`); the site in one sans-IO core: the controller, the radio layer and mqtt-net (streams, setup, short data, records, `where/`, `cfg`, `cmd`, status, activity), opaque, `rdof_t3unit_size()` bytes; simulated MSs on its air through the burst path |
 | `config`, `jsonp` | a unit's settings from the plan (`rdof_plan_radio`), what a board runs, the port checks; the JSON reader |
@@ -550,12 +550,12 @@ Keys: [config-v3.md](spec/fw/config-v3.md) §6.3; how it works and what's left: 
 
 An `mqtt` network with `"calls": true, "format": "v3"` carries calls as the MQTT network's messages
 ([mqtt-net.md](spec/fw/mqtt-net.md)) in place of DMRD packets. The board opens a second connection for it
-(`mqttnet_task.c`, client ID `rdof-net-{name}-{hw}`, the box's `name` as its node), with the network's broker, user,
+(`mqttnet_task.c`, client ID `rdof-net-{name}-{hw}`, the gateway's `name` as its node), with the network's broker, user,
 root and TLS.
 
 - **Up:** every receiver (the SDR's channels, each roamer's or repeater's radio) sends the calls the router gives this
   network on `{root}/tg/{tg}/{node}` or `{root}/pc/{dst}/{node}`.
-- **Down:** the box subscribes to `{root}/dl/{node}` and the TGs its transmitting paths carry; the router's
+- **Down:** the gateway subscribes to `{root}/dl/{node}` and the TGs its transmitting paths carry; the router's
   transmitters send what comes in. Confirmed data heard here is ACKed on RF.
 - **Status:** `GET /api/status` has the counters under `mqtt_net`.
 - Phase 1 only. rdofradio runs the same code and has carried calls over it on a Pluto and between trunked sites.
@@ -585,10 +585,10 @@ root and TLS.
   - A publish built just as the connection drops can reach the next connection with an alias it doesn't know; the
     broker then disconnects and the next connection starts over.
   - With the SDR's 17-byte topic a burst is 70 bytes on the wire, 57 with its alias.
-- **mDNS and DNS-SD** (`dnssd.c`, espressif/mdns): the board answers as `BOX-XXXX.local`: the box's name as a host name
-  and the base MAC's last two bytes (a box `w12`: `w12-c3d4.local`; `radiofoundry-XXXX` with no name), which is its
-  DHCP host name too. It lists `_http._tcp` (the page) and, when the bench line runs, `_rfgbench._tcp` with TXT
-  `kind`, `ver` and `mac`. `rfgbench.py find` lists the boards from it, whatever address DHCP gave them.
+- **mDNS and DNS-SD** (`dnssd.c`, espressif/mdns): the board answers as `NAME-XXXX.local`: the gateway's name as a host
+  name and the base MAC's last two bytes (a gateway named `w12`: `w12-c3d4.local`; `radiofoundry-XXXX` with no name),
+  which is its DHCP host name too. It lists `_http._tcp` (the page) and, when the bench line runs, `_rfgbench._tcp`
+  with TXT `kind`, `ver` and `mac`. `rfgbench.py find` lists the boards from it, whatever address DHCP gave them.
 - **`/api/status`**: `name`, `version` (`git describe --always --tags --dirty` at the last CMake configure;
   `idf.py reconfigure` refreshes `-dirty`), `idf`, Wi-Fi, clock, memory, the SDR's test results, then `roamer` and
   `sdr` for what runs. Every field: [device.md](spec/fw/device.md).
@@ -731,7 +731,7 @@ predicted position; queueing just in time gives the same samples as queueing eve
 
 The SDR on a board: an RTL-SDR on the S3's USB, the W12's LR2021, or `sim`. It publishes each channel's calls as
 MMDVMHost-compatible JSON and raw bursts on MQTT, with a status and a Receiver message per channel, and feeds
-HBlink4 a receive-only peer per channel (or one through the box's peer).
+HBlink4 a receive-only peer per channel (or one through the gateway's peer).
 
 | Path | What |
 |---|---|
@@ -1293,7 +1293,7 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --
 #### A trunked site
 
 `--config` with a `tier3` app runs a DMR Tier III site ([tier3.md](spec/fw/tier3.md) 9.4, `sdr/cli/rdofradio_t3.c`)
-on the mqtt network as the box's node, the provisioning cached in `--state-dir DIR`'s `cfg-cache.json`. It needs
+on the mqtt network as the gateway's node, the provisioning cached in `--state-dir DIR`'s `cfg-cache.json`. It needs
 `RDOF_TIER3` (on by default; needs cargo: the controller is the Rust `t3` feature, linked alone, for
 `RDOF_RUST_TARGET` when cross building); without it such a file is refused with the reason. Limits: four carriers,
 64 simulated MSs, 256 script actions, 20 talkgroups subscribed one by one (more: `tg/+/+`, filtered).
@@ -1311,7 +1311,7 @@ Where the carriers go out:
 - **Two radios a carrier, no SDR.** A split TX half and a split RX half each. The site runs on the host's clock, and
   each RX-half burst's slot comes from its RX_META slot number or its label's parity. No web page or bench port in
   this mode yet.
-- **A stock duplex MMDVM modem** (one carrier): `--mmdvm PORT --config BOX.json --tier3 SITE.json
+- **A stock duplex MMDVM modem** (one carrier): `--mmdvm PORT --config HOST.json --tier3 SITE.json
   [--hat-lead IDLE_MS,BUSY_MS]`, an SDR receiver beside it hearing its out and in ([tier3-hat.md](spec/fw/tier3-hat.md),
   `rdof/t3hat.h`). Each burst is written a lead before its slot on the modem's own slot clock as the receiver hears
   it: by default 132 ms where the CACH's AT should say idle, 161 ms busy (the middles of the measured windows). The
@@ -1382,11 +1382,11 @@ half is a modem runs, up to 8 (`RDOF_ROLES_MAX`), each with its own radio.
 
 #### An MMDVM modem on a serial port
 
-A Raspberry Pi with an MMDVM_HS hat, step by step (OS, serial port, build, settings, service):
+A Raspberry Pi with an MMDVM_HS HAT, step by step (OS, serial port, build, settings, service):
 [raspberry-pi.md](raspberry-pi.md).
 
 `rdofradio --allow-tx --mmdvm PORT --rx MHZ [--tx MHZ]`: the repeater (`--duplex full`, the default) or the roaming
-transceiver (`--duplex half`) on an MMDVM modem: an MMDVM_HS hat on a UART (`/dev/ttyS0`), a hotspot or an MMDVM
+transceiver (`--duplex half`) on an MMDVM modem: an MMDVM_HS HAT on a UART (`/dev/ttyS0`), a hotspot or an MMDVM
 board on USB. A duplex modem runs the repeater, any modem the transceiver; the radio's type comes from its
 description (`rdof_radio_detect`). Its own call tracker feeds the page, MQTT, HBlink4 and listen before talk. The port
 is read by a thread.
@@ -1463,7 +1463,7 @@ spec §14.9.
 A bench line with only an MMDVM modem and an RTL-SDR (bench-api.md §14.9 lists what it can do):
 
 ```sh
-# on a Linux box with libsoapysdr-dev and soapysdr-module-rtlsdr
+# on a Linux host with libsoapysdr-dev and soapysdr-module-rtlsdr
 cmake -S . -B build/linux && cmake --build build/linux --target rdofradio
 build/linux/rdofradio --soapy driver=rtlsdr -r 2.4e6 --gain 30 --ppm PPM --allow-tx \
     --mmdvm /dev/ttyAMA0 --rx MHZ --tx MHZ --duplex half --cc CC \
@@ -1718,7 +1718,7 @@ prefilter 65, bursts 10. At 960 kS/s the same eight take 176% of one core and 16
 
 PSRAM traffic is a large part of the cost: about 17 cycles a byte through the 32 KB data cache. 64-byte cache lines
 (`sdkconfig.defaults`) took the clip from 190 to 180. A lower sample rate saves only the wideband part (about 15% at
-288 kS/s): channel count is the lever.
+288 kS/s): channel count is the main factor.
 
 With the idle gate, live with `sim`:
 
@@ -1776,7 +1776,7 @@ What the firmware and rdofradio do and don't do:
 | UTC slot timing | in (`slotgrid.c`); the gate on the board from netclock |
 | Split duplex | in (`split.c`; on the board `split_port.c`). The board's SDR modem as a half: host-tested only. `rdofradio --split-tx`: run against a simulated radio, not a real one; several splits on one SDR (`--config`): host-tested only |
 | Network calls, `tx`, status every 10 s and on change, Receiver, restart with backoff | in |
-| Settings | version 3, checked in full. Not: `${VAR}` from the environment, ids unique across a box |
+| Settings | version 3, checked in full. Not: `${VAR}` from the environment, ids unique across a gateway |
 | HBlink4: DMRC, DMRD, DMRT, DMRK over UDP; the HBlink sink | in |
 | The Homebrew login (RPTL, RPTK, RPTC) to BrandMeister or another Homebrew master | in, one login per path ([brandmeister.md](spec/fw/brandmeister.md)) |
 | A DMR Tier III trunked site (`tier3`) | in rdofradio ([tier3.md](spec/fw/tier3.md)); not on a board (the LR2021 can't stay keyed) |

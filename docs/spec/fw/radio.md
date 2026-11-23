@@ -280,7 +280,7 @@ A split repeater's halves are diverted first (`split_half_up/down/bytes`).
 | Write | `cdc_acm_host_data_tx_blocking`, 200 ms timeout | `usb_modem.c:usb_write` |
 | Open failure on a known address | release, retry after 1000 ms | `usb_modem.c:open_task` |
 | Host library task | "usb_lib", priority 19, core 0 | `usb_host.c:usb_host_start` |
-| Port kick | 3000 ms after start, nothing enumerated: root port power off 200 ms, on (VBUS stays on) | `usb_host.c:port_kick` |
+| Port power cycle | 3000 ms after start, nothing enumerated: root port power off 200 ms, on (VBUS stays on) | `usb_host.c:port_kick` |
 | RTL-SDR (not a radio) | VID `0x0BDA`, PID `0x2838` or `0x2832` | `usb_host.c:usb_host_is_rtl` |
 
 The S3 doesn't supply VBUS; the radio's 5 V comes from outside.
@@ -429,7 +429,7 @@ repeater in `mode: dcdm` (§1.6).
 | `RDOF_TXVR_MAX_CHANNELS` / `_MAX_COVERED` | 32 / 32 | | `txvr.h` |
 | `RDOF_TXVR_IDS` | 16 | frequencies with a CW ID time | `txvr.h` |
 
-Settings defaults (`txvr.c:rdof_txvr_init`): `listen_s` 0.3, `clear_s` 2.0, `prebuffer` 6 (fixed; the box config's default is the auto jitter buffer, below), `csbk_preambles` 2,
+Settings defaults (`txvr.c:rdof_txvr_init`): `listen_s` 0.3, `clear_s` 2.0, `prebuffer` 6 (fixed; the settings file's default is the auto jitter buffer, below), `csbk_preambles` 2,
 `answer_s` 0.75, `answer_max_s` 5.0, `cwid_every_s` 900. Scan defaults (`rdof_scan_defaults`): `dwell_s` 0.45,
 `hang_s` 3.0.
 

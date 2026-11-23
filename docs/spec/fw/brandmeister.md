@@ -2,7 +2,7 @@
 
 What: connect the gateway's talk paths to BrandMeister as a network type of its own, beside `hblink` and `mqtt`. A
 simplex frequency or a repeater (a duplex pair) logs in to a BrandMeister master as a hotspot or a repeater; one
-box can hold several logins at once, one per path, as `identity: per_path` does for HBlink4.
+gateway can hold several logins at once, one per path, as `identity: per_path` does for HBlink4.
 Status: built, on the board and in rdofradio, and host tested against a simulated master (`fakebm`). It logs in in
 the 2015 specification's dialect on port 62030 (§3); a probe with that dialect logged in to BrandMeister and made a
 parrot call (§3.1), and a Tier III site in rdofradio logged in to a real master and keyed talkgroups there
@@ -18,7 +18,7 @@ BrandMeister takes devices in three ways:
 
 | Way | Who may use it | Fit |
 |---|---|---|
-| Homebrew repeater protocol: the box logs in as a hotspot or repeater | anyone with a registered DMR ID and a hotspot security password (BrandMeister's SelfCare) | chosen: one login per path, no approval needed |
+| Homebrew repeater protocol: the gateway logs in as a hotspot or repeater | anyone with a registered DMR ID and a hotspot security password (BrandMeister's SelfCare) | chosen: one login per path, no approval needed |
 | OpenBridge (server to server) | by ticket, granted by BrandMeister's admins | for a network, not a frequency; later, with the MQTT network |
 | SEA (the Rewind protocol, an application) | per application, granted by BrandMeister | for apps; later, if ever |
 
@@ -155,7 +155,7 @@ stateDiagram-v2
 
 - Ping every 5 s while up; down after 3 unanswered (15 s).
 - `MSTNAK` at `AUTH` means a wrong password: report it as such (status `bad_password`) and back off to the 60 s
-  ceiling at once, so a wrong password doesn't hammer the master.
+  ceiling at once, so a wrong password doesn't load the master with retries.
 - `DMRD` is sent only while up. `DMRD` received while not up is ignored.
 
 ## 4. Settings (config-v3 §7.3)
@@ -163,13 +163,13 @@ stateDiagram-v2
 A network of type `brandmeister` is an HBlink network whose peers log in, one login per simplex frequency or
 repeater, always. Its keys are `host`, `port`, `password`, `peer_ids` (a registered ID for each path) and the `RPTC`
 texts `location`, `description` and `url`. No `id` or `identity`, no `roaming`, no SCTP. A device that transmits on
-one of its frequencies transmits there only: no roaming transceiver, since the master can't move a login. The box
+one of its frequencies transmits there only: no roaming transceiver, since the master can't move a login. The gateway
 holds one `hblink` or one `brandmeister` network, not both. The top-level `id` isn't needed with it; the top-level
 `callsign` is required and goes in every login's `RPTC` (BrandMeister checks it against the ID; an HBlink4 per_path
 peer puts its path's name there instead).
 
 A path on the network gives `RPTC` its frequencies (simplex: both the same, slots `'4'`; a repeater: its `in` and
-`out`, slots `'3'`), its color code, its transmitter's power in dBm, and the box's location.
+`out`, slots `'3'`), its color code, its transmitter's power in dBm, and the gateway's location.
 
 Two simplex frequencies and a repeater, each its own login:
 
@@ -290,7 +290,7 @@ What the gateway takes from it:
   UDP 4007 datagram back from the destination: `BF`, address length 0, the sequence). The radio retries its
   link level about every 6 s (12-20 preamble CSBKs before each retry; one retry never reached the hotspot) and
   shows "sent" only once both have come. BrandMeister sends both for messages to its services. A gateway that is
-  itself the destination (an `ipgw` route that ends in the box) must send both, or the radio retries and then
+  itself the destination (an `ipgw` route that ends in the gateway) must send both, or the radio retries and then
   reports failure. The IP gateway sends only the link level today.
 - **TMS layout.** Payload: 2-byte length (of what follows), then a header byte: 0x80 a sequence octet follows,
   0x40 ACK requested, 0x20 set in every TMS packet seen both ways, the low 5 bits the type (0 text, 0x1F ACK). So

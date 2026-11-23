@@ -134,7 +134,7 @@ A new board runs placeholder settings: a radio in hotspot mode on USB, and an RT
 reporting to a sample address that goes nowhere. A W12 shows orange until it has its own.
 
 1. Open the page's Settings tab.
-2. Paste a file from [settings.md](settings.md) (the W12 recipe for a W12), with your ID, call sign, frequencies and
+2. Paste a file from [settings.md](settings.md) (the W12 example for a W12), with your ID, call sign, frequencies and
    servers.
 3. Save and restart. A file the board refuses isn't stored; the page says why.
 

@@ -1,6 +1,6 @@
 # Settings
 
-One JSON file, version 3, runs every box: an ESP32 board, `rdofradio` on a Linux or macOS host, a PlutoSDR. This page
+One JSON file, version 3, runs every gateway: an ESP32 board, `rdofradio` on a Linux or macOS host, a PlutoSDR. This page
 is the short version. Every key, default and check is in [config-v3.md](spec/fw/config-v3.md).
 
 ## The file's shape
@@ -8,7 +8,7 @@ is the short version. Every key, default and check is in [config-v3.md](spec/fw/
 ```jsonc
 {
   "version": 3,                 // required
-  "name": "site1",              // the box's name: MQTT topics, the page, mDNS
+  "name": "site1",              // the gateway's name: MQTT topics, the page, mDNS
   "id": 9800100,                // your DMR ID: the HBlink4 peer ID
   "callsign": "N0CALL",
   "defaults": {"cc": 1},        // keys every frequency takes unless it sets its own
@@ -26,7 +26,7 @@ is the short version. Every key, default and check is in [config-v3.md](spec/fw/
 | `apps` | `repeater` (takes an `in` and an `out` frequency), `parrot`, `ipgw`, `tier3` (a trunked site; not on a board) | [§6](spec/fw/config-v3.md#6-apps), [tier3.md](spec/fw/tier3.md) §4 |
 | `networks` | `hblink`, `brandmeister`, `homebrew`, `mqtt`: at most one of each, and one master | [§7](spec/fw/config-v3.md#7-networks) |
 | `policies` and the policy keys (`tg`, `ptt`, `pc`, `net`) | which calls go where | [§8](spec/fw/config-v3.md#8-policies) |
-| `rules` | calls kept off networks, for the whole box (TG 9 on the repeater only, say) | [§8.1](spec/fw/config-v3.md#81-rules) |
+| `rules` | calls kept off networks, for the whole gateway (TG 9 on the repeater only, say) | [§8.1](spec/fw/config-v3.md#81-rules) |
 | `bench`, `ntp`, `wifi`, `oled`, `location`, `slot_timing` | the rest | [§2](spec/fw/config-v3.md#2-document), [§16](spec/fw/config-v3.md#16-on-the-board) |
 
 Rules that catch people:
@@ -112,7 +112,7 @@ parrot on TG 9990.
 
 ### A hotspot on BrandMeister
 
-An MMDVM_HS hat on a Raspberry Pi, simplex on 438.5 MHz, logged in to BrandMeister as a hotspot.
+An MMDVM_HS HAT on a Raspberry Pi, simplex on 438.5 MHz, logged in to BrandMeister as a hotspot.
 
 ```json
 {
@@ -175,7 +175,7 @@ and 3101 to 3199 once a radio keys one.
 
 - `in` is what the modem receives, `out` what it sends. A repeater slot doesn't take `defaults`' policy keys: give
   each slot its own.
-- A simplex hat can't be a repeater; a radio in hotspot mode (`radio_hotspot`) can't either, except as half of a
+- A simplex HAT can't be a repeater; a radio in hotspot mode (`radio_hotspot`) can't either, except as half of a
   split (two radios, [§6.2](spec/fw/config-v3.md#62-repeater)).
 - On a PlutoSDR the device is `{"name": "pluto", "kind": "sdr", "driver": "iio"}`: see
   `config/examples/standalone-pluto-duplex.json`.
@@ -215,7 +215,7 @@ datagrams to private ID 9990 go to one server, and anything else through NAT.
 A DMR Tier III trunked site is a `tier3` app: a control channel and payload channels on one to four carriers. It runs
 in `rdofradio` on a host or a PlutoSDR, not on an ESP32 board. Start from the `ham-tier3-*.json` files in
 [config/examples/](../config/examples/README.md): a site on a PlutoSDR alone, linked over MQTT or on BrandMeister, and
-a one-carrier site on a duplex MMDVM_HS hat with an RTL-SDR ([raspberry-pi.md](raspberry-pi.md), "A Tier III site").
+a one-carrier site on a duplex MMDVM_HS HAT with an RTL-SDR ([raspberry-pi.md](raspberry-pi.md), "A Tier III site").
 Every key: [tier3.md](spec/fw/tier3.md) §4.
 
 More complete files, with the parrot, the IP gateway, `ntp` and `bench`, are in
@@ -234,7 +234,7 @@ python3 tools/config_check.py my.json
 
 ## Apply it
 
-| Box | How |
+| Platform | How |
 |---|---|
 | ESP32 board | the page's Settings tab: edit, Save and restart, or Import a file |
 | ESP32 board, from a script | `curl -X POST --data-binary @my.json http://<board>/api/config`: stored, then a restart 1 s later; `400` with the reason when refused |

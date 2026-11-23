@@ -7,7 +7,7 @@ Two host tools run the firmware's code on a PC or a Raspberry Pi:
 | `rdofsdr` | receives: many channels from one SDR, or from a recording; prints each burst and call as JSON | SoapySDR for a live device; nothing for a file |
 | `rdofradio` | a radio: a repeater or transceiver on an SDR that transmits, or on an MMDVM modem, or a DMR Tier III trunked site; the web page, the bench line, HBlink4, BrandMeister, MQTT | SoapySDR or libiio |
 
-A Raspberry Pi with an MMDVM_HS hat is its own guide: [raspberry-pi.md](raspberry-pi.md). A PlutoSDR running
+A Raspberry Pi with an MMDVM_HS HAT is its own guide: [raspberry-pi.md](raspberry-pi.md). A PlutoSDR running
 `rdofradio` on its own ARM: [plutosdr.md](plutosdr.md).
 
 ## 1. Dependencies
@@ -149,7 +149,7 @@ build/rel/rdofradio --soapy driver=rtlsdr -r 1536000 --gain 30 --ppm 0 \
     --allow-tx --mmdvm /dev/ttyAMA0 --rf-level 128 --config my.json --web 0.0.0.0:8080
 ```
 
-- The port: `/dev/ttyAMA0` or `/dev/ttyS0` (a hat), `/dev/ttyACM0` or `/dev/ttyUSB0` (USB) on Linux,
+- The port: `/dev/ttyAMA0` or `/dev/ttyS0` (a HAT), `/dev/ttyACM0` or `/dev/ttyUSB0` (USB) on Linux,
   `/dev/cu.usbmodem*` on macOS. `--baud` if it isn't 115200.
 - `--rf-level N` caps the modem's power, 0..255. `--rx-offset-hz`, `--tx-offset-hz`, `--rx-level`, `--tx-level` are
   its calibration (with `--config`: the device's `mmdvm` keys).
@@ -168,7 +168,7 @@ A `tier3` app in the settings file makes `rdofradio` a DMR Tier III trunked site
 
 - On an SDR that transmits: `--config` with the site, as any settings file. Start from
   `config/examples/ham-tier3-site-*.json` ([config/examples/README.md](../config/examples/README.md)).
-- On a duplex MMDVM modem with an SDR hearing it: `--config` the box, `--tier3` the site
+- On a duplex MMDVM modem with an SDR hearing it: `--config` the host's settings, `--tier3` the site
   ([raspberry-pi.md](raspberry-pi.md), "A Tier III site").
 - `--state-dir DIR` keeps the site's cache of settings from the network's manager.
 - `--config FILE --sim-air N` runs the site with no radio: N simulated radios on a simulated air. `--air-ms N` adds

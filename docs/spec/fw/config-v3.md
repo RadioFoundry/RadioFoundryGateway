@@ -2,13 +2,13 @@
 
 Covers: the settings, the one format the firmware and rdofradio take: devices, frequencies, apps, networks and the
 policies and rules that say which calls move between a talk path and a network; every key with its type, default and rule;
-how a box runs a file (§12); its limits and checks, and the schema (§13); where the board keeps it (§16).
+how a gateway runs a file (§12); its limits and checks, and the schema (§13); where the board keeps it (§16).
 Code: the parser and the resolved view `common/src/site.c` ([site.h](../../../common/include/rdof/site.h)); what
 runs, the devices' own keys and the checks `common/src/siteplan.c`
 ([siteplan.h](../../../common/include/rdof/siteplan.h)); each part's settings from the plan: `common/src/config.c`
 (a repeater or transceiver), `sdr/src/config.c` (the SDR), `common/src/ipgwcfg.c` (the IP gateway),
 `common/src/benchcfg.c` (the bench), `common/src/oled_sdr.c` (the screen); ID sets `idset.c`, the router `router.c`
-and, on a running box, `siteroute.c`. rdofradio (`sdr/cli/rdofradio_cfg.c`) and the firmware
+and, on a running gateway, `siteroute.c`. rdofradio (`sdr/cli/rdofradio_cfg.c`) and the firmware
 (`esp_idf/main/settings.c`, `site_run.c`) run it. The schema is `config/rdof-config.schema.json`
 (`tools/config_check.py`).
 Related: [rxtx-combinations.md](rxtx-combinations.md) (devices and resources), [transmitters.md](transmitters.md),
@@ -32,7 +32,7 @@ Version 3 splits them:
 | `apps` | things that take frequencies (a repeater, a trunked site) or answer calls (parrot, IP gateway) | hardware |
 | `networks` | connections that carry calls: HBlink4, BrandMeister and other Homebrew masters, MQTT | RF |
 | `policies` | named call policies, shared by several paths | anything else |
-| `rules` | where a call may go at all, for the whole box (§8.1) | paths |
+| `rules` | where a call may go at all, for the whole gateway (§8.1) | paths |
 
 Nothing names a role and nothing says what runs: what runs follows from the sections (§12). Which device serves
 which frequency follows from each device's `hears` and `transmits`; a file only pins a device (a frequency's
@@ -67,9 +67,9 @@ which frequency follows from each device's `hears` and `transmits`; a file only 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `version` | 3 | | required; anything else is refused (`version: 3`) |
-| `name` | str | `"radiofoundry"` | the box's name: the Wi-Fi host name, the MQTT and status name |
-| `id` | int, 1..16777215 | | the box's DMR ID: its HBlink peer ID, and the base for per-path peer IDs (§7.1); required with an `hblink` network (`rdof_plan_radio` refuses a unit that transmits without it there); without one, a unit's peer ID is 0 |
-| `callsign` | str | a unit's name, first 8 characters; the SDR: `SDR` | the callsign on every HBlink peer the box runs (with `per_path`, each peer's own name, §7.1) |
+| `name` | str | `"radiofoundry"` | the gateway's name: the Wi-Fi host name, the MQTT and status name |
+| `id` | int, 1..16777215 | | the gateway's DMR ID: its HBlink peer ID, and the base for per-path peer IDs (§7.1); required with an `hblink` network (`rdof_plan_radio` refuses a unit that transmits without it there); without one, a unit's peer ID is 0 |
+| `callsign` | str | a unit's name, first 8 characters; the SDR: `SDR` | the callsign on every HBlink peer the gateway runs (with `per_path`, each peer's own name, §7.1) |
 | `pc_hold_s` | number, 1..86400 | 900 | how long a radio heard on a path takes the private calls to it (§9.3) |
 | `defaults` | object | `{}` | frequency keys (§5: `cc`, `mode`, `ts`, `tx`, `power_dbm`, `policy` and the policy keys) for every frequency that doesn't set them |
 | `devices` | list | `[]` | §4 |
@@ -163,7 +163,7 @@ resolved view (§11) shows each set expanded to ranges.
 
 ## 4. Devices
 
-A device is one piece of hardware the box opens: an SDR, a modem (anything that speaks MMDVM on a serial port), or a
+A device is one piece of hardware the gateway opens: an SDR, a modem (anything that speaks MMDVM on a serial port), or a
 radio (a RadioFoundry radio on its debug link, for the bench). Every device takes:
 
 | Key | Type | Default | Meaning |
@@ -277,7 +277,7 @@ A modem's or a radio's port: exactly one of `uart`, `usb` or `path`.
 | `usb_port` | str, < 16 | | the hub port path (`"2"`, `"1.3"`) |
 | `path` | str | | a serial device (`/dev/ttyACM0`): a host's only |
 
-The board's UART keys aren't taken on a USB port, and the other way round. Two USB devices of one box each need
+The board's UART keys aren't taken on a USB port, and the other way round. Two USB devices of one gateway each need
 `serial` or `usb_port`, and they must not match the same device.
 
 ### 4.4 `hears`
@@ -339,7 +339,7 @@ A device's `bench` (on an SDR, `bench` or `tx.bench`):
 | Key | Type | Default | Rule / meaning |
 |---|---|---|---|
 | `freqs_hz` | list of whole Hz, 30e6..3e9 | `[]` | up to 8; added to `bench.tx.freqs_hz` |
-| `max_key_s` | number, 0..60 | `bench.tx`'s | taken, not used yet: the box's `bench.tx.max_key_s` applies |
+| `max_key_s` | number, 0..60 | `bench.tx`'s | taken, not used yet: the gateway's `bench.tx.max_key_s` applies |
 
 A bench radio's guard sends at its lowest power step whatever the job asks.
 
@@ -416,8 +416,8 @@ Later, each as an app type, with no new section: `voting` (the best copy of each
 An app that answers IDs (parrot, IP gateway) claims them: a call to a claimed ID on a path whose `apps` allows the app
 goes to the app and not to the network. Two apps may not claim the same ID.
 
-The parrot is not a unit of its own: each repeater whose paths may reach it runs one, and with a transceiver one box
-parrot hears every frequency and answers through the router ([transmitters.md](transmitters.md) §5).
+The parrot is not a unit of its own: each repeater whose paths may reach it runs one, and with a transceiver one
+gateway-wide parrot hears every frequency and answers through the router ([transmitters.md](transmitters.md) §5).
 
 ### 6.1 Talk paths
 
@@ -472,7 +472,7 @@ The IP gateway: IP packets as DMR data between radios and the network ([ipgw.md]
 | `idle_s` | int, 5..86400 | 120 | a flow's idle time |
 | `max_flows` | int, 1..16 | 8 | NAT flows; cut to the build's `CONFIG_RDOF_IPGW_MAX_SOCKETS` |
 | `routes` | list, up to 8 | `[]` | below |
-| `nat` | bool or `{enabled, allow, deny}` | off | radios reach the internet through the box. `enabled` (default true), `allow` (empty: any) and `deny` are CIDR lists, up to 8; a `deny` replaces the default 10/8, 172.16/12, 192.168/16, 100.64/10 and 13/8 ([ipgw.md](ipgw.md) §4) |
+| `nat` | bool or `{enabled, allow, deny}` | off | radios reach the internet through the gateway. `enabled` (default true), `allow` (empty: any) and `deny` are CIDR lists, up to 8; a `deny` replaces the default 10/8, 172.16/12, 192.168/16, 100.64/10 and 13/8 ([ipgw.md](ipgw.md) §4) |
 
 It needs `routes` or `nat` ("nothing to do"). A route:
 
@@ -491,7 +491,7 @@ A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app. rdofradio run
 ### 6.4 `tier3`
 
 A DMR Tier III trunked site ([tier3.md](tier3.md)): a control channel (TSCC) on one carrier's TS1, the other slots
-payload channels. One a box; it runs on a host (`rdofradio`), not on a board. The keys, defaults and ranges are
+payload channels. One per gateway; it runs on a host (`rdofradio`), not on a board. The keys, defaults and ranges are
 tier3.md section 4 and 3.8; the manager's `cfg` documents override them (tier3.md 5.7).
 
 | Key | Type | Default | Meaning |
@@ -512,7 +512,7 @@ tier3.md section 4 and 3.8; the manager's `cfg` documents override them (tier3.m
 | `broadcast` | object | 5, 10, 6, 0, 0, 0, 6, 0 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s`: 0 (off) or 1-600; `vote_blk`: 2-10 TDMA frames; `priority`: 0-7 (tier3.md 3.11) |
 | `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (tier3.md 3.9); `power_save` (0-7, 0), `power_save_awake_s` (0.1-60, 1), `power_save_group_hold_s` (0-10, 2), `mass_reg_at_start_s` (0-200000, 0) (tier3.md 3.11); `hibernate_s` (0 or 1-300, 0) (tier3.md 3.12); `duplex` (bool, false) (tier3.md 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (tier3.md 3.19); `composite_late_entry` (bool, false): while that slot is lent, Late_Entry grants as P_GRANTs on it in its call's hang time (tier3.md 3.19); `transmit_interrupt` (bool, false): a listener may interrupt the talker, an ALS caller end the call, and an expired call timer de-keys the talker first (tier3.md 3.20) |
 | `auth` | `off`, `registration`, `required` | `off` | MS authentication (tier3.md 3.14): challenge MSs with a key (`cfg/ms` `auth_k`) at registration, or every MS |
-| `standby` | bool or object | false | two boxes with these settings, one on the air, the other taking over (tier3.md 6.2): `true`, or `{"takeover_s": 13, "fence_s": 9}` (`fence_s` 9-60, `takeover_s` at least `fence_s` + 3, at most 120). Needs the site's mqtt network; rdofradio only |
+| `standby` | bool or object | false | two hosts with these settings, one on the air, the other taking over (tier3.md 6.2): `true`, or `{"takeover_s": 13, "fence_s": 9}` (`fence_s` 9-60, `takeover_s` at least `fence_s` + 3, at most 120). Needs the site's mqtt network; rdofradio only |
 
 Its frequencies are its own: no other app, gateway, transceiver or receiver uses them, and every carrier's color
 code is the same (the TSCC's). The unit, named after the app, takes one of these layouts (`siteplan.c:check_trunk`):
@@ -550,14 +550,14 @@ The HBlink4 master ([hblink.md](hblink.md)). With it, the top-level `id` is requ
 | `sctp_heartbeat_ms` | int, 0..600000 | 10000 | |
 | `sctp_max_retransmit` | int, 1..20 | 3 | |
 | `sctp_ttl_ms` | int, 0..60000 | 0 | |
-| `identity` | `single` \| `per_path` | `single` | `single`: the box is one peer (`id`), and its policies decide what goes where. `per_path`: each frequency or repeater is its own peer (`id` + 1, + 2, ... in list order, or `peer_ids`), and the master decides where a call goes: a stream sent to a peer goes only to that peer's paths |
+| `identity` | `single` \| `per_path` | `single` | `single`: the gateway is one peer (`id`), and its policies decide what goes where. `per_path`: each frequency or repeater is its own peer (`id` + 1, + 2, ... in list order, or `peer_ids`), and the master decides where a call goes: a stream sent to a peer goes only to that peer's paths |
 | `peer_ids` | object | | `{"<frequency or repeater>": id}`, with `per_path` only; a repeater's two slots share its peer. Each such peer gives the master its frequency's or repeater's name (the first 8 characters) as its callsign |
 | `roaming` | bool | false | let the master move a device that `transmits` on several frequencies (DMRT / DMRK). Checked (a `brandmeister` or `homebrew` network refuses it) but not acted on yet: a transceiver on HBlink4 announces itself as roaming and takes DMRT whatever this says |
 
-Which units are HBlink peers: with `single`, the box's one peer carries every path. With `per_path` or a
+Which units are HBlink peers: with `single`, the gateway's one peer carries every path. With `per_path` or a
 BrandMeister network, a unit is a peer only when its own path is on that network: a repeater on MQTT, or a path with
-`net: false`, opens no peer and sends the master nothing (it used to log in beside the others with the box's `id`).
-A box with no HBlink network runs no peer at all. The status then has no `hblink` for that unit.
+`net: false`, opens no peer and sends the master nothing (it used to log in beside the others with the gateway's `id`).
+A gateway with no HBlink network runs no peer at all. The status then has no `hblink` for that unit.
 
 ### 7.2 `mqtt`
 
@@ -577,17 +577,17 @@ The MQTT broker ([mqtt.md](mqtt.md)).
 | `bundle` | int, 1..3 | 1 | `format: "v3"`: voice items per message when sending. Messages with 1 to 3 are taken; 1 is sent for now |
 | `raw_tx` | bool | false | `format: "v3"`: transmit `raw` items as heard ([mqtt-net.md](mqtt-net.md) §4.3); off, they are dropped |
 
-Both `report` and `calls` false: the network is off. A box with `mqtt` and `report` only, and no other network,
+Both `report` and `calls` false: the network is off. A gateway with `mqtt` and `report` only, and no other network,
 reports but carries no calls. With `calls`, a path whose `net` is the MQTT network sends what it carries as DMRD
-packets on `{root}/calls/{tg|pc}/{dst}/{box}` and takes the other boxes' from `{root}/calls/#`
+packets on `{root}/calls/{tg|pc}/{dst}/{node}` and takes the other gateways' from `{root}/calls/#`
 ([mqtt.md](mqtt.md) §10). With `format: "v3"` the calls go as the MQTT network's messages instead: on
-`{root}/tg/{tg}/{box}`, `{root}/pc/{id}/{box}` and `{root}/dl/{box}`, with the box's `info` and `activity`
+`{root}/tg/{tg}/{node}`, `{root}/pc/{id}/{node}` and `{root}/dl/{node}`, with the gateway's `info` and `activity`
 ([mqtt-net.md](mqtt-net.md)). `bundle` and `raw_tx` need `format: "v3"`, and `format` needs `calls`. The errors:
 `format: dmrd or v3`, `format: with calls true`, `bundle: 1 to 3`, `bundle: with format v3`, `raw_tx: with format
 v3`, `transport: mqtt/tcp or mqtt/tls (the others aren't built yet)`. A board carries the `v3` format only (rdofradio both), and only an image with the
 transceiver built in: with `dmrd`, or on a receiver-only image, it says so in its log and in `/api/status`
 `settings_warning`, and carries none. The v3 calls run on a connection of their own
-(client ID `rdof-net-{name}-{hw}`, the box's `name` as the node, so it must be letters, digits, `.`, `_` or `-`), in
+(client ID `rdof-net-{name}-{hw}`, the gateway's `name` as the node, so it must be letters, digits, `.`, `_` or `-`), in
 rdofradio and on the board; one network in a file takes `format: "v3"` (the first, if several do).
 
 ### 7.3 `brandmeister`
@@ -674,9 +674,9 @@ A named policy:
 
 ### 8.1 Rules
 
-A rule keeps calls off networks, for the whole box. Policies say what a path carries; a rule says where a call may go
-at all, whatever path or app it is on. Rules only restrict: a call a rule lets onto a network still goes only where
-a policy (or a Tier III site's `wide_tg`) sends it.
+A rule keeps calls off networks, for the whole gateway. Policies say what a path carries; a rule says where a call
+may go at all, whatever path or app it is on. Rules only restrict: a call a rule lets onto a network still goes only
+where a policy (or a Tier III site's `wide_tg`) sends it.
 
 ```jsonc
 "rules": [
@@ -691,7 +691,7 @@ a policy (or a Tier III site's `wide_tg`) sends it.
 | `name` | str | none | for the reader and errors |
 | `tg` | ID set | none | the group calls it matches, by talkgroup |
 | `pc` | ID set | none | the private calls it matches, by the ID called (out) or calling (in), as a policy's `pc` |
-| `nets` | list | | required: the networks its calls may use, each a network's name or a type (`hblink`, `brandmeister`, `homebrew`, `mqtt`); `[]` keeps them on the box. A type the box has no network of matches none |
+| `nets` | list | | required: the networks its calls may use, each a network's name or a type (`hblink`, `brandmeister`, `homebrew`, `mqtt`); `[]` keeps them on the gateway. A type the gateway has no network of matches none |
 
 A rule needs `tg` or `pc` (or both). The first rule that holds a call's ID decides, both ways: a matched call goes
 only to, and comes only from, the networks in its `nets`. A call no rule matches may use every network.
@@ -735,10 +735,10 @@ When one path is wanted by two calls:
 
 A private call from a network goes to the path where the called radio was last heard (within `pc_hold_s`, default
 900 s), if that path's `pc` holds the calling ID and its `dir` allows. A radio not heard within the hold: the call is
-dropped and counted. The last-heard table is per box.
+dropped and counted. The last-heard table is per gateway.
 
 With `identity: per_path` the master picks the peer, so a private call sent to a peer goes to that peer's path whether
-or not the box heard the radio there.
+or not the gateway heard the radio there.
 
 ### 9.4 Transmitting
 
@@ -984,14 +984,14 @@ the parrot, the IP gateway, HBlink, MQTT and the bench. The address is a placeho
 
 A file the open refuses doesn't run; the page's settings save says why (the field's path and the rule).
 
-## 12. How a box runs it
+## 12. How a gateway runs it
 
 Version 3 is the only settings format: a file without `"version": 3` is refused (`version: 3`). Versions 1 and 2 were
 prototypes and are gone, with no upgrade.
 
 A file is opened once (`rdof_plan_open`, `common/src/siteplan.c`). The open parses the document
 (`rdof_site_ctx_parse`), checks the top level's keys, the devices' own keys (port, SDR, modem, bench), the units'
-keys, makes the run units, checks them (§13.1), and adds the SDR's extra channels. Each part of the box then reads
+keys, makes the run units, checks them (§13.1), and adds the SDR's extra channels. Each part of the gateway then reads
 its own settings from the plan, straight from the version 3 places; no other format is written in between.
 
 The plan:
@@ -1030,11 +1030,11 @@ The run units are internal; nothing in a file names them:
 |---|---|---|
 | repeater | a `repeater` app | a repeater on its `in` and `out`: one device that sends `out` and hears `in` (an SDR or a modem), or the device that hears `in` and the one that sends `out` (split) |
 | SFR, DCDM | an `sfr` or `dcdm` frequency | a repeater in that mode on the device that sends there |
-| transceiver | a device that transmits on simplex frequencies no app takes | a transceiver over those frequencies, named after the device: `hears.idle` (else the first) its idle frequency, `hears.scan` its scan list. For an SDR it is the box's transmitter: the router tunes it per stream, and the receiver unit reports what's heard ([transmitters.md](transmitters.md) §12) |
+| transceiver | a device that transmits on simplex frequencies no app takes | a transceiver over those frequencies, named after the device: `hears.idle` (else the first) its idle frequency, `hears.scan` its scan list. For an SDR it is the gateway's transmitter: the router tunes it per stream, and the receiver unit reports what's heard ([transmitters.md](transmitters.md) §12) |
 | receiver | each SDR that hears a frequency no repeater on it takes | those frequencies, named `<device>-rx`; with `per_path`, each its frequency's peer |
 
 The parrot is not a unit: it runs in each repeater whose paths may reach it, or, with a transceiver in the router,
-as one box parrot that hears every frequency and answers through the router ([transmitters.md](transmitters.md)
+as one gateway-wide parrot that hears every frequency and answers through the router ([transmitters.md](transmitters.md)
 §5).
 
 The firmware (`settings.c:resolve_plan`) opens the stored text, checks it for the board (`rdof_plan_check`), takes
@@ -1048,7 +1048,7 @@ The router (`rdof_siteroute_*`) is asked at each stream's start, by every sink t
 MQTT calls), and once for the stream: the network it goes to, or none. A network's burst goes to the transmitters the
 router picks (§9.4). The parrot's admit is the path's `apps`.
 
-With `identity: single` the first transceiver or repeater owns the box's HBlink peer and every other unit and
+With `identity: single` the first transceiver or repeater owns the gateway's HBlink peer and every other unit and
 channel sends through it. HBlink4 credits a stream to the peer's last DMRC (its frequency), so a stream another unit
 sends shows under the owner's frequency on the master.
 
@@ -1143,13 +1143,13 @@ and the page checking against the schema before a save.
 - **Bridges:** for what policies on paths don't do: TG rewrites (TG 9 on RF is TG 3100 on the network), one call on
   several paths as one (simulcast), and network-to-network links. A `bridges` list of members (path, network or app),
   each with its own TG and activation. Added beside policies, not instead.
-- **A system file:** one file for several boxes, with `site` on each device; each box runs what's local to it. Remote
-  receivers (`kind: remote`, `via`, `site`) and voting need it.
-- **A shared last-heard table** (over MQTT), so private calls find a radio heard at another box: the MQTT network's
+- **A system file:** one file for several gateways, with `site` on each device; each gateway runs what's local to it.
+  Remote receivers (`kind: remote`, `via`, `site`) and voting need it.
+- **A shared last-heard table** (over MQTT), so private calls find a radio heard at another gateway: the MQTT network's
   router ([mqtt-net.md](mqtt-net.md) §9.1).
 - **`hears.scan` on an SDR:** scanning frequencies outside its window.
 - **`pc_home`:** a path for private calls to a radio never heard here (today: dropped, with `identity: single`).
-- **SFR as an app:** the box itself as the SFR repeater (its SDR, or its SDR with another transmitter or a modem),
+- **SFR as an app:** the gateway itself as the SFR repeater (its SDR, or its SDR with another transmitter or a modem),
   beside today's SFR frequency served by a connected radio.
 - **`apps` on SFR / DCDM paths** and the parrot on several transmitters at once ([transmitters.md](transmitters.md) §5).
 - **Scheduled talkgroups** (`mode: scheduled`).

@@ -2,7 +2,7 @@
 
 What the gateway does on air and toward HBlink4 when it drives an MMDVM modem as a base station:
 
-- **duplex repeater**: two frequencies, both slots, an MMDVM duplex modem (MMDVM_HS dual hat, MMDVM board);
+- **duplex repeater**: two frequencies, both slots, an MMDVM duplex modem (MMDVM_HS dual HAT, MMDVM board);
 - **SFR**: a single frequency repeater, a RadioFoundry radio in SFR mode that repeats by itself;
 - **simplex hotspot**: one frequency, one slot (the roamer, and any simplex MMDVM modem);
 - **DCDM gateway**: one frequency, both slots in direct mode, two simplex calls at once (a DCDM modem).
@@ -94,7 +94,7 @@ R3.2. **Network activation.** A network stream admitted for an enabled slot (R7.
 ETSI has no network-side activation; the outbound must be up for radios to hear the call.*
 
 R3.3. **Key-up lead.** When the BS keys from hibernating for a network call, the outbound must run at least 360 ms (6
-bursts per slot) before the first header. R7.5 gets this for free by keying at the stream's first burst, while it
+bursts per slot) before the first header. R7.5 already meets this by keying at the stream's first burst, while it
 prebuffers. When the BS is already keyed, no lead is needed. *Basis: Design from ETSI timing: receivers have to
 frame-sync to an outbound that just appeared before they can take the header; -1 F.1 bounds an MS's wait for an
 outbound at T_SyncWu ≤ 360 ms and its sync attempt at T_ChSyncTo ≥ 390 ms.*
@@ -310,7 +310,7 @@ fallback.*
 R7.3. A network call's LC never changes mid-call: headers, the embedded LC fallback (R5.8) and the terminators all
 use it. *Basis: ETSI -1 5.2.1.4; Design.*
 
-R7.4. **Prebuffer.** The BS holds P bursts of a stream (fixed: default 6, 360 ms; auto, the box config's default:
+R7.4. **Prebuffer.** The BS holds P bursts of a stream (fixed: default 6, 360 ms; auto, the settings file's default:
 sized per call from the measured network lateness, 180 to 480 ms, [fw/roamer.md](fw/roamer.md) "Jitter buffer") before any of it goes out; then all it holds
 goes to the slot's queue and later bursts follow as they come. A stream that ends before P (terminator, last data
 block, a lone CSBK) or is ended by the watchdog goes out at once. *Basis: Design: one superframe of cushion absorbs

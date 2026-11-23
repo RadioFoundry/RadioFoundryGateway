@@ -1,7 +1,7 @@
 # A Tier III site on a duplex MMDVM modem
 
 A trunked site ([tier3.md](tier3.md)) whose one carrier goes out of a stock duplex MMDVM modem (an MMDVM_HS dual
-hat) instead of an SDR, with an SDR receiver (an RTL-SDR) beside it hearing the carrier's out and in. It serves
+HAT) instead of an SDR, with an SDR receiver (an RTL-SDR) beside it hearing the carrier's out and in. It serves
 as a second site where only one SDR can transmit. It has run on air as the second site of a two-site system
 ([tier3.md](tier3.md) 13.2), with limits: a radio decodes fewer of its TSCC blocks than the SDR site's and sends
 each registration twice. The logic is Rust (`rust/src/t3hat.rs`, C API `rdof/t3hat.h`), the device glue C
@@ -14,14 +14,14 @@ what a firmware change would make exact.
 
 ## 1. Setup
 
-- `rdofradio DEVICE --allow-tx --mmdvm PORT --config BOX.json --tier3 SITE.json [--hat-lead IDLE_MS,BUSY_MS]`:
-  `--config` is the box's own settings (the modem's offsets and levels, the receiver's channels, HBlink, MQTT, the
-  bench), `--tier3` a settings file with the `tier3` app and its one carrier. The site takes the modem; the box's
+- `rdofradio DEVICE --allow-tx --mmdvm PORT --config HOST.json --tier3 SITE.json [--hat-lead IDLE_MS,BUSY_MS]`:
+  `--config` is the gateway's own settings (the modem's offsets and levels, the receiver's channels, HBlink, MQTT, the
+  bench), `--tier3` a settings file with the `tier3` app and its one carrier. The site takes the modem; the gateway's
   own unit on it (a transceiver or repeater) doesn't start. The receiver gets channels on the carrier's out and in
   when `--config` doesn't have them. The leads are 132 and 161 ms by default (3.3, H10).
 - The site file: the carrier's out transmitted by a `modem` device (`mmdvm_hs` or `mmdvm`, not a radio hotspot),
   its in heard by an `sdr` device. One carrier only (the TSCC; TS2 a payload channel, TS1 too while a composite TSCC
-  carries a call, tier3.md 3.19). Its MQTT network is its own (the site's node), beside the box's.
+  carries a call, tier3.md 3.19). Its MQTT network is its own (the site's node), beside the gateway's.
 - `--mmdvm sim-hat` (no SDR): the stock modem simulated (section 4), for the host tests.
 - The modem is set up duplex with only DMR enabled (`SET_CONFIG`, `SET_FREQ`, `SET_MODE` DMR) and no `DMR_START`:
   the site keys it with its first write. A bench job that needs the modem pauses the site (nothing written, no status
@@ -244,7 +244,7 @@ The receiver hears the carrier's in. An inbound burst starting at position p is 
 and goes to the controller as the SDR site's does. The receiver stays the slot reference. The modem's own reports
 (E8) are a cross-check: each is matched to an inbound burst the receiver placed (within 24 bits, the nearest in
 time), its tag against the timeslot of that burst's trunk slot, and its time against the burst's end (a coarse
-check of the phase during calls). They also still go to the box's tracker, as before.
+check of the phase during calls). They also still go to the gateway's tracker, as before.
 
 ### 3.6 Exact, approximate, not done
 
@@ -300,7 +300,7 @@ ALIGN, the UTC slot counter) and would be reused. Holding the key isn't among th
    1's counter, applied exactly there, the cycle count tied to that counter; no Null short LC of its own while the host
    has given one.
 5. **The slot counter on UTC (ALIGN).** The host gives a boundary time and the counter for it; the modem moves its
-   slot clock to it and reports its phase. Puts the site on the UTC grid, so two sites (or a hat and an SDR carrier at
+   slot clock to it and reports its phase. Puts the site on the UTC grid, so two sites (or a HAT and an SDR carrier at
    one site) share slot timing. Last, and coarse: the slot clock comes from integer dividers of the TCXO with no
    trim (E9), so it can only step a whole symbol (208 µs), and at 3.6 ppm it would step once a minute or so.
 

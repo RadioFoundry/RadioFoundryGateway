@@ -86,7 +86,7 @@ The firmware's settings document, version 3 ([config-v3.md](../../../docs/spec/f
 - **Power:** `flags` starts at the lowest TX power (`--tx-gain 0`, 89 dB of attenuation); raise it there. At that
   power the start's calibration (a pulse sent and heard back) isn't heard, and it says so; it runs anyway.
 - **A network:** add a `networks` list (`[{"type": "hblink", "host": "your.master", "port": 62031}]`) and a
-  `callsign`, and the box is an HBlink4 peer with the DMR ID in `id`. Which talkgroups go up and come down is each
+  `callsign`, and the Pluto is an HBlink4 peer with the DMR ID in `id`. Which talkgroups go up and come down is each
   path's policy (`tg` on the repeater app, or on its `slots`). Without a `tg`, the repeater repeats locally and sends
   nothing up. With `"identity": "per_path"` on the network, each frequency or repeater is its own peer and the
   master decides.

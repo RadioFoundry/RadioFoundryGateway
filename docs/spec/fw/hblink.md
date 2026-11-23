@@ -10,7 +10,7 @@ Related: [brandmeister.md](brandmeister.md) (the Homebrew login, for BrandMeiste
 |---|---|---|---|---|---|
 | Roamer | one per roamer radio | UDP or SCTP | §3.2, with location and idle tails | 5 s (`RDOF_HB_ROAMING_KEEPALIVE_SECONDS`) | `roam_hblink.c` |
 | Repeater | one per repeater radio | UDP or SCTP | §3.3, with location tail | 10 s (`RDOF_HB_KEEPALIVE_SECONDS`) | `roam_hblink.c` |
-| SDR channel | one per channel with its own peer (`identity: per_path`); with `single`, the channels send through the box's peer | UDP only | §3.4, with location tail | 10 s | `sdr_hblink.c` |
+| SDR channel | one per channel with its own peer (`identity: per_path`); with `single`, the channels send through the gateway's peer | UDP only | §3.4, with location tail | 10 s | `sdr_hblink.c` |
 
 There is no RPTL / RPTK / RPTC login and no password (the `brandmeister` and `homebrew` network types log in:
 [brandmeister.md](brandmeister.md)). HBlink4 accepts a DMRC peer whose id and callsign match one of

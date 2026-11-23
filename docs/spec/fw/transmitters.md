@@ -13,7 +13,7 @@ the network), [sdr-tx.md](sdr-tx.md) (the modulator, the SDR modem), [sdr-rx.md]
 ## 1. Why
 
 A W12 should hear 3 to 5 frequencies at once and, when a call has to go out, key its one transmitter on that call's
-frequency. Before the pool (version 2 of the settings) it couldn't, quite:
+frequency. Before the pool (version 2 of the settings) it couldn't do this fully:
 
 - The settings made a transmitting SDR a `roamer` over its simplex frequencies plus a `monitor` of all of them. The roamer is a modem's state machine: one receive channel and the transmitter, tuned together.
 - The router tuned that roamer to a network call's frequency (`txvr_for`). Nothing else used that: the parrot and
@@ -77,7 +77,7 @@ in order:
 2. one holding P, when S answers the stream it held for (its dst is that stream's src, or the same talkgroup);
 3. a free one that reaches P's frequency;
 4. one holding another path, when S is an emergency or priority stream, a network's stream, or a confirmed-data
-   answer. So the hold keeps a transmitter for replies against the box's own apps; a network stream never waits
+   answer. So the hold keeps a transmitter for replies against the gateway's own apps; a network stream never waits
    on one. A hold that's over is free (rule 3).
 
 An emergency or priority stream takes a sending transmitter as config-v3.md §9.2 and mqtt-net.md §8.1 say: the stream
@@ -88,23 +88,23 @@ None found:
 | Who asked | Then |
 |---|---|
 | a network (HBlink, MQTT `tg` or `dl`) | not sent on that path, counted (`no_txvr`), as today |
-| an app on the box (§5) | it waits for one, up to the app's limit (the parrot: 10 s), then gives up, counted |
+| an app on the gateway (§5) | it waits for one, up to the app's limit (the parrot: 10 s), then gives up, counted |
 | a confirmed-data answer | may take a transmitter that is only holding; otherwise not sent (the radio retries) |
 
 `tx_ok` on a path (mqtt-net.md §6) means some transmitter reaches it, busy or not.
 
 ## 5. Apps answer through the router
 
-A box's own apps (`parrot`, `ipgw`) become clients of the router, not options of a role:
+A gateway's own apps (`parrot`, `ipgw`) become clients of the router, not options of a role:
 
 - **They hear every path.** The receiver's calls go to each app whose IDs a path's `apps` lets it reach
-  (config-v3.md §6), whichever frequency they came on. One parrot per box, as now.
+  (config-v3.md §6), whichever frequency they came on. One parrot per gateway, as now.
 - **They answer with a request.** The parrot plays back on the path the call was heard on. The IP gateway sends to a
-  radio on the path it was last heard on (the box's last-heard table, config-v3.md §9.3), and answers confirmed data
+  radio on the path it was last heard on (the gateway's last-heard table, config-v3.md §9.3), and answers confirmed data
   on the path it was heard on.
-- **The same request as the network's.** An app on the box sends exactly what an app on the MQTT network would put on
+- **The same request as the network's.** An app on the gateway sends exactly what an app on the MQTT network would put on
   `{root}/pc/{radio}/{app}` and what the router would send down `dl` with a path byte (mqtt-net.md §9). An app can
-  move off the box later with nothing changed but the transport.
+  move off the gateway later with nothing changed but the transport.
 
 ## 6. Half duplex
 
@@ -194,11 +194,11 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
   channel to listen before talking (`rx_path.c`, `radio_task.c`).
 - **Apps** call `rdof_siteroute_app_burst(path, burst, take_hold, power_max)`: the pool's transceiver, tuned at the
   stream's first burst (the path's power, lowered to `power_max`; 255 keeps it), the burst on the path's slot. `rdof_siteroute_app_ready` says whether one would take a new stream now.
-  - The parrot is one per box (`site_run.c`), made when a roamer with the parrot joins the pool. It is fed from the
+  - The parrot is one per gateway (`site_run.c`), made when a roamer with the parrot joins the pool. It is fed from the
     SDR receiver's configured channels (`sdr_task.c`, skipping our own transmission) and from a modem roamer's
     channel, keeps one transmission at a time (`rdof_parrot_heard_at`: the first frequency heard wins), waits for a
     transmitter (`ready`, up to `RDOF_PARROT_WAIT_S`), and plays back on the path it heard. A repeater keeps its own
-    parrot, and the box parrot takes nothing heard on a repeater's paths.
+    parrot, and the gateway's parrot takes nothing heard on a repeater's paths.
   - The IP gateway sends on the path the radio was last heard on (its frequency and slot), with `take_hold`. Its
     settings are the ipgw app's (`rdof_plan_ipgw`, config-v3.md §6.3). Tested on a W12 (2026-11-01) with a DM-32UV on 438.075: a UDP datagram through NAT to an echo server
     and its reply back on air (a header and five blocks), and a confirmed one whose ACK went out the same way.

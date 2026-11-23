@@ -9,8 +9,8 @@ with the color code. Shorter recipes and how to apply a file: [docs/settings.md]
 Nothing in `networks`: no HBlink4 master, no MQTT broker. Two apps run:
 
 - the parrot: a call to TG 9990 is played back to the radio;
-- the IP gateway: IP packets as DMR data between radios and the box's own network, sent to ID 9991
-  ([ipgw.md](../../docs/spec/fw/ipgw.md)). `"nat": true` lets radios reach IP hosts through the box; `routes` sends
+- the IP gateway: IP packets as DMR data between radios and the gateway's own network, sent to ID 9991
+  ([ipgw.md](../../docs/spec/fw/ipgw.md)). `"nat": true` lets radios reach IP hosts through the gateway; `routes` sends
   chosen datagrams to one host instead.
 
 | File | Hardware | Mode |
@@ -22,7 +22,7 @@ Nothing in `networks`: no HBlink4 master, no MQTT broker. Two apps run:
 | `standalone-pluto-simplex.json` | a PlutoSDR | simplex, half duplex |
 | `standalone-pluto-duplex.json` | a PlutoSDR | a repeater, full duplex |
 
-- A simplex box answers a call after it ends, on the frequency it was heard on. A repeater repeats what it hears and
+- A simplex gateway answers a call after it ends, on the frequency it was heard on. A repeater repeats what it hears and
   sends the apps' answers on its output.
 - No talkgroups are needed: each app claims its own ID (the parrot 9990, the IP gateway 9991), and with no network
   nothing else is carried.
@@ -53,7 +53,7 @@ once takes any of them:
 | `ham-tier3-site-standalone.json` | a PlutoSDR, 1 carrier | none |
 | `ham-tier3-site-linked.json` | a PlutoSDR, 2 carriers (`tx.carriers: 2`) | the MQTT network, to the operator's other sites |
 | `ham-tier3-site-brandmeister.json` | a PlutoSDR, 2 carriers | BrandMeister: the site is one repeater there |
-| `ham-tier3-hotspot-brandmeister.json` (with `ham-tier3-hotspot-box.json`) | a duplex MMDVM_HS hat and an RTL-SDR, 1 carrier | BrandMeister |
+| `ham-tier3-hotspot-brandmeister.json` (with `ham-tier3-hotspot-box.json`) | a duplex MMDVM_HS HAT and an RTL-SDR, 1 carrier | BrandMeister |
 
 | Key | Value | Why |
 |---|---|---|
@@ -81,9 +81,9 @@ once takes any of them:
   MQTT network (the operator's own sites; with none, it stays on the site) and TG 9 to no network (the repeater's
   own). Neither is sent to or keyed on BrandMeister. A Tier III site still keys TG 9 there to announce a radio that
   registers (so BrandMeister routes its private calls here): that is no call.
-- The duplex hotspot is a one-carrier site on an MMDVM_HS dual hat ([tier3-hat.md](../../docs/spec/fw/tier3-hat.md)):
-  the hat transmits, an RTL-SDR beside it hears the carrier's out and in (so keep them within about 1 MHz). It takes
-  two files: `--config` the box (the hat, its calibration, the bench), `--tier3` the site.
+- The duplex hotspot is a one-carrier site on an MMDVM_HS dual HAT ([tier3-hat.md](../../docs/spec/fw/tier3-hat.md)):
+  the HAT transmits, an RTL-SDR beside it hears the carrier's out and in (so keep them within about 1 MHz). It takes
+  two files: `--config` the host's settings (the HAT, its calibration, the bench), `--tier3` the site.
 - The site grants channels by logical number and broadcasts each one's frequencies (Chan_Freq): a radio that learns
   the plan from those needs none programmed. Grants with absolute frequencies aren't done yet.
 
@@ -98,7 +98,7 @@ Each file ends with the same two sections:
   transmitter's least power. Add `"rf_level"` (0..255, an MMDVM modem's level) or `"max_dbm"` for more; narrow the
   bands, or remove `bench`, to transmit less. Without `--bench` the section does nothing.
 
-A box receives for the bench only where it has an SDR: an MMDVM modem alone takes transmit jobs only, on its own band
+A gateway receives for the bench only where it has an SDR: an MMDVM modem alone takes transmit jobs only, on its own band
 (a hotspot board: 70 cm).
 
 ## Running one
@@ -114,7 +114,7 @@ rdofradio --iio local: --allow-tx --config ham-tier3-site-linked.json --web 0.0.
 rdofradio --soapy driver=rtlsdr -r 1536000 --allow-tx --mmdvm /dev/ttyAMA0 --config ham-tier3-hotspot-box.json --tier3 ham-tier3-hotspot-brandmeister.json --web 8080
 ```
 
-- A Raspberry Pi with an MMDVM_HS hat, including the hat's calibration from MMDVM.ini and running as a service:
+- A Raspberry Pi with an MMDVM_HS HAT, including the HAT's calibration from MMDVM.ini and running as a service:
   [raspberry-pi.md](../../docs/raspberry-pi.md). A PlutoSDR: [plutosdr.md](../../docs/plutosdr.md).
 - `--bench` listens on every interface unless given an address (`--bench 127.0.0.1:7373`): anyone who reaches the
   port can key the transmitter within `bench.tx`.

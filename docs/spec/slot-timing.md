@@ -53,8 +53,8 @@ out"), and keeps its own slot clock.
 
 ## The setting
 
-`slot_timing` goes on a box, a repeater, a split's radio entry or an SDR receiver. A radio's own setting
-is merged key by key over the box's. It can be `free`, `utc`, or a map:
+`slot_timing` goes on the gateway (top level), a repeater, a split's radio entry or an SDR receiver. A radio's own
+setting is merged key by key over the gateway's. It can be `free`, `utc`, or a map:
 
 ```yaml
 slot_timing:
@@ -66,7 +66,7 @@ slot_timing:
 ```
 
 Validation refuses unknown keys, out-of-range values, and `utc` where the front end keeps its own slot
-clock: a single-frequency repeater, or a repeater on an MMDVM hat or board.
+clock: a single-frequency repeater, or a repeater on an MMDVM HAT or board.
 
 ## The gate
 
@@ -197,7 +197,7 @@ path: a PPS straight into the radio.
 | the board's SDR (the LR2021) | yes | its modem places every sample |
 | a split TX half with ALIGN (RadioFoundry SPLIT1) | yes, to the TIME fit (1–2 ms over USB) | ALIGN |
 | a split TX half without ALIGN | no: `align_state` unsupported, own slot clock | nothing to move its clock with |
-| MMDVM_HS hats, MMDVM boards | no (refused) | the firmware owns slot timing, and the MMDVM protocol has no time command |
+| MMDVM_HS HATs, MMDVM boards | no (refused) | the firmware owns slot timing, and the MMDVM protocol has no time command |
 | a single-frequency repeater (radio hotspot) | no (refused) | the radio times its own slots |
 | the LR2021 keyed continuously | yes, with a seam between runs | a long key-up is runs chained with a short seam each, placed late in a slot (`CONFIG_RDOF_LR2021_SEAM_AT`); the front end skips the seam's time so the grid holds ([lr2021-iq.md](lr2021-iq.md) R3.61, R3.62) |
 | RX: the board's MQTT raw bursts | yes: version 2 with `utc_slot`, `utc_us` (the same map the modem labels from) | the sample clock |

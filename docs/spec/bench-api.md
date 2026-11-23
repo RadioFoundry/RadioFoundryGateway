@@ -105,7 +105,7 @@ exclusive retune or a transmitter, the device.
 ## 5. Tuning
 
 `GET /sdr`, and `PUT /sdr {"center_hz", "rate", "gain_db", "ppm"}` with an exclusive lease. A tune applies at run
-time only: settings stay as they are, and the bench goes back to them when the lease ends. A tune bumps
+time only: settings stay as they are, and the bench goes back to them when the lease ends. A tune increments
 `clock.run` and sets the `retuned` flag on open streams. `"center_hz": "auto"` asks for the bench's channel plan.
 The board refuses a rate above what USB Full Speed carries (`refused`, with the limit in the text).
 
@@ -116,7 +116,7 @@ receiver channels at any frequency in the window (ids `T1`...): they decode like
 calls, a channel's I/Q) but never go to MQTT or HBlink4. A center with no configured channel in the window gets one
 tap of its own, an eighth of the rate above the center. Fields left out stay as they are. The rate is the
 settings' and the ppm is learned, so those are refused. The receiver restarts at the new tune (about 0.3 s; the
-reply comes once it runs) and `clock.run` bumps. A stream bound to one channel ends with `done.why: "retuned"`;
+reply comes once it runs) and `clock.run` increments. A stream bound to one channel ends with `done.why: "retuned"`;
 all-channel and wideband streams go on, wideband I/Q frames with the `retuned` flag. A retune the board can't do
 (a tap outside the window, too many channels) is refused and the tune before it stays. `GET /sdr` shows the retune
 in force (`retune`, or null). `benchapi`'s `retune()` does this, and its `capture()` at a frequency with no
@@ -1239,7 +1239,7 @@ until it has it, for up to 1 s. One TDMA slot is on the air 27.5 ms in 60, so it
 each, too few symbols to place four levels: pooled, a line spans about 200 ms.
 
 - `fm` (the default): the mean frequency. The modulation averages out over an interval; a voice's or a tone's
-  doesn't always quite, so an interval of a few hundred ms is steadier.
+  doesn't always average out fully, so an interval of a few hundred ms is steadier.
 - `4fsk`: the center of the four levels, from a k-means on the interval's histogram (25 Hz bins, +-8 kHz) started from
   its 1st and 99th percentiles, the later rounds using only the outputs near a level (a symbol's transition pulls
   it). The four are weighted alike, so a burst with more of one symbol isn't moved; `dev_hz` is half the outer
@@ -1359,6 +1359,6 @@ A running duplex modem and the SDR are independent. Both of the modem's frequenc
 wideband or a channel's cs16), `trigger` and `rx` work on either side while the modem runs. A wider split can't be
 in one window: the SDR keeps the modem's RX, and a request for the TX side tunes the receiver for itself.
 
-The third column needs only the modem and an RTL-SDR on a Linux box; [the reference](../reference.md) has the setup.
-The last needs only the modem: its jobs transmit, and nothing on the box hears them (another receiver does). A hotspot board tunes its own band only: a job outside
+The third column needs only the modem and an RTL-SDR on a Linux host; [the reference](../reference.md) has the setup.
+The last needs only the modem: its jobs transmit, and nothing on the host hears them (another receiver does). A hotspot board tunes its own band only: a job outside
 it ends with the modem refusing `SET_FREQ`, whatever `tx_bands` allows.

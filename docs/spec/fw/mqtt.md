@@ -12,9 +12,9 @@ own client id, will and status topic.
 | Item | SDR | Roamer | Repeater | Source |
 |---|---|---|---|---|
 | Client id (`{hw}`: the machine's own id, below) | `rdof-sdr-{name}-{hw}` | `rdof-roaming-{name}-{hw}` | `rdof-repeater-{name}-{hw}` | `sdr_mqtt.c:sdr_mqtt_start`, `roam_mqtt.c:roam_mqtt_start` |
-| `{hw}` | six hex digits: the last three bytes of the board's base MAC; on a host the last three of its first network interface's hardware address (by name, not the loopback), else the last six digits of `/etc/machine-id`, else a hash of the host's name. Two boxes given the same settings stay two clients (two W12s with a device both named `w12` put each other off the broker every few seconds, 2026-11-11); their topics are still the same, so give each its own names | same | same | `net.c:net_hwid`, `rdofradio_mqtt.c:rdofmq_hwid` |
-| `{name}` | `sdr.name` (the box's SDR name) | the radio's name | the radio's name | |
-| `{app}` | `mqtt.app`, default `sdr`; a box forces `sdr` | always `roaming` | always `repeater` | `sdr/src/config.c:mqtt`, `common/src/config.c` (`cfg->mqtt_app`) |
+| `{hw}` | six hex digits: the last three bytes of the board's base MAC; on a host the last three of its first network interface's hardware address (by name, not the loopback), else the last six digits of `/etc/machine-id`, else a hash of the host's name. Two gateways given the same settings stay two clients (two W12s with a device both named `w12` put each other off the broker every few seconds, 2026-11-11); their topics are still the same, so give each its own names | same | same | `net.c:net_hwid`, `rdofradio_mqtt.c:rdofmq_hwid` |
+| `{name}` | `sdr.name` (the gateway's SDR name) | the radio's name | the radio's name | |
+| `{app}` | `mqtt.app`, default `sdr`; a gateway forces `sdr` | always `roaming` | always `repeater` | `sdr/src/config.c:mqtt`, `common/src/config.c` (`cfg->mqtt_app`) |
 | `{root}` | `mqtt.root`, default `DMR`, `/` stripped from both ends | same | same | `sdr/src/config.c:mqtt`, `common/src/config.c` |
 | Status / will topic | `{root}/_sdr/{name}/status` | same | same | |
 | Will payload | `{"state": "offline"}` (`RDOF_STATUS_OFFLINE`, with a space after the colon) | same | same | |
@@ -265,27 +265,27 @@ data topic is exactly `{root}` plus three levels: the channel id or radio name, 
 
 ## 10. Calls (`calls`, version 3)
 
-An MQTT network with `"calls": true` ([config-v3.md](config-v3.md) §7.2) carries calls between boxes, as an HBlink4
+An MQTT network with `"calls": true` ([config-v3.md](config-v3.md) §7.2) carries calls between gateways, as an HBlink4
 master would. Built in rdofradio (`sdr/cli/rdofradio.c`, `rdofradio_mqtt.c`); the board carries calls over MQTT only in the MQTT
 network's format (`v3`, below). The topic helpers are `rdof_siteroute_calls_topic` and `rdof_siteroute_calls_theirs` (`common/src/siteroute.c`).
 
 | Topic | Payload | QoS | Retain | When |
 |---|---|---|---|---|
-| `{root}/calls/tg/{dst}/{box}` | a DMRD packet (55 bytes, as HBlink4's: `DMRD`, seq, src, dst, peer = the box's `id`, bits, stream id, the burst, BER, RSSI) | 0 | no | each burst of a group call heard on a path whose policy sends it to the MQTT network |
-| `{root}/calls/pc/{dst}/{box}` | the same, for a private call (bits byte bit 6) | 0 | no | the same |
+| `{root}/calls/tg/{dst}/{node}` | a DMRD packet (55 bytes, as HBlink4's: `DMRD`, seq, src, dst, peer = the gateway's `id`, bits, stream id, the burst, BER, RSSI) | 0 | no | each burst of a group call heard on a path whose policy sends it to the MQTT network |
+| `{root}/calls/pc/{dst}/{node}` | the same, for a private call (bits byte bit 6) | 0 | no | the same |
 
-`{box}` is the box's `name`; `{dst}` the called talkgroup or radio, in decimal.
+`{node}` is the gateway's `name`; `{dst}` the called talkgroup or radio, in decimal.
 
 | Side | Behavior |
 |---|---|
 | Out | Each receiver (the radio's and each monitored channel) has an MQTT sink beside its HBlink sink. At a stream's start both ask the router (one decision a stream, §12 of config-v3.md); the sink whose network won sends the stream |
-| In | The box subscribes to `{root}/calls/#` on its radio's connection (QoS 0) and drops its own box's topics and anything not 55 bytes. The packets go to the router as the MQTT network's: a group call to every path on that network that carries the TG, a private call to the path the radio was last heard on (config-v3.md §9) |
+| In | The gateway subscribes to `{root}/calls/#` on its radio's connection (QoS 0) and drops its own topics and anything not 55 bytes. The packets go to the router as the MQTT network's: a group call to every path on that network that carries the TG, a private call to the path the radio was last heard on (config-v3.md §9) |
 | Threads | libmosquitto's thread queues the packets (64; more are dropped and counted), the main loop hands them to the router |
 | `report: false` | the status, call JSON, raw bursts and `tx` aren't published; the connection carries calls only |
 
-Every box on a root hears every other box's calls; the router's policies decide what each sends on RF. Two boxes that
-carry the same TG both transmit it. There's no master: a TG's calls from two boxes at once both arrive, and each path
-keeps the one that came first (config-v3.md §9.2).
+Every gateway on a root hears every other gateway's calls; the router's policies decide what each sends on RF. Two
+gateways that carry the same TG both transmit it. There's no master: a TG's calls from two gateways at once both
+arrive, and each path keeps the one that came first (config-v3.md §9.2).
 
 The MQTT network ([mqtt-net.md](mqtt-net.md)) replaces these calls: decoded items in place of DMRD packets, node
 state, and a private-call router. A network picks it with `"format": "v3"`; rdofradio and the board run it on their

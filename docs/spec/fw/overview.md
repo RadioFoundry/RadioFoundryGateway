@@ -10,7 +10,7 @@ Related: [../../reference.md](../../reference.md) (build, layout, measurements, 
 
 A DMR gateway: it hears DMR on the air (a radio's modem or an SDR), transmits it (a radio, or the SDR as a radio),
 and links what it hears and sends to networks. One portable core, `common/` and `sdr/` in C11, with the modules in
-`rust/` linked in place of their C twins by default; new modules are Rust only. What a box runs follows from one
+`rust/` linked in place of their C twins by default; new modules are Rust only. What a gateway runs follows from one
 settings file (JSON, version 3: [config-v3.md](config-v3.md)).
 
 ### 1.1 Where it runs
@@ -18,7 +18,7 @@ settings file (JSON, version 3: [config-v3.md](config-v3.md)).
 | Target | Program | Devices | Guide |
 |---|---|---|---|
 | ESP32-S3 board | the ESP-IDF app (`esp_idf`, project `radiofoundry_gateway`), ESP-IDF v5.5; profiles `w12`, `16mb`, `4mb` (§3) | an MMDVM modem on USB or UART, an RTL-SDR on USB, the W12's LR2021 on SPI | [esp32-boards.md](../../esp32-boards.md) |
-| Linux, macOS, a Pi | `rdofradio` (a full box), `rdofsdr` (a receiver), `fakebm` and `fakemodem` (test peers), in `sdr/cli` | SoapySDR, libiio (an AD9361 / AD9363), an MMDVM modem on a serial port, cf32 / cu8 files | [linux-macos.md](../../linux-macos.md), [raspberry-pi.md](../../raspberry-pi.md) |
+| Linux, macOS, a Pi | `rdofradio` (a full gateway), `rdofsdr` (a receiver), `fakebm` and `fakemodem` (test peers), in `sdr/cli` | SoapySDR, libiio (an AD9361 / AD9363), an MMDVM modem on a serial port, cf32 / cu8 files | [linux-macos.md](../../linux-macos.md), [raspberry-pi.md](../../raspberry-pi.md) |
 | PlutoSDR | `rdofradio` on the Pluto's ARM (`--iio`), with the FPGA channelizer (`--fpga-chz`) and TX interpolator (`--fpga-duc`) when a bitstream has them | its AD9363, a radio on its USB | [plutosdr.md](../../plutosdr.md) |
 
 A board runs up to two transmitting units and one SDR (§2). A host runs the same units, plus the trunked site, which
@@ -34,9 +34,9 @@ a board refuses.
 | Roamer | a transceiver on simplex frequencies (a radio's modem, or the SDR) that the network tunes per call | [radio.md](radio.md), [roamer.md](roamer.md) |
 | Repeater | duplex, single frequency (SFR) and dual capacity direct mode (DCDM); on one duplex modem, on the SDR, or split over two radios | [../repeater.md](../repeater.md), [../slot-timing.md](../slot-timing.md) |
 | Apps | `parrot` (sends a call back), `ipgw` (IP over DMR packet data), `tier3` (a DMR Tier III trunked site, host only) | [config-v3.md](config-v3.md) §6, [ipgw.md](ipgw.md), [tier3.md](tier3.md), [tier3-hat.md](tier3-hat.md) |
-| Networks | HBlink4 (DMRC peers, roaming over DMRT / DMRK, UDP or SCTP); BrandMeister and other Homebrew masters (a login per path, a trunked site's too); MQTT reporting (call JSON, raw bursts, status); the MQTT network (calls between boxes with no master, Tier III sites included) | [hblink.md](hblink.md), [brandmeister.md](brandmeister.md), [mqtt.md](mqtt.md), [mqtt-net.md](mqtt-net.md) |
+| Networks | HBlink4 (DMRC peers, roaming over DMRT / DMRK, UDP or SCTP); BrandMeister and other Homebrew masters (a login per path, a trunked site's too); MQTT reporting (call JSON, raw bursts, status); the MQTT network (calls between gateways with no master, Tier III sites included) | [hblink.md](hblink.md), [brandmeister.md](brandmeister.md), [mqtt.md](mqtt.md), [mqtt-net.md](mqtt-net.md) |
 | Bench | the bench API over HTTP and WebSocket, and the line protocol on TCP 7373: bursts, captures, transmit jobs (DMR, and other signal modes: FM, AM, raw 4FSK, I/Q), a bench repeater (DMR; P25 and NXDN on a duplex MMDVM modem) | [../bench-api.md](../bench-api.md) |
-| The box | Wi-Fi, the clock (NTP, GNSS PPS), the web page and JSON API, OTA, the memory plan, the OLED, the power key | [device.md](device.md), [interfaces-http.md](interfaces-http.md), [memory.md](memory.md) |
+| The device | Wi-Fi, the clock (NTP, GNSS PPS), the web page and JSON API, OTA, the memory plan, the OLED, the power key | [device.md](device.md), [interfaces-http.md](interfaces-http.md), [memory.md](memory.md) |
 
 Other specs: [dmr-core.md](dmr-core.md) (burst layouts, FEC, PDUs), [rxtx-combinations.md](rxtx-combinations.md)
 (which receivers and transmitters go together), [sdr-device-api.md](sdr-device-api.md) (a planned front-end API),
@@ -57,7 +57,7 @@ What runs is the settings' units ([config-v3.md](config-v3.md) §12); a role her
 | Repeater | a `repeater` app, or a frequency with `mode` `sfr` or `dcdm` | `rdof_repeater` on a duplex modem (dcdm: a DCDM modem, both slots on one frequency); HBlink4 repeater peer; MQTT app `repeater` | counted with roamers | [../repeater.md](../repeater.md) |
 | Split halves | a `repeater` app whose `in` one modem hears and whose `out` another sends | two radios (TX half, RX half; RadioFoundry split duplex) as one duplex modem (`split_port.c`, `rdof/split.h`) | radio halves; an SDR half is refused on a board (§10) | [../repeater.md](../repeater.md), [../slot-timing.md](../slot-timing.md) |
 | SDR transmitter | an SDR that transmits (a transceiver unit, a repeater app on it, or a DCDM frequency) | the SDR front end as the radio, through `rdof/sdr/sdrmodem.h` (an emulated MMDVM modem); a transceiver is tuned per stream ([transmitters.md](transmitters.md)) | a front end that can TX | [sdr.md](sdr.md), [radio.md](radio.md) |
-| Hub | `usb_hub: true` (box key) | every USB role at once behind a hub; devices matched by `port.serial` / `port.usb_port` | build needs `CONFIG_USB_HOST_HUBS_SUPPORTED` (`.16mb`, `.hub`); not the W12 (no USB host) | [config-v3.md](config-v3.md) §2 |
+| Hub | `usb_hub: true` (top-level key) | every USB role at once behind a hub; devices matched by `port.serial` / `port.usb_port` | build needs `CONFIG_USB_HOST_HUBS_SUPPORTED` (`.16mb`, `.hub`); not the W12 (no USB host) | [config-v3.md](config-v3.md) §2 |
 | Trunked site | a `tier3` app ([config-v3.md](config-v3.md) §6) | the Tier III site controller (Rust, `rdof/t3.h`) with the radio layer and mqtt-net (`rdof/t3unit.h`), in rdofradio only: one SDR sending up to 4 carriers, split radio halves, a duplex MMDVM modem with an SDR beside it ([tier3-hat.md](tier3-hat.md)), or `--sim-air` with simulated MSs. A board refuses it (`rdof_plan_roles`) | none on a board; rdofradio: 1 site, 1-4 carriers | [tier3.md](tier3.md) |
 | Bench | `bench` key (`bench.devices`, `bench.tx`) | `/api/bench/v1`: spectrum, bursts, I/Q, sessions, radios link, TX jobs; the line protocol on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373) | `CONFIG_RDOF_BENCH` | [../bench-api.md](../bench-api.md) |
 
@@ -374,7 +374,7 @@ and the drivers.
 | | `logring.c`, `crash.c` | log ring for `/api/log`; the core dump in flash (`/api/coredump`) |
 | | `watch.c`, `flash_watch.c`, `task_ext.c` | task-watchdog canaries; flash operations timed; esp-mqtt's task stacks in PSRAM |
 | | `status_led.c`, `power.c`, `power_core.c` | WS2812 status; the power key and the battery |
-| Net | `wifi.c`, `dnssd.c` | wifilist + AP setup; mDNS and DNS-SD (`BOX.local`, `_http._tcp`, `_rfgbench._tcp`) |
+| Net | `wifi.c`, `dnssd.c` | wifilist + AP setup; mDNS and DNS-SD (`NAME.local`, `_http._tcp`, `_rfgbench._tcp`) |
 | | `net.c` | MQTT clients, publish queue, MQTT 5 aliases / 3.1.1 fallback, UDP sockets |
 | | `web.c` | httpd, page, `/api/*` ([interfaces-http.md](interfaces-http.md)) |
 | | `site_run.c`, `heard.c` | the call router (`rdof/siteroute.h`) under one lock; Last heard |

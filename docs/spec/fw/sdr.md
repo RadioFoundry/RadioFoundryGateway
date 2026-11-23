@@ -119,9 +119,9 @@ As of 2026-10-21, eight busy channels at 288 kS/s take 116% of one core, or 93% 
 176% and 168%. An idle channel's FM stage and search are nearly free behind the idle gate; its channelizer share
 (about 0.07 of a core) remains. The modulator costs about 100 cycles a sample (30 Mcycles/s at 288 kS/s).
 
-| Knob | Effect |
+| Setting | Effect |
 |---|---|
-| channel count | the main lever: per-channel work doesn't depend on fs |
+| channel count | the main factor: per-channel work doesn't depend on fs |
 | `sample_rate` | only the wideband part (input + forward FFT, about 15% at 288 kS/s) |
 | `dsp_cores: 2` | channels split over both cores (the balancer) |
 | `idle_gate` | skips the FM stage and search on idle channels |

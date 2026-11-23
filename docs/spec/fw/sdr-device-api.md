@@ -40,7 +40,7 @@ wrapper over librtlsdr's API: it carries no register facts, and none of its code
 5. **Stream metadata.** `readStream` with flags and a time: a sample count tied to the netclock / GNSS time, an
    overflow flag where data was filled, and end-of-burst on TX. The slot timing (slot-timing.md) wants this.
 6. **Enumeration.** `enumerate(args)` / `make(args)`: each driver registers a `find` and a `make` with key /
-   value args (`driver=rtlsdr,serial=...`), replacing `rdof_fe_type_t`'s fixed list. A box can then name more
+   value args (`driver=rtlsdr,serial=...`), replacing `rdof_fe_type_t`'s fixed list. A gateway can then name more
    than one device of a kind.
 7. **Channels.** `getNumChannels` per direction, for dual-receiver chips and full-duplex parts with separate RX and
    TX chains (today's `duplex` caps).

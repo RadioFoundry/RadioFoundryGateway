@@ -103,7 +103,7 @@ port) or a `radio` (a RadioFoundry radio on its debug link, for the bench). What
 - a radio's RX half and an SDR carrier (refused: the SDR's TX timing against the split's clock isn't done);
 - a channel on one SDR and a carrier on another (later: one SDR a board).
 
-A unit on one SDR's channel and its carrier runs the SDR modem in duplex. A transceiver on the SDR is the box's
+A unit on one SDR's channel and its carrier runs the SDR modem in duplex. A transceiver on the SDR is the gateway's
 transmitter: the router tunes it per stream, and the receiver unit reports what's heard.
 
 ### 2.1 Frequencies and how they're used

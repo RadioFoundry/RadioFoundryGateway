@@ -6,7 +6,7 @@ these check that the pieces work together, over the same links they use in the f
 misbehave.
 
 Status: step 1 of the order of work is built (`radiosim`, below). Steps 2 to 5 are not: there is no `node/`,
-`nodesim` or `posix/`. rdofradio is the host box today, and its end-to-end host tests (`rdofradio_e2e_*`, with
+`nodesim` or `posix/`. rdofradio is the host gateway today, and its end-to-end host tests (`rdofradio_e2e_*`, with
 `fakemodem`, `fakebm`, a mosquitto broker and simulated SDRs) cover part of level 2
 ([reference.md](../reference.md), "Host tests").
 
@@ -89,11 +89,11 @@ say something about the firmware.
 
 ## Scenarios
 
-A scenario is a file: the box config, the radios on the air, the faults, a timeline, and what must be seen.
+A scenario is a file: the gateway's settings, the radios on the air, the faults, a timeline, and what must be seen.
 
 ```yaml
 name: rf call up to the network
-config: roamer-simplex.json        # a box config, as the board takes it
+config: roamer-simplex.json        # a settings file, as the board takes it
 seed: 7
 air:
   - at: 1.0
@@ -135,7 +135,7 @@ request per line on stdin, each answered by its output lines and a line `.`:
 | `t <ms>` | advance the clock to ms (absolute; it starts at 1000): a poll every 5 ms, a modem slot every 30 ms |
 | `h <hex>` | bytes from the host on the serial port, in any split (framed by RadioFoundry's framer) |
 | `r <ts> <kind> <index> <sync> <cc> <payload hex> [<lc hex>]` | a burst heard on air (RadioFoundry's `dmr_burst_t`) |
-| `k <knob> <0\|1>` | a simulated modem knob: `refuse_tx`, `repeater`, `stalled` |
+| `k <setting> <0\|1>` | a simulated modem setting: `refuse_tx`, `repeater`, `stalled` |
 | `q` | quit |
 
 | Output | |

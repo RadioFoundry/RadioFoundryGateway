@@ -29,14 +29,14 @@ The setup access point is `radiofoundry-<suffix>` (format `"radiofoundry-%s"`), 
 |---|---|---|---|---|---|
 | GET | `/` | always | none | the page, gzipped (`Content-Encoding: gzip`, `text/html`): `index.html` with `CONFIG_RDOF_WEB_FULL` (default y), else `mini.html` | none |
 | GET | `/api/status` | always | none | `application/json`, `Cache-Control: no-store`, at most 6144 bytes (§3) | none |
-| GET | `/api/config` | always | `?download` (any value) adds `Content-Disposition: attachment; filename="<box>.json"` | `application/json`: `settings_export()`, the stored JSONC text with `wifi` and `ntp` added (§4) | none |
+| GET | `/api/config` | always | `?download` (any value) adds `Content-Disposition: attachment; filename="<name>.json"` | `application/json`: `settings_export()`, the stored JSONC text with `wifi` and `ntp` added (§4) | none |
 | POST | `/api/config` | always | body: the settings JSON(C), 1 to 16384 bytes (`RDOF_WEBAPI_MAX_CONFIG`) | 200 `saved; restarting` | stores the settings in NVS, then restarts after 1 s (`web.c:restart_task`, `vTaskDelay(1000 ms)`) |
 | GET | `/api/resolved` | always | none | `text/plain`, at most 16384 bytes (§5; the host tools 65536) | none |
 | GET | `/api/log` | always | none | `text/plain`, `no-store`: the log ring, oldest first, the last `CONFIG_RDOF_LOG_RING_KB` KB (default 16; 0 = off, empty body) | none |
 | GET | `/api/lastheard` | always | `?since=N` (u32, default 0) | JSON (§7a): the recent calls changed after N, newest first | none |
 | GET | `/api/tasks` | `CONFIG_FREERTOS_USE_TRACE_FACILITY` and `CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS` | none | `text/plain`, `no-store`: the seconds since the last ask, then a line a task: name, core (0, 1 or any), priority and its share of a core in % since the last ask (the first ask after a restart shows 0). It stops both cores about 5 ms (FreeRTOS reads each task's stack high-water mark inside its kernel lock), longer than the LR2021's FIFO lasts: while a bench job measures it answers 409 with the reason, unless `?force=1`; `cpu` in `/api/status` is the cheap check | none |
 | GET | `/api/prof?ms=` | always | none | `text/plain`, `no-store`: a sampling profile, both cores' ticks for `ms` (2000 by default, at most 8000): a header line, then a line a place, by task: the samples, the task, the core it ran on, the PC and three callers (hex). `tools/prof_sym.py ELF FILE` names them with the running image's ELF and sums them by task and function; a tick that came while interrupts were off lands where they came back on, so the tool charges it to the first caller past the RTOS's own code. The samples sit in PSRAM (about 330 KB, static), none while a flash operation has the cache off. 409 while another profile runs, or with no memory for the text | none |
-| GET | `/api/coredump` | always | none | `application/octet-stream`, `no-store`, `Content-Disposition: attachment; filename="<box>-coredump-<elf>.bin"`: the core dump as stored in the `coredump` partition (header, ELF core, CRC; `esp-coredump -t raw` reads it), or 404 `no core dump` (`no core dump (not in this build)` without `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`) | none |
+| GET | `/api/coredump` | always | none | `application/octet-stream`, `no-store`, `Content-Disposition: attachment; filename="<name>-coredump-<elf>.bin"`: the core dump as stored in the `coredump` partition (header, ELF core, CRC; `esp-coredump -t raw` reads it), or 404 `no core dump` (`no core dump (not in this build)` without `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`) | none |
 | DELETE | `/api/coredump` | `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH` | none | 200 `erased`, or 500 with the error's name | erases the partition (`esp_core_dump_image_erase`); `crash` leaves `/api/status` |
 | POST | `/api/crash` | `CONFIG_RDOF_CRASH_TEST` (default n; debug builds only) | none | 200 `crashing: the board saves a core dump and restarts` | 500 ms later a task `crash_test` stores to address 0 (StoreProhibited): core dump, reboot. `?how=hang`: 200 `hanging: ...`, and a task `hang_test` loops without yielding at priority 7 on core 0: the task watchdog's panic 30 s on (core dump, reboot, `reset` `task watchdog`) |
 | POST | `/api/restart` | always | none (ignored) | 200 `restarting` | restart after 1 s |
@@ -85,7 +85,7 @@ platform's own fields at that point (`web.c:fw_status`), then `settings_source` 
 
 | Field | Type | Unit | Meaning | Present |
 |---|---|---|---|---|
-| `name` | string | | the box name (`g_roles.box`) | always |
+| `name` | string | | the gateway's name (`g_roles.box`) | always |
 | `version` | string | | the app version (`git describe`) | always |
 | `idf` | string | | ESP-IDF version | always |
 | `uptime_s` | int | s | since boot | always |
@@ -270,7 +270,7 @@ The settings are in [config-v3.md](config-v3.md); the schema, `config/rdof-confi
 `text/plain`, lines:
 
 ```
-<box> runs: <role>, <role>[ (both on USB: whichever is plugged in)]
+<name> runs: <role>, <role>[ (both on USB: whichever is plugged in)]
 <rdof_config_describe of radio 1, ';' → newline>
 port: <usb|uart|sdr|split>[ serial <s>][ at port <p>]
 

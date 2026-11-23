@@ -42,7 +42,7 @@ A radio that failed to start (for example `roamer.c` refusing a second radio on 
 
 A 128×64 SSD1306 or SH1106 on I2C. A board that runs an SDR shows the SDR's screen (its channels and the calls on them, with the first roamer's TX row when there is one too); otherwise it shows the **first** roamer or repeater. `main.c` calls `oled_start` once, after the web server and before the roles start; until a role has started (one USB port, nothing plugged in) the screen says `waiting for a device`. Built with `CONFIG_RDOF_OLED` (default y, depends on `CONFIG_RDOF_ROAMER` or `CONFIG_RDOF_SDR`).
 
-On when the box config's `oled` key is there and not `null` or `false`. With no `oled` key, a board with `CONFIG_RDOF_OLED_BUILTIN` (its display is built in: the W12) has it on; others have it off. The settings are read by `oled_sdr.c:rdof_oled_settings_parse` whatever radios run, and checked when settings are saved (`settings.c:resolve`). A roamer's `config.c:oled` parses the same key for `/api/resolved`.
+On when the settings' top-level `oled` key is there and not `null` or `false`. With no `oled` key, a board with `CONFIG_RDOF_OLED_BUILTIN` (its display is built in: the W12) has it on; others have it off. The settings are read by `oled_sdr.c:rdof_oled_settings_parse` whatever radios run, and checked when settings are saved (`settings.c:resolve`). A roamer's `config.c:oled` parses the same key for `/api/resolved`.
 
 Board options (Kconfig):
 
@@ -92,7 +92,7 @@ Adafruit GFX 5×7 (`oled.c:GLYPHS`), ASCII 0x20..0x7E; anything else draws `?`. 
 
 ### The SDR's screen (`oled_sdr.c:rdof_oled_render_sdr`)
 
-A receiver box's screen, for one board. 21 columns of 6 px; the top 16 rows are the network and the flags, so on a two-color panel (the W12's SSD1315: yellow rows 0..15) they are the yellow band.
+A receiver's screen, for one board. 21 columns of 6 px; the top 16 rows are the network and the flags, so on a two-color panel (the W12's SSD1315: yellow rows 0..15) they are the yellow band.
 
 ```
  ((( 192.0.2.8                     y 0   Wi-Fi bars (4 at -55 dBm, 3 -65, 2 -75, 1 -85; an x without Wi-Fi), "AP " in softAP mode, the IP or "no address"
@@ -107,7 +107,7 @@ A receiver box's screen, for one board. 21 columns of 6 px; the top 16 rows are 
 
 | Element | Rule | Source (`oled_task.c:render_sdr`) |
 |---|---|---|
-| flags | `MQ`, `HB`, `SDR`, `HAT`: inverted box when up, struck through when down, left out when not used | MQ: `g_sstat.mqtt_up`, left out with no `mqtt` host. HB: every SDR peer up (`hb_up == hb_peers`), left out with no peers. SDR: `rtl_open && receiving`. HAT: the first roamer's `radio_ready`, left out without one. With a roamer too, MQ and HB are up only when both roles' are |
+| flags | `MQ`, `HB`, `SDR`, `HAT`: inverted when up, struck through when down, left out when not used | MQ: `g_sstat.mqtt_up`, left out with no `mqtt` host. HB: every SDR peer up (`hb_up == hb_peers`), left out with no peers. SDR: `rtl_open && receiving`. HAT: the first roamer's `radio_ready`, left out without one. With a roamer too, MQ and HB are up only when both roles' are |
 | badge | the receiver id's trailing number (`SDR04` → `4`); other ids keep their first letter (`T1`, `ROAM2` → `R2`); no number: the first three characters (`rdof_oled_badge`) | `g_scfg.ch[c].id`; in the window: `g_rx_ready && g_sstat.in_window[c]` |
 | `RX` label | left out when the badges need the room; a badge that doesn't fit is a `+` | |
 | call | the first active slot of the channel's tracker (`trackers[k].slots[s].call`: `src`, `dst`, `group`), read without `rx_lock` (the DSP takes it for every block): a bench retune frees the trackers after `g_rx_ready` goes false, into memory that stays readable, so at worst one frame is wrong | receiver channel k → config channel through `sdr_rx_cfg_channel`; bench taps are left out |

@@ -202,7 +202,7 @@ repeater (network calls only) share this code; each keeps one `rdof_jb_t`, and e
 **Modes.** `jitter_buffer: "auto"` (the default) sizes the prebuffer from what the network did. A number of ms is a
 fixed size, rounded up to whole 60 ms bursts (`300` → 5, `310` → 6). The older `prebuffer` (bursts) is also fixed.
 Fixed behaves exactly as before; the buffer still measures, for the status. The library's own default
-(`rdof_jb_init`) is fixed, so the scenario tests that pin the reference behavior run unchanged; the box config turns
+(`rdof_jb_init`) is fixed, so the scenario tests that pin the reference behavior run unchanged; the settings file turns
 auto on.
 
 Auto is the config default because a fixed 360 ms is both too much and too little: on a LAN or a good uplink it adds
@@ -246,8 +246,8 @@ its new position: the roamer uses the embedded LC fragments it has seen for that
 LC (R7.3). So header, terminator and embedded LC continuity hold, and every burst stays on the 60 ms slot grid; only
 when TX starts and how deep the queue runs change.
 
-**Local streams.** A stream from an app on the box through the router's pool (the bench's transmit, the parrot, the IP
-gateway) isn't network voice: its app paces it and hands it over ahead of the air on purpose. Its tune is marked
+**Local streams.** A stream from an app on the gateway through the router's pool (the bench's transmit, the parrot, the
+IP gateway) isn't network voice: its app paces it and hands it over ahead of the air on purpose. Its tune is marked
 `local`, and the buffer neither measures it nor fills, moves or drops any of it; a gap is filled with silence as with
 a fixed buffer. Before this, a bench job's voice that was all silence frames was dropped whole, being always "ahead"
 (a W12's bench voice call went out as its 8 headers and 3 terminators, no voice). A local stream also starts at its
@@ -367,7 +367,7 @@ Settings (defaults; `common/src/config.c:roamer`, `rdof_txvr_init`; details in [
 | `cwid`, `cwid_every_s` | "" / 900 | CW ID after a call, per frequency |
 | frequencies | every frequency the device `transmits` on (no app's) | allowed (freq, cc, power); the idle frequency is added if missing |
 | `hears.idle` | the first of them | its idle frequency; power 255 |
-| covered | derived | the frequencies the box's SDR hears, sorted, deduplicated |
+| covered | derived | the frequencies the gateway's SDR hears, sorted, deduplicated |
 | `hears.scan` | off | a list of frequencies, with `dwell_s` 0.45, `hang_s` 3.0, `carrier_s` 0; require `dwell_s > 0`, `hang_s ≥ 0`, `0 ≤ carrier_s < dwell_s` |
 
 The talker keys are the device's; `hears` is the device's ([config-v3.md](config-v3.md) §4.4, §4.5).
@@ -420,7 +420,7 @@ Topics `{root}/{name}/roaming/{json,raw,tx}` and retained `{root}/_sdr/{name}/st
 | CW ID wait | 150 status polls with 100 ms sleeps |
 | Retune log | `tuned to F MHz CCn` (no power) |
 | Receive-only build | `RDOF_FEATURE_TX` off: refuses all DMRT with `RADIO_ERROR` |
-| Settings layout | box config only (no `${VAR}`) |
+| Settings layout | the gateway's settings file only (no `${VAR}`) |
 
 - The OLED shows the transceiver's state name plus ` scanning` or ` on idle` (`oled_task.c`).
 - It won't tune away mid-call: a DMRT for another channel within a second of hearing something is answered

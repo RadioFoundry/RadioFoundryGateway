@@ -1,19 +1,19 @@
-# A Raspberry Pi with an MMDVM_HS hat
+# A Raspberry Pi with an MMDVM_HS HAT
 
-`rdofradio` runs a Pi with an MMDVM_HS hat as a hotspot or a repeater, with or without an RTL-SDR beside it. It
-opens the hat's serial port itself, so only one program can use the hat at a time.
+`rdofradio` runs a Pi with an MMDVM_HS HAT as a hotspot or a repeater, with or without an RTL-SDR beside it. It
+opens the HAT's serial port itself, so only one program can use the HAT at a time.
 
 | Hardware | What it runs | Start from |
 |---|---|---|
-| Simplex hat (MMDVM_HS_Hat, ZUMspot) | a hotspot | `config/examples/standalone-mmdvm-simplex.json` |
-| Duplex hat (MMDVM_HS_Dual_Hat) | a repeater | `config/examples/standalone-mmdvm-duplex.json` |
-| Either hat + an RTL-SDR | the same, and the RTL-SDR hears the input: levels, BER, the spectrum and the bench's receive jobs | `standalone-mmdvm-rtl-simplex.json`, `standalone-mmdvm-rtl-duplex.json` |
-| Duplex hat + an RTL-SDR | a one-carrier DMR Tier III trunked site | `ham-tier3-hotspot-box.json` with `ham-tier3-hotspot-brandmeister.json` (section 8) |
+| Simplex HAT (MMDVM_HS_Hat, ZUMspot) | a hotspot | `config/examples/standalone-mmdvm-simplex.json` |
+| Duplex HAT (MMDVM_HS_Dual_Hat) | a repeater | `config/examples/standalone-mmdvm-duplex.json` |
+| Either HAT + an RTL-SDR | the same, and the RTL-SDR hears the input: levels, BER, the spectrum and the bench's receive jobs | `standalone-mmdvm-rtl-simplex.json`, `standalone-mmdvm-rtl-duplex.json` |
+| Duplex HAT + an RTL-SDR | a one-carrier DMR Tier III trunked site | `ham-tier3-hotspot-box.json` with `ham-tier3-hotspot-brandmeister.json` (section 8) |
 
 Each also gets the web page (`--web`) and the bench API (`--bench`), and can log in to BrandMeister
 (`brandmeister-mmdvm-duplex.json`) or an HBlink4 master ([config-v3.md](spec/fw/config-v3.md) §7).
 
-Tested: a duplex MMDVM_HS hat and an RTL-SDR on a Debian 13 arm64 board, as a repeater, a Tier III site and a bench
+Tested: a duplex MMDVM_HS HAT and an RTL-SDR on a Debian 13 arm64 board, as a repeater, a Tier III site and a bench
 line (transmit jobs, bursts and captures on air), running as the systemd service below. A Pi runs the same build. On a
 Pi 3 or Zero 2 W, check the load with `top`; a lower SDR rate (`-r 960000`) costs less.
 
@@ -22,9 +22,9 @@ Pi 3 or Zero 2 W, check the load with `top`; a lower SDR rate (`-r 960000`) cost
 Use **Raspberry Pi OS Lite, 64-bit** (Debian 13). 32-bit images (Pi-Star, most WPSD installs) haven't been tried. If the
 Pi runs one of those now, keep that card and start on a new one.
 
-## 2. The hat's serial port
+## 2. The HAT's serial port
 
-The hat is on the header's UART. On a Pi 3, 4 or Zero 2 W, Bluetooth has that UART until you move it:
+The HAT is on the header's UART. On a Pi 3, 4 or Zero 2 W, Bluetooth has that UART until you move it:
 
 ```sh
 echo dtoverlay=disable-bt | sudo tee -a /boot/firmware/config.txt
@@ -34,8 +34,8 @@ sudo usermod -aG dialout $USER
 sudo reboot
 ```
 
-The hat is then `/dev/ttyAMA0`. On a Pi 5, add `dtparam=uart0=on` in place of `disable-bt`; it's `/dev/ttyAMA0`
-too. MMDVM_HS hats run at 115200 baud, the default.
+The HAT is then `/dev/ttyAMA0`. On a Pi 5, add `dtparam=uart0=on` in place of `disable-bt`; it's `/dev/ttyAMA0`
+too. MMDVM_HS HATs run at 115200 baud, the default.
 
 Stop anything else that opens the port: `sudo systemctl disable --now mmdvmhost` (and its gateways, if installed).
 
@@ -62,7 +62,7 @@ cmake -S . -B build/rel -DRDOF_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DRDOF
 cmake --build build/rel --target rdofradio -j2
 ```
 
-- `-j2` fits a 1 GB Pi. Each step's needs: SoapySDR (`rdofradio` isn't built without it, even for a hat alone),
+- `-j2` fits a 1 GB Pi. Each step's needs: SoapySDR (`rdofradio` isn't built without it, even for a HAT alone),
   libmosquitto (MQTT; optional), cargo (the Rust modules, the default; `-DRDOF_RUST=OFF` builds the C instead).
 - The Rust is in when `find build/rel -name librdof_rust.a` finds it. With cargo missing, the configure step stops
   and lists what's missing.
@@ -79,9 +79,9 @@ cp config/examples/standalone-mmdvm-rtl-duplex.json ~/rfg/config.json     # or t
 Edit `~/rfg/config.json` (`//` comments are fine):
 
 - `id`, `callsign`, `defaults.cc`: yours.
-- `frequencies`: the hotspot's frequency, or the repeater's `in` (what the hat receives, MMDVM.ini's
+- `frequencies`: the hotspot's frequency, or the repeater's `in` (what the HAT receives, MMDVM.ini's
   `RXFrequency`) and `out` (`TXFrequency`).
-- The modem device: `"type": "mmdvm_hs"` for any HS hat (the duplex example says `mmdvm`), and its calibration in
+- The modem device: `"type": "mmdvm_hs"` for any HS HAT (the duplex example says `mmdvm`), and its calibration in
   an `mmdvm` block, from MMDVM.ini's `[Modem]` section:
 
   | MMDVM.ini | `mmdvm` key |
@@ -97,7 +97,7 @@ Edit `~/rfg/config.json` (`//` comments are fine):
   {"name": "hat", "kind": "modem", "type": "mmdvm_hs", "port": {"path": "/dev/ttyAMA0"},
    "mmdvm": {"rx_offset_hz": -150, "tx_offset_hz": -175, "rx_level": 100, "tx_level": 50, "tx_delay_ms": 100}}
   ```
-- `bench.tx`: where bench jobs may transmit. The examples allow every US amateur band at the hat's least power.
+- `bench.tx`: where bench jobs may transmit. The examples allow every US amateur band at the HAT's least power.
   Narrow it to your frequencies (`"freqs_hz": [438500000]`) and set `"rf_level"`. Remove `bench` to allow none.
 - With an RTL-SDR: the repeater's `in` and `out` are both heard only if they fit in the SDR's window (`-r` wide,
   1.536 MHz at `-r 1536000`).
@@ -110,11 +110,11 @@ The file's other sections (networks, MQTT, the apps) are in [config-v3.md](spec/
 First in the foreground, to see it start:
 
 ```sh
-# the hat alone
+# the HAT alone
 ~/rfg/bin/rdofradio --config ~/rfg/config.json --allow-tx --mmdvm /dev/ttyAMA0 --rf-level 128 \
     --web 0.0.0.0:8080 --bench 0.0.0.0:7373
 
-# the hat and an RTL-SDR
+# the HAT and an RTL-SDR
 ~/rfg/bin/rdofradio --config ~/rfg/config.json --soapy driver=rtlsdr -r 1536000 --gain 30 --ppm 0 \
     --allow-tx --mmdvm /dev/ttyAMA0 --rf-level 128 --web 0.0.0.0:8080 --bench 0.0.0.0:7373
 ```
@@ -125,10 +125,10 @@ First in the foreground, to see it start:
 - `--setting biastee=true` powers an active antenna from the RTL-SDR.
 - The web page is at `http://<pi>:8080`. Saving settings there rewrites the file and `rdofradio` starts again with
   it.
-- `--bench 0.0.0.0:7373` lets anyone on the network key the hat within `bench.tx`. `--bench 127.0.0.1:7373` keeps
+- `--bench 0.0.0.0:7373` lets anyone on the network key the HAT within `bench.tx`. `--bench 127.0.0.1:7373` keeps
   it to the Pi. Check the bench from another machine with `tools/bench/rfgbench.py --bench <pi> info`.
-- On a duplex hat, a bench job stops the repeater for its length and brings it back. The bench's repeater jobs run
-  DMR, P25 or NXDN on a duplex hat ([bench-api.md](spec/bench-api.md) 14.3).
+- On a duplex HAT, a bench job stops the repeater for its length and brings it back. The bench's repeater jobs run
+  DMR, P25 or NXDN on a duplex HAT ([bench-api.md](spec/bench-api.md) 14.3).
 
 ## 7. Run it as a service
 
@@ -157,20 +157,20 @@ journalctl -u rdofradio -f
 - It restarts 5 s after any exit, so a dongle that drops off USB comes back.
 - Updates: the web page's Firmware update takes a new `rdofradio` (or its `.gz`). `run.sh` checks that it runs, keeps
   the old one as `rdofradio.prev`, and puts it back after 3 quick failures in a row.
-- `touch ~/rfg/disabled` keeps it from starting, for example while another program uses the hat.
+- `touch ~/rfg/disabled` keeps it from starting, for example while another program uses the HAT.
 
 ## Without a settings file
 
-The command line alone runs a hat too, with `--rx`, `--tx`, `--duplex half|full`, `--cc` and `--bench-tx` for the
+The command line alone runs a HAT too, with `--rx`, `--tx`, `--duplex half|full`, `--cc` and `--bench-tx` for the
 bench's frequencies: [reference.md](reference.md), "An MMDVM modem on a serial port".
 
 ## 8. A Tier III site
 
-A duplex hat and an RTL-SDR beside it run a one-carrier DMR Tier III trunked site
-([tier3-hat.md](spec/fw/tier3-hat.md)): the hat transmits the carrier, and the RTL-SDR hears its out and its in, so
+A duplex HAT and an RTL-SDR beside it run a one-carrier DMR Tier III trunked site
+([tier3-hat.md](spec/fw/tier3-hat.md)): the HAT transmits the carrier, and the RTL-SDR hears its out and its in, so
 keep the two within about 1 MHz. It takes two files:
 
-- `--config`: the box (the hat, its calibration from section 5, the clock, the bench). Start from
+- `--config`: the host's settings (the HAT, its calibration from section 5, the clock, the bench). Start from
   `config/examples/ham-tier3-hotspot-box.json`.
 - `--tier3`: the site, with its BrandMeister login. Start from `config/examples/ham-tier3-hotspot-brandmeister.json`;
   what each key is for is in [config/examples/README.md](../config/examples/README.md).

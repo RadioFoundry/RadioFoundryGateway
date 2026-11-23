@@ -25,7 +25,7 @@ repeaters and hotspots use; HBlink is not used.
 
 Principles:
 
-- **A site runs on its own.** Registration, grants and local calls need only the site's own box. The network adds
+- **A site runs on its own.** Registration, grants and local calls need only the site's own host. The network adds
   wide-area calls, roaming and central management; losing it costs those and nothing else.
 - **One network for Tier II and Tier III.** Same call messages, same topics, same router, same node presence. Tier III
   adds what it needs (registration records, call setup, the site description, provisioning) as small extensions that
@@ -83,7 +83,7 @@ rdofradio uses one chain, the simplest; two chains would keep each carrier on it
 ## 2. Architecture
 
 ```
-              site (one box: Pluto + split radio)                     network services (anywhere)
+              site (one host: Pluto + split radio)                    network services (anywhere)
  +-------------------------------------------------------+       +-------------------------------+
  |  radio layer (C)              site controller (Rust)  |       |  router (pc routing, where)   |
  |  SDR modem slot hook  <---->  rdof_t3 (sans-IO):      |       |  manager (provisioning, cmd)  |
@@ -989,8 +989,8 @@ as a hotspot modem, gets a second call at once.
   2, while the TSCC still sends the grant, the outbound is the TSCC's but the inbound is already the call's. The
   unit sets it for each outbound slot when the radio layer asks for that slot's CACH, so a split half's pump, which
   sends slots ahead, gets it too (before, its composite call's P_CLEAR went out as TSCC blocks). The MS
-  that asked sends its voice header as soon as it reads the first grant: on the hat (2026-11-13) that header went to
-  the TSCC and was lost, and the call aired without one.
+  that asked sends its voice header as soon as it reads the first grant: on the MMDVM HAT site (2026-11-13) that
+  header went to the TSCC and was lost, and the call aired without one.
 
 On air (2026-11-14, the Pluto as one carrier, a RadioFoundry radio): all of the above, both ways. The CACH says
 Payload Channel Type 1 for the rest of the short LC cycle after the P_CLEAR (the cycle is 4 slots); the radio sees
@@ -1212,7 +1212,7 @@ in table 6.5 and the off-air captures), `par` (`a`, `b`, `ab`), `area_bits` (1..
 | `refuse_unlisted` | `denied`, `refused` | `denied` | |
 | `private` | ID set | `*` | IDs that may make individual calls |
 | `tg` | ID set | `*` | talkgroups usable at the site |
-| `wide_tg` | ID set | `""` | talkgroups carried on the network (wide area); others stay local. A talkgroup the box's `rules` keep off every network leaves it ([config-v3.md](config-v3.md) §8.1) |
+| `wide_tg` | ID set | `""` | talkgroups carried on the network (wide area); others stay local. A talkgroup the gateway's `rules` keep off every network leaves it ([config-v3.md](config-v3.md) §8.1) |
 | `static_tg` | ID set | `""` | talkgroups the site always subscribes to on the network (as a Tier II repeater's `tg`) |
 | `foacsu` | bool | false | full off-air call setup for individual calls |
 | `dgna_from_ms` | bool | false | MSs may assign talkgroups to other MSs (DGNA, 3.17); off: Not_Supported. The site's own DGNA always goes |
@@ -1247,10 +1247,10 @@ format 4. Tier II nodes are unchanged except where marked "all nodes".
 
 | Concern | Tier II (today) | Tier III | Shared |
 |---|---|---|---|
-| Call messages | `tg/{tg}/{node}`, `pc/{dst}/{node}`, `dl/{node}` | the same; a trunk site publishes its payload channels' calls as any box does | yes, all of it |
+| Call messages | `tg/{tg}/{node}`, `pc/{dst}/{node}`, `dl/{node}` | the same; a trunk site publishes its payload channels' calls as any gateway does | yes, all of it |
 | Which talkgroups reach a node | its paths' `tg` sets + ptt-held | its registered MSs' talkgroups + `static_tg` | yes: one subscription mechanism (`rdof_mn_sub_tgs`), a new source of talkgroups |
 | Private call location | the router's last heard (passive) | registration records (explicit) | yes: one router table, two sources |
-| Private call setup | none (voice just goes) | availability check over the network | the setup item; Tier II nodes answer it at once (section 5.4) |
+| Private call setup | none (the voice goes at once) | availability check over the network | the setup item; Tier II nodes answer it at once (section 5.4) |
 | Node presence and description | `online`, `info` | `info` gains `trunk` | yes |
 | Status | (legacy topic) | `node/{node}/status` with `trunk` | yes: the topic is defined for all nodes |
 | Activity events | call_start, call_end, csbk, data ... | adds `reg`, `grant`, `queue`, `setup` | yes |
@@ -1332,7 +1332,7 @@ Rules:
   answer; no channel left open on either site).
 - A `reject not_found` doesn't end the wait (with a flood, another node may still accept); the timer then ends the
   call as `not_found`. Any other reject ends it at once ([mqtt-net.md](mqtt-net.md) §9.4).
-- **All nodes:** a Tier II box that gets a `request` on `dl/{node}` for an ID in its last-heard table on a path that
+- **All nodes:** a Tier II gateway that gets a `request` on `dl/{node}` for an ID in its last-heard table on a path that
   can send answers `accept` with `unconfirmed` at once; without one it answers `reject not_found`. So a Tier III MS
   can call a radio on a Tier II repeater, and the voice goes as today.
 - **Router:** a `request` for an ID it can't place gets `reject not_found` on `dl/{publisher}` from the router (the
@@ -1497,7 +1497,7 @@ for UDT short data; a talkgroup's gets none. The application can't send one.
 
 The code: `rust/src/t3pdnet.rs` (a relay per payload channel), the controller's part in `t3pdata.rs`, the network's
 in `t3unit.rs`. Packet data to an MS registered at another site, and to a `wide_tg` talkgroup, crosses mqtt-net in
-the `data_pdu` item every box already uses ([mqtt-net.md](mqtt-net.md) §4.2, §4.4): one message, part 0, the data
+the `data_pdu` item every gateway already uses ([mqtt-net.md](mqtt-net.md) §4.2, §4.4): one message, part 0, the data
 header as the MS sent it (F = 1) and the user data without serial numbers, CRCs or pad, on `pc/{dst}/{node}` or
 `tg/{tg}/{node}`. The message header has the caller as src, the called party as dst, the group flag, and a fresh
 stream ID. The only new field is the setup's flag bit 2, `data`.
@@ -1507,7 +1507,7 @@ hop), not block streaming with the far MS's answer carried back:
 - 361-3 5.4: the sender waits T_RspnsWait for the response (annex A.1: 180 ms recommended), too short for a round
   trip through the broker to an MS on another site, its grant and its answer.
 - 361-3 clause 5 leaves relaying between base stations out of scope, and mqtt-net.md 4.4 already answers confirmed
-  data hop by hop for every box; a Tier III site does the same.
+  data hop by hop for every gateway; a Tier III site does the same.
 - 361-4 6.6.3.1.4: the TSCC checks the called MS before it gives the caller a channel. Across sites that check is
   the setup (5.4), so a channel is only granted for an MS that answered.
 - 361-4 6.6.3.3.2.5: an MS goes back to the TSCC after a single item, so the two air links don't overlap in time
@@ -1547,7 +1547,7 @@ Rules:
   MS's move), in blocks of the rate it came at, rebuilt with its own serial numbers, CRCs and pad. A confirmed
   message is sent as one, A set, and the site is the sender of 361-3 5.4: the SACK's blocks again after a C_HEAD with
   F = 0, all of them after a NACK or after 3 s with no response, 4 sends at most. An unconfirmed message goes once.
-- Data with no setup before it (the IP gateway's replies, a Tier II box's data, a site whose setup was lost) gets
+- Data with no setup before it (the IP gateway's replies, a Tier II gateway's data, a site whose setup was lost) gets
   the availability check at the far site first, then PD_GRANT. A data message for an MS not registered at the site
   is ignored (another site may have it).
 - Talkgroup data from an MS on a `wide_tg` talkgroup: the calling site grants TD_GRANT as for any talkgroup, takes
@@ -1580,7 +1580,7 @@ The codecs should keep bit 2 (`data`).
 
 A site can log in to a BrandMeister master, or any master that speaks the Homebrew repeater protocol (`homebrew`),
 with or without the MQTT network. The network's `peer_ids` names the `tier3` app: the whole site is one repeater of
-two slots on the master (DMRC slots `3`, the TSCC carrier's frequencies, the box's callsign and location). The unit
+two slots on the master (DMRC slots `3`, the TSCC carrier's frequencies, the gateway's callsign and location). The unit
 does it (`rust/src/t3bm.rs`, `rdof_t3unit_bm*` in `rdof/t3unit.h`); rdofradio owns the socket and the login
 (`rdofnet_peer_t`). Homebrew carries two calls at a time, one a slot, and a site has more payload channels than
 that, so the login's slots are virtual: a call goes up on whichever slot its talkgroup is on.
@@ -1618,7 +1618,7 @@ on it there, for 15 minutes after the last. So:
 heard, and a Tier III radio that has only registered was never heard there. So a radio that registers is keyed from
 its ID on TG 9 (the repeater's own, carried nowhere), headers and a terminator, once each `renew_s`.
 
-**Rules.** The box's `rules` ([config-v3.md](config-v3.md) §8.1) reach the unit as ranges each network doesn't carry
+**Rules.** The gateway's `rules` ([config-v3.md](config-v3.md) §8.1) reach the unit as ranges each network doesn't carry
 (`rdof_t3unit_deny`: the MQTT network, the login; talkgroups, private calls by the ID called going out and calling
 coming in). A call they keep off a network isn't sent there and isn't taken from it, a talkgroup kept off the login
 isn't keyed there, and a setup for an ID kept off one isn't sent or answered there. The TG 9 announcement still goes.
@@ -1653,30 +1653,30 @@ there: a private call routed by the TG 9 announcement.
 
 - All state worth keeping is in the retained registration records (one per MS) and the `cfg` cache. Calls in progress
   are not kept: a restart ends them (the MSs return to the TSCC on TV_Inactive).
-- A standby controller is a second box with the same settings and `"standby": true` in the tier3 app (or
+- A standby controller is a second host with the same settings and `"standby": true` in the tier3 app (or
   `{"takeover_s": 13, "fence_s": 9}`, the defaults; `fence_s` 9-60, `takeover_s` at least `fence_s` + 3). Both run
-  the same way; the broker decides which is on the air. Each box is told apart by its hardware ID (`rdofmq_hwid`,
+  the same way; the broker decides which is on the air. Each host is told apart by its hardware ID (`rdofmq_hwid`,
   `RDOF_HWID` in the environment for tests). Built in rdofradio (`rdofradio_t3_standby`, `--sim-air`, the SDR, the
-  radios-only site and the hat); the board's firmware has none.
-- Before its devices open, a box connects as `rdof-standby-{node}-{hw}` and beats its ID on `node/{node}/standby`
-  every 0.5 s (its will: `- {hw}`, keepalive 5 s). It hears its own beat back (the broker's path proven) and the box
-  on the air's beat on `node/{node}/hold` (`on {hw}`, every 0.5 s).
+  radios-only site and the MMDVM HAT site); the board's firmware has none.
+- Before its devices open, a standby connects as `rdof-standby-{node}-{hw}` and beats its ID on `node/{node}/standby`
+  every 0.5 s (its will: `- {hw}`, keepalive 5 s). It hears its own beat back (the broker's path proven) and the
+  beat of the controller on the air on `node/{node}/hold` (`on {hw}`, every 0.5 s).
 - It claims the node when the path is there and either the `on` beat has stopped `takeover_s`, or the node's
-  `online` is 0 (the active box's will; a crash closes the socket, so this is about a second) and no beat since.
+  `online` is 0 (the active controller's will; a crash closes the socket, so this is about a second) and no beat since.
   A claim is `claim {hw}` on `hold` for 1.5 s; an `on` beat or a lower ID's claim meanwhile sends it back to waiting.
-  Then it starts as any box does, reading the records back.
-- Fencing: the box on the air, once it has heard a standby, goes off the air when the standby's beat is gone
+  Then it starts as any site does, reading the records back.
+- Fencing: the controller on the air, once it has heard a standby, goes off the air when the standby's beat is gone
   `fence_s` without its will: either it lost the broker (the standby takes over at `takeover_s`, after the fence) or
-  the standby died silently (its will comes 7.5 s on, before the fence). It raises SIGTERM and exits 75; its
+  the standby went silent (its will comes 7.5 s on, before the fence). It raises SIGTERM and exits 75; its
   supervisor starts it again, as the standby. Its own connection's keepalive is `fence_s` + 1, so its will can't
-  beat the fence. A box on the air that hears another's `on` beat with a lower ID goes off the air too.
-- Without a broker no box claims the node, and a box on the air without a standby stays on the air.
-- Failover: about 2.5 s after a crash (the will), `takeover_s` + 1.5 s after a box or its link goes silent.
-  `host-tests/e2e_t3_standby.sh` runs a pair through a crash, a broker stop and its return; the box that takes
+  beat the fence. A controller on the air that hears another's `on` beat with a lower ID goes off the air too.
+- Without a broker no controller claims the node, and a controller on the air without a standby stays on the air.
+- Failover: about 2.5 s after a crash (the will), `takeover_s` + 1.5 s after a host or its link goes silent.
+  `host-tests/e2e_t3_standby.sh` runs a pair through a crash, a broker stop and its return; the controller that takes
   over holds the first's MS record (read back from the broker) with its own.
 - A site broker: optional. With one at the site (bridged to the backbone, `DMR/#` both ways except `cfg/#` and
   `node/+/cmd` inbound only), the site's own controller, records and provisioning cache keep working with the
-  backbone down, and a standby box at the site works too.
+  backbone down, and a standby controller at the site works too.
 
 ## 7. The road to roaming (multi-site)
 
@@ -1866,9 +1866,9 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   burst (`RDOF_OPS_CACH`, proposed: [radiofoundry-handoff.md](radiofoundry-handoff.md) 1.4) gets every slot while
   keyed, idle ones included, each with the CACH the controller's AT and short LC make (`rdof_t3rf_cach4`): the TSCC's
   carrier can then go out of a split radio. The TSCC's carrier on a split is never idle, so it stays keyed; held keyed
-  off the grid, it lets go so the half can snap back. `rdof_t3split2_tests`: both carriers on fake split halves, the
-  TSCC's with the CACH op (every slot aired with a CACH; AT, TC and short LC as the controller's; the MSs register and
-  call from the halves' air), carrier B's without (its idle slots left to the half).
+  off the grid, it releases the key so the half can return to the grid. `rdof_t3split2_tests`: both carriers on fake
+  split halves, the TSCC's with the CACH op (every slot aired with a CACH; AT, TC and short LC as the controller's; the
+  MSs register and call from the halves' air), carrier B's without (its idle slots left to the half).
 - A carrier on two radios, no SDR: a split TX half sends its `out`, a split RX half (a radio in hotspot mode, role
   RX) hears its `in` (`rdof_t3split_init_radios`; the split's radio index 2i+1 its RX half, `to_rx_radio`). The RX
   half's bursts come as `DMR_DATA` labeled TS1/TS2 from its own epoch (the split's `SET_EPOCH`, the UTC slot the TX
@@ -2197,7 +2197,7 @@ Hardware setups:
 | A stock duplex modem as a one-carrier site (tier3-hat.md) | yes | yes, with limits: the radio decodes 1.4 TSCC blocks a second there (8 on the SDR site) and sends each registration twice |
 | Two split TX halves for the two carriers, the SDR receiving | yes, end to end | no |
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
-| Standby controller (6.2) | yes: two boxes on a local broker through a crash and a hung broker | no |
+| Standby controller (6.2) | yes: two controllers on a local broker through a crash and a hung broker | no |
 | BrandMeister login (5.11) | yes: a fake master, alone and beside mqtt-net | the real master, a simulated radio, no RF (2026-11-20) |
 
 Not built: calls through PSTN, PABX or dispatcher gateways (dialed digits); IPv6;
