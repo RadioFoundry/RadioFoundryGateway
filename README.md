@@ -1,6 +1,7 @@
 # RadioFoundry Gateway
 
-Open-source DMR infrastructure software for existing radio hardware.
+**Open-source DMR Tier II and Tier III infrastructure.** Conventional repeaters and hotspots, trunked sites, and a
+built-in radio test bench, running on Raspberry Pi, PlutoSDR and ESP32-S3 hardware with stock MMDVM modems and SDRs.
 
 ![The W12's Radios page: six channels on its LR2021, with DMR calls in the waterfall](docs/img/w12-spectrum.png)
 
@@ -9,8 +10,8 @@ Open-source DMR infrastructure software for existing radio hardware.
 | Function | Summary |
 |---|---|
 | Tier III trunked site | A DMR Tier III site controller (ETSI TS 102 361-4); to our knowledge, the only open-source implementation |
-| Repeater and hotspot | Duplex, simplex and split duplex repeaters; single-frequency repeater (SFR); dual capacity direct mode |
-| Multi-channel receiver | Up to 6 channels on an ESP32-S3, 10 or more on a Raspberry Pi, 16 on a Pluto+ with the FPGA channelizer |
+| Tier II repeater and hotspot | Duplex, simplex and split duplex repeaters; single-frequency repeater (SFR); dual capacity direct mode |
+| Multi-channel receiver | Up to 6 channels on an ESP32-S3, 10 on a PlutoSDR, 15 on a Pluto+ with the FPGA channelizer, 16 on a computer |
 | Test bench | Radio test and measurement instrument, controlled over TCP port 7373 |
 | DMR-IP gateway | Connects radio data services (registration, text messages, location, UDP) to IP networks |
 | Networking | BrandMeister, HBlink4, MQTT, and linking between sites |
@@ -35,10 +36,10 @@ Open-source DMR infrastructure software for existing radio hardware.
 |---|---|---|---|
 | MMDVM modem (MMDVM_HS HAT, ZUMspot, repeater board), stock firmware | One channel | One channel | Half or full |
 | Handheld in hotspot mode ([OpenGD77](https://www.opengd77.com/), [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry)) | One channel | One channel | Half or full |
-| RTL-SDR (R820T / R828D) | Several channels | No | N/A |
-| LR2021 (on the W12) | Several channels | One channel | Half |
-| PlutoSDR or Pluto+ | Several channels | Several channels | Half or full |
-| SoapySDR devices (LimeSDR, HackRF, USRP and others) | Several channels | Device-dependent | Device-dependent |
+| RTL-SDR (R820T / R828D) | Up to 5 channels on an ESP32-S3, 16 on a computer | No | N/A |
+| LR2021 (on the W12) | Up to 6 channels | One channel | Half |
+| PlutoSDR or Pluto+ | Up to 10 channels, 15 with the FPGA channelizer | Up to 8 channels; 4 for a Tier III site | Half or full |
+| SoapySDR devices (LimeSDR, HackRF, USRP and others) | Up to 16 channels | Depends on the device | Depends on the device |
 
 ## Tier III
 
@@ -59,7 +60,7 @@ radios from other manufacturers have not been tested yet. Specification: [tier3.
 
 - **Receive:** I/Q capture, level triggers, decoded DMR bursts with bit error rate and timing, frequency tracking,
   and transmitter power ramp measurement
-- **Transmit:** FM, AM, DMR, P25, NXDN, dPMR, M17, D-STAR and raw I/Q, with several channels at once
+- **Transmit:** FM, AM, DMR, P25, NXDN, dPMR, M17, D-STAR and raw I/Q, with up to 8 channels at once
 - **Test services:** a DMR repeater, P25 and NXDN repeaters on an MMDVM modem, and a data responder
 - **Accuracy:** the reference crystal is corrected from GNSS or NTP, and each reading reports its uncertainty
 - **Shared access:** sessions, claims and queues let several clients use one instrument; discovery by DNS-SD

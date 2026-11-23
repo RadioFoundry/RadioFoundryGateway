@@ -56,7 +56,7 @@
 <line x1="404" y1="133.0" x2="436" y2="133.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
 <line x1="644" y1="133.0" x2="676" y2="133.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
 <rect x="438" y="164" width="204" height="42" rx="6" fill="#ffffff" stroke="#7a9cd6" stroke-width="1"/>
-<text x="540.0" y="182.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">Repeater</text>
+<text x="540.0" y="182.0" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">Tier II repeater</text>
 <text x="540.0" y="197.0" font-size="11" font-weight="400" fill="#57606a" text-anchor="middle">and hotspot</text>
 <line x1="404" y1="185.0" x2="436" y2="185.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
 <line x1="644" y1="185.0" x2="676" y2="185.0" stroke="#57606a" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
