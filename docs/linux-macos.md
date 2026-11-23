@@ -5,7 +5,7 @@ Two host tools run the firmware's code on a PC or a Raspberry Pi:
 | Tool | What it does | Needs |
 |---|---|---|
 | `rdofsdr` | receives: many channels from one SDR, or from a recording; prints each burst and call as JSON | SoapySDR for a live device; nothing for a file |
-| `rdofradio` | a radio: a repeater or transceiver on an SDR that transmits, or on an MMDVM modem; the web page, the bench line, HBlink4, BrandMeister, MQTT | SoapySDR or libiio |
+| `rdofradio` | a radio: a repeater or transceiver on an SDR that transmits, or on an MMDVM modem, or a DMR Tier III trunked site; the web page, the bench line, HBlink4, BrandMeister, MQTT | SoapySDR or libiio |
 
 A Raspberry Pi with an MMDVM_HS hat is its own guide: [raspberry-pi.md](raspberry-pi.md). A PlutoSDR running
 `rdofradio` on its own ARM: [plutosdr.md](plutosdr.md).
@@ -131,8 +131,8 @@ build/rel/rdofradio --soapy driver=plutosdr -r 2400000 --gain 20 --tx-gain 65 --
 ```
 
 - `--rx`, `--tx`, `--cc`, `--duplex` and `--parrot` are refused with `--config`: they're in the file.
-- It runs the file's one unit that transmits: a repeater, or a transceiver on the SDR or the modem. A file where
-  nothing transmits is refused.
+- It runs the file's one unit that transmits: a repeater, a transceiver on the SDR or the modem, or a `tier3` site.
+  A file where nothing transmits is refused.
 - With `--web`, the page's Settings tab rewrites the file and restarts `rdofradio` with the same command line.
 - `--clock-state FILE` keeps the clock's learned rate across restarts; `--set-os-clock` (root) sets the system's.
 - Writing the file: [settings.md](settings.md).
@@ -162,6 +162,19 @@ build/rel/rdofradio --soapy driver=rtlsdr -r 1536000 --gain 30 --ppm 0 \
 receives. Host-tested, not yet run with a real radio: [reference.md](reference.md), "A radio transmits, the SDR
 receives".
 
+### A Tier III site
+
+A `tier3` app in the settings file makes `rdofradio` a DMR Tier III trunked site ([tier3.md](spec/fw/tier3.md)).
+
+- On an SDR that transmits: `--config` with the site, as any settings file. Start from
+  `config/examples/ham-tier3-site-*.json` ([config/examples/README.md](../config/examples/README.md)).
+- On a duplex MMDVM modem with an SDR hearing it: `--config` the box, `--tier3` the site
+  ([raspberry-pi.md](raspberry-pi.md), "A Tier III site").
+- `--state-dir DIR` keeps the site's cache of settings from the network's manager.
+- `--config FILE --sim-air N` runs the site with no radio: N simulated radios on a simulated air. `--air-ms N` adds
+  N simulated radios beside the real ones on a device.
+- It needs cargo: a build with `-DRDOF_TIER3=OFF`, or without cargo, has no trunked site.
+
 ## 5. The web page
 
 `--web [ADDR:]PORT` serves the board's page: status, last heard, the spectrum and waterfall, settings, the log, an
@@ -179,6 +192,9 @@ build/rel/rdofradio --soapy driver=rtlsdr -r 2.4e6 --gain 30 --ppm 0 --allow-tx 
     --bench 0.0.0.0:7373 --bench-tx 438.5,430-440
 ```
 
+- Besides DMR, `tx` and `rx` jobs take signal modes: analog FM and AM, raw 4FSK (several carriers in one job) and,
+  to transmit only, the client's complex baseband (`iq`). `info` lists what the line runs. For example
+  `rfgbench.py --bench <host> tx fm --freq 438.5 --pcm audio.wav` ([bench-api.md](spec/bench-api.md) §14.6).
 - `--bench-tx` lists every frequency and band (MHz) a job may key on; without it (or a settings file's `bench.tx`),
   no transmit job runs.
 - Anyone who reaches the port can key the transmitter within `--bench-tx`. `--bench 127.0.0.1:7373` keeps it local.

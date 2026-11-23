@@ -1,6 +1,6 @@
 # esp_idf MQTT
 
-Covers: the board's MQTT connections, every topic it publishes (it subscribes only to calls, §10), payloads, QoS, retain, rates, the will, and what a subscriber needs to know; calls carried over MQTT (§10).
+Covers: the board's MQTT connections, every topic it publishes (it subscribes only for calls: §10, and the MQTT network, [mqtt-net.md](mqtt-net.md)), payloads, QoS, retain, rates, the will, and what a subscriber needs to know; calls carried over MQTT (§10).
 Sources: `esp_idf/main/net.c`, `roam_mqtt.c`, `sdr_mqtt.c`, `radio_task.c`, `roam_hblink.c`; `common/src/tracker.c`, `netcalls.c`, `status.c`, `rawburst.c`, `config.c`; `sdr/src/status.c`, `config.c`.
 Related: [interfaces-http.md](interfaces-http.md), [hblink.md](hblink.md), [config-v3.md](config-v3.md) (the `mqtt` settings, §7.2), [dmr-core.md](dmr-core.md) (the call tracker).
 
@@ -266,8 +266,8 @@ data topic is exactly `{root}` plus three levels: the channel id or radio name, 
 ## 10. Calls (`calls`, version 3)
 
 An MQTT network with `"calls": true` ([config-v3.md](config-v3.md) §7.2) carries calls between boxes, as an HBlink4
-master would. Built in rdofradio (`sdr/cli/rdofradio.c`, `rdofradio_mqtt.c`); the board doesn't carry calls over MQTT
-yet. The topic helpers are `rdof_siteroute_calls_topic` and `rdof_siteroute_calls_theirs` (`common/src/siteroute.c`).
+master would. Built in rdofradio (`sdr/cli/rdofradio.c`, `rdofradio_mqtt.c`); the board carries calls over MQTT only in the MQTT
+network's format (`v3`, below). The topic helpers are `rdof_siteroute_calls_topic` and `rdof_siteroute_calls_theirs` (`common/src/siteroute.c`).
 
 | Topic | Payload | QoS | Retain | When |
 |---|---|---|---|---|

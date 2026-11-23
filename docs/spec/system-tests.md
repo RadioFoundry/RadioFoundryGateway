@@ -5,6 +5,11 @@ broker, an HBlink4 master), as one system. The unit tests (`host-tests/`) check 
 these check that the pieces work together, over the same links they use in the field, including when those links
 misbehave.
 
+Status: step 1 of the order of work is built (`radiosim`, below). Steps 2 to 5 are not: there is no `node/`,
+`nodesim` or `posix/`. rdofradio is the host box today, and its end-to-end host tests (`rdofradio_e2e_*`, with
+`fakemodem`, `fakebm`, a mosquitto broker and simulated SDRs) cover part of level 2
+([reference.md](../reference.md), "Host tests").
+
 ## Goals
 
 - **The real software on every side.** The radio runs RadioFoundry's own MMDVM and hotspot core (`core/hotspot`), not
@@ -29,7 +34,7 @@ What crosses each link is what a test checks:
 |---|---|---|
 | serial (MMDVM) | the modem's commands: mode, frequency, DMR data to transmit | version, status, received bursts, ACK / NAK |
 | HBlink4 (DMRD, DMRC, DMRT, DMRK) | bursts heard on RF, the peer's config, keepalives | network calls, tune requests |
-| MQTT | call start / end JSON, raw bursts, status, the receiver message | (nothing yet) |
+| MQTT | call start / end JSON, raw bursts, status, the receiver message; the MQTT network's calls | the MQTT network's calls (`format: "v3"`, [mqtt-net.md](fw/mqtt-net.md)) |
 | air | bursts the radio transmits, with their slot and timing | calls from simulated subscriber radios |
 
 ## Levels

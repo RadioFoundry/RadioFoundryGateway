@@ -1,7 +1,8 @@
 # RadioFoundry Gateway for the PlutoSDR
 
-`rdofradio` (a DMR repeater on the SDR, with its web page) for a PlutoSDR or a Zynq 7010 / 7020 clone on ADI's
-firmware v0.3x as it comes. Nothing else to install on the Pluto: it uses the firmware's own libiio and libad9361.
+`rdofradio` (a DMR repeater or a DMR Tier III trunked site on the SDR, with its web page) for a PlutoSDR or a Zynq
+7010 / 7020 clone on ADI's firmware v0.3x as it comes. Nothing else to install on the Pluto: it uses the firmware's
+own libiio and libad9361.
 The guide, from building to the FPGA channelizer: [docs/plutosdr.md](../../../docs/plutosdr.md).
 
 ## Install
@@ -22,7 +23,7 @@ with the new `rdofradio` on the Pluto.
 It goes in the Pluto's persistent flash (`/mnt/jffs2`), starts at boot from `/mnt/jffs2/autorun.sh`, and starts
 again 5 s after it exits.
 
-**A program too big for the flash** (about 650 KB free there: the trunked site's is bigger) goes on the SD card.
+**A program too big for the flash** (it holds about 700 KB of program) goes on the SD card.
 
 - `install.sh` makes a partition for it once, labeled `RDOF`, in the free space after the boot partition: from the
   MiB after it to 1 MiB below the next power of two (a boot partition ending at 119.4 MiB: 120-127 MiB). Only beside
@@ -89,5 +90,7 @@ The firmware's settings document, version 3 ([config-v3.md](../../../docs/spec/f
   path's policy (`tg` on the repeater app, or on its `slots`). Without a `tg`, the repeater repeats locally and sends
   nothing up. With `"identity": "per_path"` on the network, each frequency or repeater is its own peer and the
   master decides.
+- **A Tier III site:** start from `config/examples/ham-tier3-site-*.json` in the repo
+  ([docs/plutosdr.md](../../../docs/plutosdr.md), "A Tier III site").
 - **The clock:** `ntp` names the servers, and the Pluto's clock (which starts in 1970) is set from them
   (`--set-os-clock`). With no route to them, opening the page sets it from the browser's clock.

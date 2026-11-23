@@ -1,8 +1,8 @@
 # esp_idf HBlink4 peer protocol
 
 Covers: how the board's roamer, repeater and SDR channels talk to HBlink4: the MMDVMHost DMRC protocol (no login) with HBlink4's DMRC tails and its DMRT / DMRK roaming packets, the packet byte layouts, keepalive, stream ids and reconnects, over UDP or SCTP.
-Sources: `common/src/hblink.c`, `common/include/rdof/hblink.h`, `esp_idf/main/roam_hblink.c`, `sdr_hblink.c`; HBlink4's DMRC handler (`_handle_dmrc`) and its `docs/protocol.md` ("Roaming Transceivers", "DMRC location tail").
-Related: [mqtt.md](mqtt.md), [interfaces-http.md](interfaces-http.md), [tinysctp README](../../../components/tinysctp/README.md), [roamer.md](roamer.md), [config-v3.md](config-v3.md) (the `hblink` settings, §7.1).
+Sources: `common/src/hblink.c`, `common/src/hbpeer.c`, `common/include/rdof/hblink.h`, `esp_idf/main/roam_hblink.c`, `sdr_hblink.c`; HBlink4's `docs/protocol.md` ("Roaming Transceivers", "DMRC location tail").
+Related: [brandmeister.md](brandmeister.md) (the Homebrew login, for BrandMeister and other masters), [mqtt.md](mqtt.md), [interfaces-http.md](interfaces-http.md), [tinysctp README](../../../components/tinysctp/README.md), [roamer.md](roamer.md), [config-v3.md](config-v3.md) (the `hblink` settings, §7.1).
 
 ## 1. Peers
 
@@ -12,7 +12,8 @@ Related: [mqtt.md](mqtt.md), [interfaces-http.md](interfaces-http.md), [tinysctp
 | Repeater | one per repeater radio | UDP or SCTP | §3.3, with location tail | 10 s (`RDOF_HB_KEEPALIVE_SECONDS`) | `roam_hblink.c` |
 | SDR channel | one per channel with its own peer (`identity: per_path`); with `single`, the channels send through the box's peer | UDP only | §3.4, with location tail | 10 s | `sdr_hblink.c` |
 
-There is no RPTL / RPTK / RPTC login and no password. HBlink4 accepts a DMRC peer whose id and callsign match one of
+There is no RPTL / RPTK / RPTC login and no password (the `brandmeister` and `homebrew` network types log in:
+[brandmeister.md](brandmeister.md)). HBlink4 accepts a DMRC peer whose id and callsign match one of
 its `repeater_configurations` patterns, and otherwise ignores it. A roamer's pattern needs `roaming: true`.
 
 ## 2. Packets

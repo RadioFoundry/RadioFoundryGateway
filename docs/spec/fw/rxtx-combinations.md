@@ -24,7 +24,7 @@ Related: [config-v3.md](config-v3.md), [transmitters.md](transmitters.md), [sdr-
 | The SDR as a split half on the board | `split_port.c:split_modem_start`: the sample clock isn't stamped against `esp_timer`. The open refuses an SDR as a split's TX half anywhere | missing feature |
 | One TX source per front end | `frontend.h` `tx_set(src)` | API |
 | One carrier per modulator | `mod.h` one `offset_hz` / `phase`; `sdrmodem.h` one `rdof_mod_t` | by design (keep) |
-| One carrier per SDR | every driver's carriers are 1 (`siteplan.c:sdr_caps`); `tx.carriers` above it is refused, except a trunked site's two on a host's I/Q SDR (`iio`, `soapy`, `sim`; rdofradio sums them, tier3.md 9.4) | missing feature (§5) |
+| One carrier per SDR | every driver's carriers are 1 (`siteplan.c:sdr_caps`); `tx.carriers` above it is refused, except a trunked site's (up to 4) on a host's I/Q SDR (`iio`, `soapy`, `sim`; rdofradio sums them, tier3.md 9.4) | missing feature (§5) |
 | RX and TX from two devices only through a split | `split.h`: `halves[2]` behind one `rdof_modem_t` | by design (keep) |
 | The bench: one TX job, `via=sdr\|modem\|radio:NAME` | `bench_tx.c`, `benchtx.c` | API |
 | Host tool: one SDR, one unit that transmits (on the SDR, a split, or an MMDVM modem with the SDR receiving), or up to 8 split repeaters on the SDR, each with its own radio | `rdofradio_cfg.c`; `--split-tx`, `--mmdvm`; `sdrsplit.c` | wiring (host) |
@@ -49,6 +49,7 @@ the open, a board and rdofradio each answer (`rdof_combos_tests`). A limit that 
 | a Pluto repeater and radios as transceivers | | no: one unit that transmits |
 | 2 or 3 SDRs | no: one SDR | no: one SDR |
 | an SDR with two carriers (a repeater and a transceiver, two repeaters) | no (§5) | no (§5) |
+| a trunked site (`tier3`) | no: host only | yes: one SDR, split radios, or a duplex modem and an SDR |
 | an SDR that only receives (no unit transmits) | yes | `--listen`; refused from `--config` |
 | SFR or DCDM on a radio | yes | no: "duplex only" |
 
@@ -78,7 +79,7 @@ port) or a `radio` (a RadioFoundry radio on its debug link, for the bench). What
 |---|---|---|---|
 | RX window | `sdr` | 1: the tuned center and rate | yes, while no one retunes it |
 | RX channel | `sdr` | up to `RDOF_SDR_MAX_CHANNELS` in the window (demod, taps) | yes: any number of listeners |
-| TX carrier | `sdr` that transmits | `tx.carriers` (1 for now, §5) | no; the pool tunes it per stream |
+| TX carrier | `sdr` that transmits | `tx.carriers`: 1, or up to 4 for a trunked site (§5) | no; the pool tunes it per stream |
 | whole modem | `modem` | 1: duplex or simplex; its RX and TX can't be used apart | no |
 | split half | `modem` with `SPLIT1` | RX or TX, one at a time | no |
 | link | `radio` | 1 | no |
@@ -92,7 +93,7 @@ port) or a `radio` (a RadioFoundry radio on its debug link, for the bench). What
 | SFR, DCDM | one hotspot-mode modem (the radio times its own slots); DCDM `duplex: full` on a full-duplex SDR |
 | transceiver | one modem, or the SDR's carrier tuned per stream |
 | receiver | RX channels on the SDR |
-| trunked site (later) | a control channel's RX and TX plus a pool of RX / TX pairs |
+| trunked site (rdofradio only) | 1 to 4 carriers, each an RX and a TX: on one SDR, on split halves, or one carrier on a duplex modem ([tier3.md](tier3.md), config-v3.md §6.4) |
 | simulcast, voting (later) | one RX and several TX, or several RX and one TX ([../slot-timing.md](../slot-timing.md)) |
 
 **How RX and TX meet.** A unit on one modem talks to it directly. A unit whose RX and TX are on two devices is a split
@@ -161,7 +162,11 @@ and can fall back.
 The settings are version 3: [config-v3.md](config-v3.md). The devices are §4, what runs §12, the checks §13.1 and
 the schema §13.2.
 
-## 5. SDR transmit: carriers (not built)
+## 5. SDR transmit: carriers (not built, but for a trunked site)
+
+A trunked site's carriers are already summed: rdofradio adds up to 4 modulators into one I/Q stream at 1/N each, on
+`iio`, `soapy` and `sim`, when the site is all the SDR sends ([tier3.md](tier3.md) 9.4). The rest of this section,
+for any unit, is not built.
 
 `rdof_mod_t` stays one carrier. Several carriers need a mixer between the modems and the front end:
 **`rdof_sdr_tx_t`** (planned, `sdr/`), the front end's one TX source, holding up to 4 carriers, each a pull from one
@@ -179,7 +184,7 @@ const rdof_fe_tx_source_t *rdof_sdr_tx_source(rdof_sdr_tx_t *t);  /* what tx_set
 - **More than one:** each carrier renders into its own buffer and the mixer adds them at 1/N. A carrier that isn't
   keyed adds nothing; the sum is keyed when any carrier is.
 - **The settings are ready:** `tx.carriers` takes 1 to 4, and the open refuses more than the driver's
-  (`siteplan.c:sdr_caps`, 1 for every driver) and more transmitting units than carriers. Raising a driver's count is
+  (`siteplan.c:sdr_caps`, 1 for every driver; a trunked site's 4) and more transmitting units than carriers. Raising a driver's count is
   the only change there.
 - **The SDR modem** would claim its carrier; its `tx_tune` becomes a retune of that carrier.
 
@@ -222,7 +227,9 @@ Left:
 6. **`rdof_sdr_tx_t`:** one carrier live, two tested (§5).
 7. **The board:** several SDR modems and receivers; `split_port.c` drops "one USB half"; caps follow RAM.
 8. **The bench:** `via=device:NAME` and `via=auto`, `devices` in `/info` (§3.1).
-9. **Later:** the SDR split half on the board (the `esp_timer` stamp), multi-carrier on air (§5), trunking.
+9. **Later:** the SDR split half on the board (the `esp_timer` stamp), multi-carrier for other units (§5).
+
+Trunking is built, in rdofradio only ([tier3.md](tier3.md)).
 
 ## 8. Licensing
 

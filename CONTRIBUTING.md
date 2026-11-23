@@ -38,8 +38,8 @@ Three levels. Builds go under `build/`.
 ## Rust and C
 
 The modules in `rust/` run in place of their C twins by default, in the firmware and the host build. Change the
-Rust, and the C twin while it's kept; `rdof_tests_c` runs the core tests on the C. Which modules, and how the
-structs they share are checked: [rust/README.md](rust/README.md).
+Rust, and the C twin while it's kept; `rdof_tests_c` runs the core tests on the C. A new module is Rust only, with
+no C twin. Which modules, and how the structs they share are checked: [rust/README.md](rust/README.md).
 
 ## Docs
 

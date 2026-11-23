@@ -3,10 +3,12 @@
 What: connect the gateway's talk paths to BrandMeister as a network type of its own, beside `hblink` and `mqtt`. A
 simplex frequency or a repeater (a duplex pair) logs in to a BrandMeister master as a hotspot or a repeater; one
 box can hold several logins at once, one per path, as `identity: per_path` does for HBlink4.
-Status (2026-11-11): built and host tested against a simulated master (`fakebm`). Since 2026-11-11 it logs in in the
-2015 specification's dialect on port 62030 (§3); a probe with that dialect logged in to BrandMeister and made a
-parrot call. The gateway itself hasn't logged in to BrandMeister yet.
-The settings are config-v3 §7.3.
+Status: built, on the board and in rdofradio, and host tested against a simulated master (`fakebm`). It logs in in
+the 2015 specification's dialect on port 62030 (§3); a probe with that dialect logged in to BrandMeister and made a
+parrot call (§3.1), and a Tier III site in rdofradio logged in to a real master and keyed talkgroups there
+(2026-11-20, [tier3.md](tier3.md) §5.11). A simplex hotspot or repeater login with radios on the air hasn't been
+run against BrandMeister yet.
+The settings are config-v3 §7.3 (rules that keep calls off a network: §8.1).
 Related: [hblink.md](hblink.md) (the DMRC peer this builds on), [config-v3.md](config-v3.md) §7, [ipgw.md](ipgw.md),
 [roamer.md](roamer.md), [../repeater.md](../repeater.md).
 
@@ -99,8 +101,8 @@ The 2015 dialect (306 bytes):
 | 29 | 9 | TX frequency, Hz |
 | 38 | 2 | TX power, dBm (as HBlink's, below) |
 | 40 | 2 | color code, `01`-`15` |
-| 42 | 8 | latitude, `%+08.4f` (`+33.6198`) |
-| 50 | 9 | longitude, `%+09.4f` (`-086.6089`) |
+| 42 | 8 | latitude, `%+08.4f` (`+12.3456`) |
+| 50 | 9 | longitude, `%+09.4f` (`-065.4321`) |
 | 59 | 3 | antenna height, m |
 | 62 | 20 | location |
 | 82 | 20 | description |
@@ -121,8 +123,8 @@ HBlink's (302 bytes):
 | 25 | 9 | TX frequency, Hz |
 | 34 | 2 | TX power, dBm at the antenna, `00`-`99` (the spec's unit; not the DMRC's RF level). From the transmitter's power map (rdof/txpower.h); `00` without a map |
 | 36 | 2 | color code, `01`-`15` |
-| 38 | 8 | latitude, North positive, unsigned `%08f` cut to 8 (`33.61980`, `0.000000`), as BrandMeister's wiki example writes it; the 2015 spec shows a sign and 4 decimals (`+33.6198`) |
-| 46 | 9 | longitude, East positive, `%09f` cut to 9 (`-86.60890`, `00.000000`) |
+| 38 | 8 | latitude, North positive, unsigned `%08f` cut to 8 (`12.34560`, `0.000000`), as BrandMeister's wiki example writes it; the 2015 spec shows a sign and 4 decimals (`+12.3456`) |
+| 46 | 9 | longitude, East positive, `%09f` cut to 9 (`-65.43210`, `00.000000`) |
 | 55 | 3 | antenna height, m |
 | 58 | 20 | location |
 | 78 | 19 | description (20 in the 2015 spec; the hotspot dialect gives its last byte to the slots) |

@@ -1,9 +1,11 @@
 # A Tier III site on a duplex MMDVM modem
 
 A trunked site ([tier3.md](tier3.md)) whose one carrier goes out of a stock duplex MMDVM modem (an MMDVM_HS dual
-hat) instead of an SDR, with an SDR receiver (an RTL-SDR) beside it hearing the carrier's out and in. It is the
-second site of a two-site lab system, when only one SDR can transmit. The logic is Rust (`rust/src/t3hat.rs`, C API
-`rdof/t3hat.h`), the device glue C (`sdr/cli/rdofradio_t3.c`, `rdofradio --tier3`).
+hat) instead of an SDR, with an SDR receiver (an RTL-SDR) beside it hearing the carrier's out and in. It serves
+as a second site where only one SDR can transmit. It has run on air as the second site of a two-site system
+([tier3.md](tier3.md) 13.2), with limits: a radio decodes fewer of its TSCC blocks than the SDR site's and sends
+each registration twice. The logic is Rust (`rust/src/t3hat.rs`, C API `rdof/t3hat.h`), the device glue C
+(`sdr/cli/rdofradio_t3.c`, `rdofradio --tier3`).
 
 The stock firmware keeps its own slot clock and its own CACH, and plays the host's bursts from one queue per
 timeslot. The host can't say which slot a burst goes in; it can only choose when to write it. Section 2 is what
@@ -29,7 +31,7 @@ what a firmware change would make exact.
 
 ### 2.1 Measured
 
-MMDVM_HS_Dual_Hat firmware v1.5.2 on the bench box, 461.2875 MHz, RF level 40, an RTL-SDR at 1.536 MS/s (gain 0,
+MMDVM_HS_Dual_Hat firmware v1.5.2, on a UHF channel near 460 MHz, RF level 40, an RTL-SDR at 1.536 MS/s (gain 0,
 0.64 ppm set) decoding its out. Bursts were queued by a bench outbound job (a TS2 call from 3 s, 20 superframes, and
 a TS1 call from 8 s, 10 superframes), the CACH of each burst read from the receiver. The job keyed with `DMR_START 1`
 and didn't poll `GET_STATUS`. Each finding's second paragraph reads it against the expected behavior (2.2).
@@ -71,11 +73,11 @@ and didn't poll `GET_STATUS`. Each finding's second paragraph reads it against t
   clipped 3.8% of its samples at gain 0 a few meters away.
 
   Read again: the slot clock and the RF synthesizer both come from the board's 14.7456 MHz TCXO (E9), so they should
-  show the same error. +622 Hz less the -175 Hz offset is +797 Hz, about +1.7 ppm at 461.29 MHz, against H6's
+  show the same error. +622 Hz less the -175 Hz offset is +797 Hz, about +1.7 ppm at the carrier's frequency, against H6's
   3.6 ppm: check the receiver's frequency reference and how the offset is applied before trusting either number.
 
 H8-H13 are from the site itself (`--tier3`, this repo's writer polling `GET_STATUS`), same board and receiver, the
-TSCC on 461.2875 MHz: lead sweeps with `--hat-sweep` (both leads stepped, no catch-up, both queues flushed at each
+TSCC on the same channel: lead sweeps with `--hat-sweep` (both leads stepped, no catch-up, both queues flushed at each
 step, a 2.5 s window per step) with `--hat-mark`, three runs (185 down to 95 ms by 2, twice; 95 up to 185 by 3). The
 leads are host write times against the air time the receiver gives (3.1), so they include the serial line and the
 receiver's own latency.
@@ -113,7 +115,7 @@ receiver's own latency.
   fill are the same, and the oldest pending one was matched to the fill before the first TS2 write, putting every
   TS2 match after it one pair early. A match now needs the burst written at least 80 ms before its air time (3.4).
 
-### 2.2 Expected, to confirm on the bench
+### 2.2 Expected
 
 How the stock modem is expected to behave in duplex DMR, at 9600 b/s (a slot 288 bits, 264 burst and 24 CACH,
 30 ms). The design (section 3) and the simulated modem (section 4) follow this; section 2.3 lists what's still to
@@ -154,7 +156,7 @@ measure.
   (the data sync bit and data type, the voice sync flag, or the voice burst's number 1-5), the 33 burst bytes and, in
   some builds, 2 RSSI bytes. A report goes out when the receiver reaches the burst's end, 108 bits (11.25 ms) after
   the end of the sync it found (voice B-F by the timing of the last sync), then a small near-constant receive latency
-  and 3.2 ms of serial line. A data sync that fails the colour code check sends nothing; after 13 slots with no sync,
+  and 3.2 ms of serial line. A data sync that fails the color code check sends nothing; after 13 slots with no sync,
   `DMR_LOST1/2`. Nothing comes while no MS sends; unkeyed, another receiver runs and everything comes as `DMR_DATA1`.
   The modem doesn't hear its own outbound.
 - **E9, the clock.** No reference input or calibration: the slot clock and the RF synthesizer both come from the

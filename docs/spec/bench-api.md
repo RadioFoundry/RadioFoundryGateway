@@ -3,8 +3,9 @@
 How a host tool talks to a receive / transmit bench: an ESP32 board running the gateway (`esp_idf`), or the bench
 daemon (the authors' own, which owns an RTL-SDR and an MMDVM modem on a Linux host; it isn't published, and every tool
 here works against a board without it). Host tools speak it through the client `tools/bench/benchapi.py` (the HIL
-tests in `hil-tests/` use it), so the same tool works against either bench. The board will serve it natively (section
-9). The bench daemon can serve it through an adapter now and natively later (section 10).
+tests in `hil-tests/` use it), so the same tool works against either bench. The board serves it (section 9). rdofradio and the
+bench daemon don't: they speak the line protocol (section 14), which the board serves too. Section 10 maps v1 onto
+the daemon.
 
 Version 1. Section 11 says what works where; section 9 what the board has.
 
@@ -214,7 +215,7 @@ The bench daemon's `dmr-bursts` field names:
 ### 6.4 Calls
 
 `WS /calls?channel=` sends one record per call (start, end, src, dst, slot, encrypted, burst count, lost) and,
-with `audio=ambe`, the AMBE frames. Later: `audio=pcm` once the board decodes voice itself. On the board, records come from the
+with `audio=ambe`, the AMBE frames. Not built: `audio=pcm` (the board doesn't decode voice). On the board, records come from the
 SDR's trackers: `{"type": "call", "event": "start" | "late_entry" | "end" | "lost", "channel", "freq_hz", "t",
 "slot", "src", "dst", "group", "cc"}`, an end also with `start`, `duration`, `ber`, `rssi`, `voice_bursts` and `lost`;
 the trackers' other events (CSBKs, data) as `{"type": "event", "event", "dmr": {...}}`; with `audio=ambe`, `{"type":
@@ -388,8 +389,8 @@ rather than with an error frame; the log says why.
 
 ## 10. The bench daemon
 
-The mapping, for an adapter (a small HTTP/WS server on the bench host that talks to the daemon's socket) and later
-for the daemon itself:
+The mapping, for an adapter (a small HTTP/WS server on the bench host that talks to the daemon's socket; none is
+built):
 
 | v1 | Bench daemon |
 |---|---|
@@ -399,14 +400,14 @@ for the daemon itself:
 | `PUT /sdr` | an exclusive `capture` with its own center and gain (the daemon has no standing retune) |
 | `WS /iq` | `capture` (cs8 to a file, at 1.536 MS/s) or `trigger` (a channelized cf32 / cs16 file); the adapter streams the file |
 | `WS /bursts` | `bursts` (`dmr-bursts` records), else `listen` |
-| `WS /spectrum/ws` | none yet: an FFT over the shared receiver's samples |
+| `WS /spectrum/ws` | none: it would need an FFT over the shared receiver's samples |
 | `WS /tx via=modem` | `run --modem` with a burst file; `timed: false` |
 | `WS /radios/{n}/link` | `bridge` (the station guard) |
 
-`benchapi.DaemonBench` does the read side of this mapping on the client today (info, status, bursts, capture), over
+`benchapi.DaemonBench` does the read side of this mapping on the client (info, status, bursts, capture), over
 ssh with a small relay that keeps stdin open for the request's lifetime, because the daemon cancels a request on EOF.
 
-## 11. What works where today
+## 11. What works where
 
 | Operation | Board, legacy endpoints | Board, v1 | Bench daemon via `benchapi` |
 |---|---|---|---|
@@ -415,8 +416,8 @@ ssh with a small relay that keeps stdin open for the request's lifetime, because
 | bursts | over MQTT (`{root}/{channel}/{app}/raw`), credentials from the environment, no `sc` / level / cfo | yes | yes |
 | I/Q capture | no | channel taps (cs16, cf32, cs8, cu8) and the wideband stream (cs8, cu8, cs16); pre-roll up to 1 s; level trigger on a channel | yes (cs8 file, fetched and removed) |
 | tune | no | `PUT /sdr`: center, gain and taps, under an exclusive lease | through an exclusive capture |
-| TX | no | DMR bursts through the SDR modem (a front end that transmits) or an MMDVM bench radio; no I/Q or FM | modem jobs (`run`), not through `benchapi` yet |
-| radios | no | list, the guarded link (`benchapi.link_pty` puts it on a pty), and tune for a RadioFoundry radio | `bridge`, not through `benchapi` yet |
+| TX | no | DMR bursts through the SDR modem (a front end that transmits) or an MMDVM bench radio; no I/Q or FM (the line protocol's signal modes are in 14.6) | modem jobs (`run`), not through `benchapi` |
+| radios | no | list, the guarded link (`benchapi.link_pty` puts it on a pty), and tune for a RadioFoundry radio | `bridge`, not through `benchapi` |
 
 The MQTT fallback has one catch: several receivers publish the same channel ids under the same root, so a burst on
 `DMR/SDR06/sdr/raw` may come from another receiver. Point the board at its own root or app name while testing.
@@ -426,9 +427,12 @@ The MQTT fallback has one catch: several receivers publish the same channel ids 
 - No auth (private test network).
 - Radios on a board UART (number and pins in the config) or on the USB host port (CDC-ACM or a USB-serial
   bridge, directly or behind a hub). Section 8.
-- Replace the daemon with the board first; the daemon speaks v1 natively later (section 10's mapping is the guide).
-- The first TX path is DMR bursts through the board's MMDVM modem emulation (sdrmodem), before an SDR TX front
-  end exists.
+- The gateway takes the daemon's place: the board serves v1 and the line protocol, rdofradio the line protocol
+  (section 14), and `tools/bench/rfgbench.py` replaces the daemon's client. The daemon doesn't speak v1.
+- v1's TX path is DMR bursts through the board's MMDVM modem emulation (sdrmodem), on a front end that transmits,
+  or an MMDVM bench radio (section 7).
+- Burst analysis and the bench helpers are this project's own code (`tools/bench/`); nothing imports the daemon's
+  package.
 
 ## 13. Open questions
 
@@ -436,9 +440,6 @@ The MQTT fallback has one catch: several receivers publish the same channel ids 
    `/api/config` has it, but tools must not scrape credentials. The v1 bursts stream removes the need.
 2. Wi-Fi throughput with three cs16 taps and the spectrum push, while MQTT and HBlink run: measure before fixing
    the defaults.
-3. Burst analysis and SDR bench helpers for the HIL tests: the existing ones import modules from the bench daemon's
-   package, whose origin is GPL or unclear. Write them on this project's own code rather than copy
-   them.
 
 ## 14. The line protocol (TCP)
 

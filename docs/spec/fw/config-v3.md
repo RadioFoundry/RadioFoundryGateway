@@ -1,7 +1,7 @@
 # Settings, version 3
 
 Covers: the settings, the one format the firmware and rdofradio take: devices, frequencies, apps, networks and the
-policies that say which calls move between a talk path and a network; every key with its type, default and rule;
+policies and rules that say which calls move between a talk path and a network; every key with its type, default and rule;
 how a box runs a file (§12); its limits and checks, and the schema (§13); where the board keeps it (§16).
 Code: the parser and the resolved view `common/src/site.c` ([site.h](../../../common/include/rdof/site.h)); what
 runs, the devices' own keys and the checks `common/src/siteplan.c`
@@ -29,9 +29,10 @@ Version 3 splits them:
 |---|---|---|
 | `devices` | hardware and what it can do | frequencies' use, calls |
 | `frequencies` | RF: frequency, color code, mode, whether anything may transmit there, and its call policy | hardware |
-| `apps` | things that take frequencies (a repeater) or answer calls (parrot, IP gateway) | hardware |
-| `networks` | connections that carry calls: HBlink, MQTT, later others | RF |
+| `apps` | things that take frequencies (a repeater, a trunked site) or answer calls (parrot, IP gateway) | hardware |
+| `networks` | connections that carry calls: HBlink4, BrandMeister and other Homebrew masters, MQTT | RF |
 | `policies` | named call policies, shared by several paths | anything else |
+| `rules` | where a call may go at all, for the whole box (§8.1) | paths |
 
 Nothing names a role and nothing says what runs: what runs follows from the sections (§12). Which device serves
 which frequency follows from each device's `hears` and `transmits`; a file only pins a device (a frequency's
@@ -49,7 +50,8 @@ which frequency follows from each device's `hears` and `transmits`; a file only 
   "frequencies": [ ... ],
   "apps": [ ... ],
   "networks": [ ... ],
-  "policies": [ ... ]
+  "policies": [ ... ],
+  "rules": [ ... ]
 }
 ```
 
@@ -80,7 +82,7 @@ which frequency follows from each device's `hears` and `transmits`; a file only 
 | `oled` | object, `true`, `false` or `null` | §2.2 | the screen |
 | `slot_timing` | object | `free` | the UTC slot grid ([../slot-timing.md](../slot-timing.md)); inherited by a repeater on a split or the SDR |
 | `wifi`, `ntp` | object | | §2.2; the board keeps them apart (§16) |
-| `usb_hub` | bool | false | a hub on the board's USB port: every USB device at once (a build with hub support: `16mb`, `w12`, the `hub` overlay) |
+| `usb_hub` | bool | false | a hub on the board's USB port: every USB device at once (a build with hub support: `16mb`, the `hub` overlay; not `w12`, which has no USB host) |
 | `selftest_load` | object | `{"channels": 8, "rates": [288000]}` | the SDR self-test's load runs: `channels` 1..16, `rates` up to 4 sample rates |
 | `bench` | object | none | the bench API's devices and TX policy (§4.6) |
 
@@ -228,7 +230,7 @@ device to a frequency) is a network option (§7.1), not a role.
 
 | Key | Type | Default | Rule / meaning |
 |---|---|---|---|
-| `carriers` | int, 1..4 | 1 | carriers it sends at once; at most the driver's (1 for every driver for now, §13.1) |
+| `carriers` | int, 1..4 | 1 | carriers it sends at once; at most the driver's: 1, or up to 4 on `iio`, `soapy` and `sim` when a trunked site's carriers are all it sends (§13.1) |
 | `power_dbm` | number, −60..40 | 10 | transmit power, dBm at the antenna. A frequency's `power_dbm` is taken under it: the SDR's RF level 255 is this, each level 0.2 dB under it (§4.7) |
 | `center_hz` | frequency or `"auto"` | auto | taken, not read yet |
 | `bench` | object | | §4.6 |
@@ -406,7 +408,7 @@ for SFR. The keys:
 | `repeater` | `in` and `out` frequencies | paths `<name>/1`, `<name>/2` | §6.2 |
 | `parrot` | | answers the IDs in its `tg` or `pc` | `name`, `type`, and `tg` or `pc` (ID sets) |
 | `ipgw` | | answers its ID | §6.3 |
-| `trunk` | 1-4 carriers, each an `out` and an `in` frequency | one path `<name>` (`trunk: true` in `info`) | §6.4 |
+| `tier3` | 1-4 carriers, each an `out` and an `in` frequency | one path `<name>` (`trunk: true` in `info`) | §6.4 |
 
 Later, each as an app type, with no new section: `voting` (the best copy of each burst from several receivers),
 `simulcast` (one path, several transmitters), `recorder`.
@@ -486,7 +488,7 @@ It needs `routes` or `nat` ("nothing to do"). A route:
 A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app. rdofradio runs it too ([ipgw.md](ipgw.md) §13.1).
 
 
-### 6.4 `trunk`
+### 6.4 `tier3`
 
 A DMR Tier III trunked site ([tier3.md](tier3.md)): a control channel (TSCC) on one carrier's TS1, the other slots
 payload channels. One a box; it runs on a host (`rdofradio`), not on a board. The keys, defaults and ranges are
@@ -513,15 +515,18 @@ tier3.md section 4 and 3.8; the manager's `cfg` documents override them (tier3.m
 | `standby` | bool or object | false | two boxes with these settings, one on the air, the other taking over (tier3.md 6.2): `true`, or `{"takeover_s": 13, "fence_s": 9}` (`fence_s` 9-60, `takeover_s` at least `fence_s` + 3, at most 120). Needs the site's mqtt network; rdofradio only |
 
 Its frequencies are its own: no other app, gateway, transceiver or receiver uses them, and every carrier's color
-code is the same (the TSCC's). The unit, named after the app:
+code is the same (the TSCC's). The unit, named after the app, takes one of these layouts (`siteplan.c:check_trunk`):
 
-- The TSCC carrier's `in` and `out` on one full-duplex SDR (its slot clock). A split's TX half can't carry the TSCC
-  yet (it can't time the short LC and the AT bit per slot).
-- Every carrier's `in` heard on that SDR: each is an extra channel of it, `<name>-<n>` in the carriers' order (the
-  TSCC's first).
-- Another carrier's `out` on an SDR (a carrier of its `tx.carriers`: the TSCC's SDR, summed into its stream by
+- **On an SDR.** The TSCC carrier's `in` and `out` on one full-duplex SDR (its slot clock). Every carrier's `in`
+  heard on that SDR: each is an extra channel of it, `<name>-<n>` in the carriers' order (the TSCC's first).
+  Another carrier's `out` on an SDR (a carrier of its `tx.carriers`: the TSCC's SDR, summed into its stream by
   rdofradio, tier3.md 9.4) or on a radio in hotspot mode with the split duplex extension (a split's TX half, one
   carrier a radio).
+- **On split radios.** Every carrier's `out` on its own split TX half (the TSCC's taking the CACH with each burst),
+  and every `in` on the SDR, which sends nothing; or every `in` on a split RX half too, with no SDR. A radio is one
+  carrier's TX or RX half.
+- **On a duplex MMDVM modem.** One carrier, its `out` on a modem that isn't a radio hotspot, and an SDR hearing its
+  `out` and `in` ([tier3-hat.md](tier3-hat.md)).
 
 ## 7. Networks
 
@@ -615,8 +620,9 @@ A trunked site (a `tier3` app named in `peer_ids`) logs in as one repeater, the 
 | `renew_s` | number, 0..3600 | 840 | key a wanted talkgroup again this long after the last call keyed on it here (0: never) |
 | `unlink_s` | number, 0..3600 | 120 | TG 4000 this long after the last call on a talkgroup no radio wants |
 | `announce` | bool | true | key a radio that registers from its ID on TG 9, so the master routes its private calls here |
-| `ts1_tg`, `ts2_tg` | [int], ≤ 16 | | talkgroups that always go on that slot of the login (the rest: the slot they were keyed or heard on, else the less used one) | A device that transmits on a frequency of the network transmits on that
-one only (no roaming transceiver). `GET /api/config` shows the password, as it does MQTT's.
+| `ts1_tg`, `ts2_tg` | [int], ≤ 16 | | talkgroups that always go on that slot of the login (the rest: the slot they were keyed or heard on, else the less used one) |
+
+A device that transmits on a frequency of the network transmits on that one only (no roaming transceiver). `GET /api/config` shows the password, as it does MQTT's.
 
 ### 7.4 `homebrew`
 
@@ -1092,7 +1098,7 @@ The open (`rdof_plan_open`) refuses, with the place and the rule:
 |---|---|
 | units | an SFR on an SDR; an SFR or DCDM without a hotspot-mode modem (`radio_hotspot` or `auto`); `duplex: full` on a modem; a split whose transmit half is an SDR, or whose halves aren't hotspot-mode modems; a duplex repeater on a `radio_hotspot`; one modem or radio for two units ("a modem serves one"); two units with one name |
 | an SDR's driver (`check_caps`) | a rate over the driver's (`rtlsdr` 3.2 MS/s); a heard frequency outside its tuning range (`rtlsdr` 24 to 1766 MHz) or outside the window when `center_hz` is set; more than 16 receive channels |
-| an SDR that transmits | a driver that can't (`rtlsdr`); `tx.carriers` over the driver's (1 for every driver for now; 2 on `iio`, `soapy` and `sim` when a trunked site's carriers are all it sends); more transmitting units than carriers; a duplex repeater, or a DCDM with `duplex: full`, on a half-duplex SDR (the LR2021) |
+| an SDR that transmits | a driver that can't (`rtlsdr`); `tx.carriers` over the driver's (1 for every driver; up to 4 on `iio`, `soapy` and `sim` when a trunked site's carriers are all it sends); more transmitting units than carriers; a duplex repeater, or a DCDM with `duplex: full`, on a half-duplex SDR (the LR2021) |
 | the bench | a bench modem that a frequency's `devices` pins to a unit (listed in `bench.devices`, it makes no unit otherwise); an SDR with both `bench` and `tx.bench` |
 | a transceiver | more than 32 frequencies to transmit on (`RDOF_PLAN_MAX_FREQS`, `RDOF_CFG_CHANNELS`) |
 

@@ -1,8 +1,8 @@
 # PlutoSDR
 
-`rdofradio` runs on the PlutoSDR's own ARM as a DMR repeater or transceiver, with its web page, MQTT and the bench
-line. It runs on ADI's stock firmware (v0.3x) on a PlutoSDR or a Zynq 7010 / 7020 clone, through the firmware's own
-libiio and libad9361: nothing else to install on the Pluto.
+`rdofradio` runs on the PlutoSDR's own ARM as a DMR repeater, a transceiver or a DMR Tier III trunked site, with its
+web page, MQTT and the bench line. It runs on ADI's stock firmware (v0.3x) on a PlutoSDR or a Zynq 7010 / 7020
+clone, through the firmware's own libiio and libad9361: nothing else to install on the Pluto.
 
 A Pluto on a PC's USB, driven from the PC, is the host tools' job instead: [linux-macos.md](linux-macos.md).
 
@@ -10,7 +10,7 @@ A Pluto on a PC's USB, driven from the PC, is the host tools' job instead: [linu
 |---|---|---|
 | Boards | any Pluto or 7010 / 7020 clone on stock firmware | a 7010 clone with 1 GB of 32-bit DDR and Ethernet (`fishball7010`), so far |
 | Channels | about 10 (at 1.296 MS/s) | 15 |
-| Tested | a Rev.C and a 7010 clone, firmware v0.38: full and half duplex with handhelds | the 7010 clone: 15 channels in loopback |
+| Tested | a Rev.C and a 7010 clone, firmware v0.38: full and half duplex with handhelds; a Tier III site with a radio | the 7010 clone: 15 channels in loopback |
 
 ## 1. Build
 
@@ -25,9 +25,10 @@ It builds in a Debian 9 container against ADI's v0.38 sysroot, and writes:
 | File | What |
 |---|---|
 | `build/pluto/rdof-pluto.tar.gz` | `rdofradio`, `rdofsdr`, `rdofchz`, to try from `/tmp` |
-| `build/pluto/rdof-pluto-bundle-VERSION.tar.gz` | the installer: `rdofradio.gz`, `install.sh`, `run.sh`, the examples, the FPGA bitstreams |
+| `build/pluto/rdof-pluto-bundle-VERSION.tar.gz` | the installer: `rdofradio.xz`, `install.sh`, `run.sh`, the example settings and flags, the FPGA bitstreams |
 
-The programs need only libiio, libad9361 and libc. MQTT is linked in, without TLS.
+The programs need only libiio, libad9361 and libc. MQTT is linked in, without TLS. The Rust modules and the trunked
+site are in.
 
 ## 2. Try it from RAM
 
@@ -88,15 +89,34 @@ runs anyway.
 
 ## 5. Update
 
-- The page's Logs & maintenance tab, Firmware update: the bundle's `rdofradio.gz` (or `rdofradio` itself). Or:
-  `curl --data-binary @rdofradio.gz http://192.168.2.1:8080/api/ota`.
+- The page's Logs & maintenance tab, Firmware update: the bundle's `rdofradio.xz` (or `rdofradio` gzipped, or the ELF
+  itself). Or: `curl --data-binary @rdofradio.xz http://192.168.2.1:8080/api/ota`.
 - `run.sh` checks the new one runs, puts it in flash in place of the old, and puts the old one back if the new one
   fails within 30 s.
+- A program too big for the flash goes on the SD card, on a partition `install.sh` makes once after the boot
+  partition: [the bundle's README](../tools/pluto/bundle/README.md).
 - `./install.sh` with no options upgrades too: it keeps the settings and flags, and also updates `run.sh` and
   `VERSION`. An update from the page doesn't.
 - `./install.sh --uninstall` removes it.
 
-## 6. The FPGA channelizer
+## 6. A Tier III site
+
+A `tier3` app in the settings makes the Pluto a DMR Tier III trunked site: the control channel (TSCC) on one carrier's
+TS1, the other slots payload channels. The examples send one or two carriers out of the one SDR (two need
+`"tx": {"carriers": 2}` on the device). Start from one of these, in `config/examples/`:
+
+| File | Carriers | Network |
+|---|---|---|
+| `ham-tier3-site-standalone.json` | 1 | none |
+| `ham-tier3-site-linked.json` | 2 | the MQTT network, to your other sites |
+| `ham-tier3-site-brandmeister.json` | 2 | BrandMeister: the site logs in as one repeater |
+
+- Set the site number, each carrier's logical channel and the frequencies, then install it like any settings file:
+  `./install.sh --config my-site.json`.
+- What each key is for: [config/examples/README.md](../config/examples/README.md). The design and what's built:
+  [tier3.md](spec/fw/tier3.md).
+
+## 7. The FPGA channelizer
 
 On a board with a bitstream, the FPGA does the channelizing and the transmit interpolation, and the ARM only
 demodulates: 15 channels across a wide window, where the ARM alone keeps about 10.

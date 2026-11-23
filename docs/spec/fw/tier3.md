@@ -1,23 +1,27 @@
-# Trunked site (DMR Tier III): design and plan
+# Trunked site (DMR Tier III)
 
 Covers: what the `tier3` app is, how the site controller, the radio layer, the MQTT network and the network
 services split the work, the protocol subset, the settings, the network messages, failure and isolation behavior,
-the road to multi-site roaming, what is built in this round and what comes later, and how it is tested.
+the road to multi-site roaming, what is built and what isn't, and how it is tested.
 
-Status (2026-11-12): round 1 built and run on simulated air only (two sites over a broker, external MSs through
-`--sim-ext`); never on air. Round 2 under way (section 13): the site in Rust only, then the bench. Branch
-`tier3-trunk`, on main as of 2026-11-12.
+Status: built and on main since 2026-11-16 (PR #9). The site runs in rdofradio on a PlutoSDR (up to four carriers
+out of one SDR; two on air), on a stock duplex MMDVM modem (one carrier, [tier3-hat.md](tier3-hat.md)), on split
+radios (host-tested only) and on simulated air. It has run on air with radios at two sites over the MQTT
+network: registration, calls, short and packet data, power save, roaming between the sites and the other services in section 13. A site can also log in to
+a BrandMeister master (5.11), checked on the real master. Every radio tested runs RadioFoundry's MS engine: no
+standard Tier III radio from another maker has been tried.
 
 Sources: ETSI TS 102 361-1 (air interface), -2 (voice), -4 (trunking, V1.12.1). Clause numbers below are 361-4's
 unless marked. Clean room: the ETSI text and our own MIT code only. MS authentication (6.4.8, 6.4.4.1.5) is built
-(section 3.14, owner's go-ahead 2026-11-12); authentication of the site by the MS (6.4.9.2) and 6.4.10 are not.
+(section 3.14), and the MS authenticating the site for stun, revive and kill (6.4.9.2, 6.4.10; section 3.18); the
+MS authenticating the site anywhere else is not.
 
-## 1. Goals and the line for this round
+## 1. Goals and scope
 
-The gateway becomes a standard Tier III trunked station (TS): a control channel (TSCC), payload channels, random
-access, registration, group and individual calls. Standard third-party Tier III radios and, later, RadioFoundry
-radios (the MS side) use it. Sites link over the MQTT network (mqtt-net), the same network Tier II repeaters and
-hotspots use; HBlink is not used.
+The gateway is a standard Tier III trunked station (TS): a control channel (TSCC), payload channels, random
+access, registration, group and individual calls. It is meant for standard Tier III radios; RadioFoundry radios
+with its MS engine (the MS side) use it today. Sites link over the MQTT network (mqtt-net), the same network Tier II
+repeaters and hotspots use; HBlink is not used.
 
 Principles:
 
@@ -29,7 +33,7 @@ Principles:
 - **Ready for more.** Multi-site roaming, a standby controller, more carriers and more services fit the structure
   without a rewrite (section 12).
 
-### 1.1 Built in this round
+### 1.1 Built
 
 | Area | Built |
 |---|---|
@@ -41,7 +45,7 @@ Principles:
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b); supplementary user data for this and group calls at the site (3.21) |
 | Full-duplex individual voice | Service_Kind 1010b (6.6.9): radio check, a whole carrier in offset timing, a PV_GRANT_DX to each party, each party's inbound repeated on the other's slot; local calls; a setting, off by default (section 3.13) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
-| Authentication | MS authentication (6.4.8): a challenge at registration (6.4.4.1.5) for MSs with a key, or every MS; an authentication poll on command; the 6.4.8 algorithm with the PSN; keys from `cfg/ms` (section 3.14). The MS authenticating the site isn't built |
+| Authentication | MS authentication (6.4.8): a challenge at registration (6.4.4.1.5) for MSs with a key, or every MS; an authentication poll on command; the 6.4.8 algorithm with the PSN; keys from `cfg/ms` (section 3.14). The MS authenticating the site only for stun, revive and kill (3.18) |
 | Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9). The emergency alarm and its cancel (status 126 and 124, 6.6.6.3) through status delivery |
 | Status and the emergency alarm | The Status Transport Service (6.6.6.1, 6.6.6.2) delivered as short data (section 3.15): to an MS (C_AHOY, its C_ACKU or C_NACKU mirrored), a talkgroup or the TSCC, stored while the called MS is busy, polling; the emergency alarm and its cancel (6.6.6.3) under the MS's emergency provisioning; an `activity` `status` event (section 3.10) |
 | Mass re-registration | MassReg (6.4.5): all MSs or one, on command (`mass_reg`) or at start, repeated inside its Reg_Window (section 3.11) |
@@ -50,7 +54,7 @@ Principles:
 | Short data | UDT short data on the TSCC both ways (C_UDTHD/C_UDTHU, 1-4 rate 1/2 blocks, up to 46 octets), stored and forwarded MS to MS, MS to talkgroup, MS to site and site to MS; status messages, status polling and UDT short data polling; across sites in mqtt-net's `sdata` item, UDT polls included (3.15, 5.9) |
 | Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data at rate 1/2, 3/4 and 1 (the MS simulator's selective retry: SACK, C_RDATA, F = 0 resends), data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI, with the IP address upload to IPI: 6.6.3.2.4) and the gateway's replies down (3.16); across sites over mqtt-net to an MS registered at another site (the check there through the setup) and to the sites that carry a `wide_tg` talkgroup, a whole message at a time, and the gateway's replies to an MS at another site (5.10) |
 | Talkgroup lists | Registration with a talkgroup subscription/attachment list (C_AHOY from TATTSI, the Address Format upload, one Response_Info bit per talkgroup); DGNA from an MS (C_AHOY from DGNAI, C_DGNAHU then C_DGNAHD) or from the site, both modes; the site carries the talkgroups either list holds (3.17) |
-| Supplementary services | Stun and revive from the site (C_AHOY from STUNI; a stunned MS gets no user services), with or without the MS authenticating the TSCC (C_ACKVIT, C_ACKD Authentication_Response); kill (from KILLI, always authenticated); the Ambient Listening Service between MSs at the site (a setting); call diversion of voice, packet data, short data and status to an MS or a talkgroup, set, cleared and cancelled by the recipient, the caller told the diverted address (3.18) |
+| Supplementary services | Stun and revive from the site (C_AHOY from STUNI; a stunned MS gets no user services), with or without the MS authenticating the TSCC (C_ACKVIT, C_ACKD Authentication_Response); kill (from KILLI, always authenticated); the Ambient Listening Service between MSs at the site (a setting); call diversion of voice, packet data, short data and status to an MS or a talkgroup, set, cleared and canceled by the recipient, the caller told the diverted address (3.18) |
 | Transmit interrupt | A listener's payload interrupt of a group or individual call (status 125), the ALS caller's end of the call (status 123) and the call timer de-key (6.4.14.3.2-6.4.14.3.4): C_ACKD or C_NACKD from TSI, the RC cease command to the talker, then P_PROTECT(EN_PTT_ONE_MS) to the interrupter or P_CLEAR; a setting, off by default (section 3.20) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
 | Network | Wide-area group calls both ways; individual calls across sites with an availability check over the network; Tier II to Tier III and back; registration records; site description; provisioning from the manager, cached at the site |
@@ -103,7 +107,7 @@ rdofradio uses one chain, the simplest; two chains would keep each carrier on it
 | Manager | Python, network services | The provisioning source of truth: network identity, sites, talkgroups, radios, permissions, timers. Publishes retained `cfg` topics; sends commands; serves the dashboard and a small REST API |
 | Dashboard | HTML + JS served by the manager | Nodes, sites and their channels live, registrations, calls, last heard, router counters, provisioning editor |
 
-Why Rust for the controller: the owner's choice for new logic in RFG; the controller is pure state machines over
+Why Rust for the controller: new logic in RFG is Rust; the controller is pure state machines over
 fixed tables, which `no_std` Rust does well, and the same crate holds the MS simulator so the PDU codec exists once.
 The radio layer is Rust too; the FEC, the voice regeneration and the split code it drives stay C, and it calls them.
 
@@ -121,7 +125,7 @@ the Rust has no C dependencies and its tests run with `cargo test`.
 | DMRLA / SYS_AREA | Setting `area_bits` (default: all SITE bits, so every site is its own registration area) |
 | Logical channel numbers | Each carrier's `chan` (1..4094) in the settings; grants use single-block CSBKs with that number. LCN 0 = TS1, 1 = TS2 |
 | Channel plan | One plan for the network: each logical number names one frequency pair at every site. The MS must know it: programmed in the radio, or learned from the C_BCAST Chan_Freq broadcasts (MBC + BC_AP with absolute Tx/Rx per channel), sent every `chan_freq_s` (default 10 s) for each of the site's carriers and each neighbor's TSCC channel (section 3.11) |
-| Colour code | One CC for the site (strategy (c), 6.2.1.3: payload channels use the TSCC's CC). Inbound payload PDUs with another CC are dropped |
+| Color code | One CC for the site (strategy (c), 6.2.1.3: payload channels use the TSCC's CC). Inbound payload PDUs with another CC are dropped |
 | Timing | Aligned TSCC (Offset 0). Site Timeslot Synchronization 0: carrier B's split radio is aligned only to 1-2 ms, so payload channels send idles for 4 CACH before the MS's first sync opportunity (6.6.1.6.2.2) |
 | Version | 100b (1.11.1, the latest code; V1.12.1 has none of its own) |
 | Active_Connection | 1 while the backbone (mqtt-net) is connected, else 0 |
@@ -327,7 +331,7 @@ clears it:
    channel stays held, sending P_CLEAR, until its inbound has been quiet for 1 s (at most 60 s): 6.4.14.3.1
    connects the emergency call there only "following the cessation of inbound PDUs". While one is held, another
    call may be pre-empted for the emergency.
-4. When nothing waits any more (the emergency got another channel, or was cancelled), the pre-emption stops and the
+4. When nothing waits any more (the emergency got another channel, or was canceled), the pre-emption stops and the
    call goes on.
 
 With pre-emption on, an emergency request is queued even when the queue is full.
@@ -401,13 +405,13 @@ site and the priority of the adjacent site to be sampled", values per table 6.81
 Adjacent_Site; 6.7.1.7 doesn't describe them, so the site gives them the same meaning. Confirmed: the sending site's
 `broadcast.priority`; adjacent: the neighbor's, from its `info` (`trunk.priority`, 0 when not given). 6.7.1.3: "a TS
 will either radiate all Vote Now Advice broadcasts with preference priorities or it shall radiate all [...] with no
-preference priority": give every site of a network 1-7, or leave all at 0. Example, pluto-t3 (site 1, chan 1 TSCC at
-461.4625 / 461.0875, `priority` 0) and hat-t3 (site 2, chan 3 TSCC at 461.2875 / 461.1375, `priority` 3):
+preference priority": give every site of a network 1-7, or leave all at 0. Example, site 1 (chan 1 TSCC at
+438.75 / 438.25, `priority` 0) and site 2 (chan 3 TSCC at 438.85 / 438.35, `priority` 3):
 
 | Sent by | Chan_Freq (CH_ADJ: MS TX / RX MHz) | Adjacent_Site and Vote_Now: syscode MSBs, confirmed, adjacent, CH |
 |---|---|---|
-| pluto-t3 | 1: 461.0875 / 461.4625; 2: 461.2375 / 461.3375; 3: 461.1375 / 461.2875 | hat-t3's, 0, 3, 3 |
-| hat-t3 | 3: 461.1375 / 461.2875; 1: 461.0875 / 461.4625 | pluto-t3's, 3, 0, 1 |
+| Site 1 | 1: 438.25 / 438.75; 2: 438.30 / 438.80; 3: 438.35 / 438.85 | site 2's, 0, 3, 3 |
+| Site 2 | 3: 438.35 / 438.85; 1: 438.25 / 438.75 | site 1's, 3, 0, 1 |
 
 VOTE_BLK (annex A.2: "Number of TDMA frames that the TSCC withdraws random access activity after a Vote Now
 Advice", 2 to 10): `broadcast.vote_blk`, default 6. A TDMA frame is 60 ms, two slots, and the TSCC has one slot of
@@ -700,7 +704,7 @@ SUPED_SV, HI_RATE, SIMI, priority):
    answer; C_NACKU is mirrored; no answer, MSaway.
 3. A channel: PD_GRANT (individual) or TD_GRANT (talkgroup), opcodes 51/52, or 55/56 when SIMI asked for a
    multi-item call (7.1.1.1.1.4, 7.1.1.1.1.5), sent twice like the voice grants; HI_RATE is always 0 (single slot:
-   dual-slot data is not planned, 13.3; a HI_RATE request gets a single-slot grant). None free:
+   dual-slot data is not planned, 13.2; a HI_RATE request gets a single-slot grant). None free:
    C_QACKD(Queued_for_Resource) every 4 s; queued data calls take the channels queued voice leaves (voice first),
    `queue_s` at most, then SYSbusy. A channel already open between the same parties is granted again.
 4. On the channel (361-1 9.2, 361-3): the site repeats every data header and block (data types 6, 7, 8, 10),
@@ -772,7 +776,7 @@ Choices where 361-4 leaves them open: the TS polls MSs on a data channel (P_AHOY
 when asked (`radio_check`, 3.15), and doesn't share a data channel between calls; supplementary data (SUPED_SV) is
 abandoned (6.6.3.2.2 a); a new data call to an MS on a data channel waits as busy rather than joining it.
 
-Not built: multi-part calls through PSTNI, PABXI, LINEI and DISPATI (dialled digits), IPv6 addresses (here and in IP
+Not built: multi-part calls through PSTNI, PABXI, LINEI and DISPATI (dialed digits), IPv6 addresses (here and in IP
 connection advice, 3.4), supplementary data, dual-slot data, the P_AHOY radio check and selective clear on a data
 channel.
 
@@ -958,14 +962,14 @@ as a hotspot modem, gets a second call at once.
   radios); a standard MS follows grants, not a
   voice LC heard on its TSCC's slot. So a group grant that will lend the slot waits for the sleeping members' wake
   frame like any other (section 3.11, `power_save_group_hold_s`; C_WACKD to the caller meanwhile), and the grant
-  goes out twice. RadioFoundry's MS engine does the same (no joining on the voice LC; rf-t3 31f7eaa0).
+  goes out twice. RadioFoundry's MS engine does the same (no joining on the voice LC; RadioFoundry 31f7eaa0).
 - Late entry on the lent slot (`services.composite_late_entry`, off by default): while the slot is lent and its
   call hangs (no talker), the Late_Entry grant repeats that fall due (`grant_every_s`, per call) go on the slot as
   P_GRANTs, the TV_GRANT's format with Late_Entry 1: the other slot's call's and its own (6.6.2.5.2: "The TS may
   announce a new call on a payload channel using a P_GRANT"; manufacturer specific). An MS that lost the control
   channel waits on this slot (5.3.2), so it can follow one into a call it missed the start of. MSs in the lent
   call ignore them unless they're idle. P_PROTECT and a presence check go first. Other makers' radios most likely
-  ignore a P_GRANT on a payload channel; RadioFoundry's MS engine follows one when idle (rf-t3; on air 2026-11-15).
+  ignore a P_GRANT on a payload channel; RadioFoundry's MS engine follows one when idle (on air 2026-11-15).
   Only an MS already camped waits on the slot: one switched on meanwhile camps on a C_ALOHA, so once the TSCC is
   back. The short LC stays Type 1 through the slot's P_CLEARs (`clear_repeats`), so an MS sees one up to ~0.4 s
   after the first P_CLEAR. Test:
@@ -1627,8 +1631,8 @@ Not built: packet data and short data through the master; ALS; a radio's late en
 already keyed. Tests: `host-tests/e2e_t3_bm.sh` (two sites on fakebm; the rules keep TG 2 and 9 off it),
 `e2e_t3_bm_mqtt.sh` (both networks), `e2e_t3_hat_bm.sh` (the duplex hotspot example).
 
-**On the real master (2026-11-20, master 3102, a hotspot login with no static talkgroups, one simulated radio on the
-owner's ID, no RF).** The header-and-terminator key-up activates a dynamic talkgroup: TG 91's traffic came down
+**On the real master (2026-11-20, master 3102, a hotspot login with no static talkgroups, one simulated radio on a
+real radio ID, no RF).** The header-and-terminator key-up activates a dynamic talkgroup: TG 91's traffic came down
 within seconds, and the device API listed it. TG 4000 on the slot dropped it; a key-up 1 s later on the same slot
 activated the next talkgroup (TG 3100). The API's subscription list runs 50-70 s behind the master. Not checked
 there: a private call routed by the TG 9 announcement.
@@ -1676,7 +1680,7 @@ there: a private call routed by the TG 9 announcement.
 
 ## 7. The road to roaming (multi-site)
 
-Built this round: everything a second site needs, because each record, topic and message is already global.
+Built: everything a second site needs, because each record, topic and message is already global.
 
 | Step | What 361-4 provides | Where it lives |
 |---|---|---|
@@ -1915,12 +1919,12 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   radio would, and what they send goes to the site as if heard on carrier 1's inbound (one a slot; no RF). A real radio
   then has partners on a one-radio bench: it follows their group calls, takes their individual calls (availability
   check included) and calls them. With mqtt-net they also take commands on `ROOT/node/NODE/air-ms`, a script line
-  without its time (`1000001 private 3105738 5000`, `1000001 group 1 3000`, `1000002 register 1`, `1000001 status
-  3105738 5`, `1000001 gstatus 1 5`, `1000001 sdm 3105738 hello`, `1000002 gsdm 1 hello all`: a status 0-127, short
-  data as ISO 8-bit text up to 46 characters; `1000001 data 3105738 hello`, `cdata` (confirmed), `1000001 gdata 1
+  without its time (`1000001 private 1000003 5000`, `1000001 group 1 3000`, `1000002 register 1`, `1000001 status
+  1000003 5`, `1000001 gstatus 1 5`, `1000001 sdm 1000003 hello`, `1000002 gsdm 1 hello all`: a status 0-127, short
+  data as ISO 8-bit text up to 46 characters; `1000001 data 1000003 hello`, `cdata` (confirmed), `1000001 gdata 1
   hello all`: a packet data call whose one message is a text message (361-3 5.7.1: UTF-16BE, up to 64 characters,
   or `*N` for N generated ones, up to 746: one 1520-octet datagram; the receiving MS logs the first 80 and whether
-  all of it is the pattern; `1000001 cdata 16776899 @192.168.2.10 ping` sends to that address, a host through the
+  all of it is the pattern; `1000001 cdata 16776899 @192.0.2.10 ping` sends to that address, a host through the
   site's IP gateway, in place of the ID's; `1000001 missack 1`: it doesn't hear the next ACK to its confirmed data,
   and sends the message again)
   in a UDP/IPv4 datagram from port 5016 to 5016, 12.x.y.z the MS's address (its ID in the low 24 bits) and 225.x.y.z
@@ -1980,7 +1984,7 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   `rdof_sdrmodem_tests` (the sum within full scale, each carrier 6 dB under one alone, an inbound burst on the same k
   under either modem). An RF inbound burst on carrier B's `in` is checked through that k mapping, not end to end (the
   air MSs' inbound to carrier 2 is).
-- Every carrier on a split TX half (the owner's split transmitter setup: two RadioFoundry radios sending the two
+- Every carrier on a split TX half (a split transmitter setup: two RadioFoundry radios sending the two
   outs, the SDR hearing both ins): the TSCC's out on a radio in the settings makes every carrier's a radio
   (`good-tier3-splits.json`). rdofradio brings each half up on its port as carrier B's above, refuses the TSCC's
   half unless its INFO has `RDOF_OPS_CACH` (the CACH with each `TX_SCHED`: the AT and short LC slot by slot), and
@@ -1993,7 +1997,7 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   simulated half, `host-tests/fake_radio.h`, on a socket pair): two carriers on simulated halves, four air MSs
   registering through carrier 1's half and a call on each carrier, every slot of carrier 1 scheduled with its CACH,
   the SDR's modem sending nothing.
-- Every carrier on two radios, no SDR (the owner's split transmitter and split receiver setup): the TSCC's `in` on a
+- Every carrier on two radios, no SDR (a split transmitter and split receiver setup): the TSCC's `in` on a
   radio makes every carrier's `in` on its own radio (`good-tier3-radios.json`). rdofradio runs the site on the host's
   monotonic clock (`rdofradio_t3_radios`: no receiver, no `--file`), each carrier's two ports with a reader thread
   each, the RX half's bursts placed as above. `rdofradio_e2e_t3_radios`: one carrier on a simulated TX half and a
@@ -2078,7 +2082,7 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss, the radio check and selective clear on a voice payload channel (an MS, a talkgroup's colliding answers); short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS, the application's poll), the site's own sends (a UDT poll from SDMI too), the unsolicited radio check (an MS, a talkgroup, no answer), a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results, a multi-item call (granted single-item at the far site), an ALS call across sites (the setup's flag, table 6.46 there, refusals) and its termination by SD_INTR; talkgroup lists (`t3tgtests.rs`): registration with a list (the
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss, the radio check and selective clear on a voice payload channel (an MS, a talkgroup's colliding answers); short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS, the application's poll), the site's own sends (a UDT poll from SDMI too), the unsolicited radio check (an MS, a talkgroup, no answer), a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and canceled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results, a multi-item call (granted single-item at the far site), an ALS call across sites (the setup's flag, table 6.46 there, refusals) and its termination by SD_INTR; talkgroup lists (`t3tgtests.rs`): registration with a list (the
 C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
 subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
 talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS
@@ -2099,133 +2103,45 @@ refusals (off, PSTNI, itself, a talkgroup not allowed), a UDT poll's Div_Cause_F
 | Settings | the `tier3` app: good and bad files, schema | C host tests, `test_schema.js` |
 | Network | `setup` item vectors, Tier II auto-answer, records, `cfg` parsing and precedence, cache | C host tests (`rdof_mqttnet_tests`), Python tests in the network services |
 | System | Two `rdofradio --sim-air` sites + router + manager over mosquitto: registration, local and wide-area group calls, a private call across sites, a move from site to site, link loss and recovery | network services' `tests/test_e2e_t3_sim.py` (skipped without mosquitto or rdofradio); in-process: `rdof_t3unit_tests` |
-| Bench | The Pluto sends a TSCC on the bench (cabled), our receiver decodes it (C_SYS_Parms counter, Aloha, broadcast timing, AT), the bench's decoder confirms the CSBK checks; then a registration and calls from a Tier III radio | owner's go-ahead, a licensed frequency, lowest power |
+| On air | The SDR site's TSCC decoded by a bench receiver (C_SYS_Parms counter, Aloha, broadcast timing, AT, every CRC); then registration, calls and the services from radios at one and two sites (section 13) | a licensed frequency, low power |
 
-## 13. Work order
+## 13. Support status
 
-### 13.1 Round 1 (2026-11-05 to 11-06): built
+### 13.1 History
 
-This document; the mqtt-net additions; the `tier3` app in config-v3.md. Rust: the PDU codec, controller and MS
-simulator with cargo tests. C: the radio layer, settings, Tier III unit, simulated air, the split carrier, rdofradio's
-site, `--sim-air` and `--sim-ext`. Network services: library, router, manager, dashboard, the two-site system test.
-Docs. Not run on a device.
+Built from 2026-11-05 on simulated air (two sites over a broker, external MSs through `--sim-ext`). On 2026-11-12
+the site became Rust only: `t3rf`, `t3cfg`, `t3unit`, `t3sim` and `t3split` moved from C to `rust/src` (cargo
+feature `tier3`); rdofradio's device, MQTT and socket glue (`rdofradio_t3.c`, `rdofradio_simext.c`) stays C behind
+the C headers, and a C-modules build (`RDOF_RUST` off) has no Tier III site. The PlutoSDR bundle carries rdofradio
+xz-compressed; a program too big for the flash runs from the SD card's RDOF partition.
 
-### 13.2 Round 2 (from 2026-11-12)
+First on air on 2026-11-12: the SDR site's TSCC, decoded by a bench receiver; after one fix, 12 minutes and 24,519
+bursts with no gap and every FEC and CRC good, never more than two TSCC blocks between Alohas. Radios with RadioFoundry's MS engine followed from 2026-11-13,
+then a second site on a stock duplex modem (tier3-hat.md), roaming between the two, and the services in the tables
+below, through 2026-11-15. Merged to main on 2026-11-16 (PR #9). The BrandMeister login (5.11) was checked on the
+real master on 2026-11-20. Git has the commit-by-commit history.
 
-The owner's direction: Rust is the code priority, and the Tier III site is Rust only. Its name is Tier III: the app
-type `tier3` (was `trunk`), the build option `RDOF_TIER3`, the modules `t3*`.
-
-| Step | What | Done when |
-|---|---|---|
-| 1 | The branch on main (merged 2026-11-12) and the Tier III names | host tests pass (done) |
-| 2 | Rust only: `t3rf`, `t3cfg`, `t3unit`, `t3sim`, `t3split` ported from C to rust/src (cargo feature `tier3` = `legacy` + `t3`, in rdof_common's one Rust library); the C files removed; the C headers stay the API for rdofradio, whose device, MQTT and socket glue (`rdofradio_t3.c`, `rdofradio_simext.c`) stays C with the rest of that program. A C-modules build (`RDOF_RUST` off) has no Tier III site | done 2026-11-12: host tests (74, and 68 with `RDOF_RUST` off), the cargo tests, the two-site system test |
-| 3 | After the port: the modules call each other by Rust path, not through their C API; one copy of each mirror | done 2026-11-12, as step 2 |
-| 4 | Carrier timing: carrier A's slots followed the SDR's sample clock and carrier B's the host's, with the offset taken once, so they drifted apart by the SDR's clock error (20 ppm: one slot in 25 minutes). Now carrier A sits on the host's slot grid too, through the stream's sample clock timed against the host's (9.4) | done on the host: an SDR 20 ppm fast for 3 hours stays within 69 us, 2 us of drift (`rdof_radio_utc_tests`); on a file device the site keys on the grid. On the bench: carrier B's bursts stay on carrier A's grid |
-| 5 | The Pluto bundle with `tier3` (tools/pluto/build.sh): rdofradio.gz still fits the settings flash's 896 KB with the controller in it | done 2026-11-12: gzip gave 746 KB, too big; the bundle now carries rdofradio.xz (628 KB) |
-| 6 | Bench, step 1 (owner's go, a bench TX frequency with a lease, cabled or lowest power): the Pluto runs a one-carrier site (TSCC on TS1, a payload channel on TS2) and a bench receiver checks the TSCC: C_SYS_Parms and its counter, C_ALOHA at least every 4th TSCC slot, the broadcasts' cadence, CRCs, the CACH (TC, AT) | an hour of TSCC decoded with no bad block ; first run 2026-11-12: 30 s from a W12, 997 bursts, every CRC good, an Aloha at least every 4th TSCC slot. The run found the grid moved when netclock stepped the clock after key-up (fixed: carrier 1 keys once the clock settles). Second run, the fixed image: 12 min, 24,519 bursts, no gap, every FEC and CRC good (12,113 CSBKs, 73 MBCs: header residue AAAA, last block 0000), never more than two TSCC blocks between Alohas, the grid within 3 ms. Then simulated MSs (`--air-ms 2`) beside the carrier: both registered, and a group call and an individual call (with its availability check) were granted and decoded on TS2 from the air, header to terminator. The capture showed their voice had no embedded LC (fixed) |
-| 7 | Bench, step 2: an MS against the site. In order of reach: a standard Tier III radio, if one is to hand (registration, a group call, a private call with the availability check); RadioFoundry's MS engine once it exists (handoff notes section 2) | registration accepted, a group call heard on the payload channel ; done 2026-11-13 with a commercial portable running RadioFoundry's MS engine (1 W, the Pluto site, simulated MSs beside it with `--air-ms 2`), each checked from both ends (the radio's log, a W12 decoding the outbound and at times the inbound): registration, with one talkgroup and with a talkgroup list (3.17; one talkgroup refused by `tg`: C_ACKD 65h, Response_Info 1101111b, which was wrong: the ADRNULL positions are 0, 1101000b, fixed since); group and private calls both ways, the radio following the grant, playing 5 s of voice and returning (the simulated voice had to vary frame to frame, section 11); a group call to the refused talkgroup refused (2Fh); status to an MS and to a talkgroup and polls both ways (3.10, 3.15); UDT short data both ways, to an MS and to a talkgroup, the blocks byte for byte (the run found the site's own padding wrong for character formats: fixed, annex B). Found on the way: a returned radio went back to the channel on a Late_Entry grant repeat in hang time; repeats in the hang were stopped for a while; the likely cause is the radio leaving early on the idle-filled hang, and they're back (3.2) |
-| 8 | Bench, step 3: carrier B on a split radio's TX half (RadioFoundry's split protocol), two payload slots on it | a call granted on carrier B heard there |
-| 8a | Bench, two sites: the Pluto's two-carrier site (site 1) and a one-carrier site on a stock duplex MMDVM modem (site 2, tier3-hat.md), on one mqtt-net; Vote_Now every 30 s, VOTE_BLK 6, site priorities (3.11) | done 2026-11-13 with a commercial portable running RadioFoundry's MS engine (50 mW). Each site's Adjacent_Site, Vote_Now and Chan_Freq (its own carriers and the neighbor's TSCC) decoded from the air on the modem site and taken by the radio from both. Equal priorities (2/2): the radio moved to the site 12 dB stronger and stayed. Site 1 at 4 naming site 2 at 2: the radio sampled site 2 on the first Vote_Now (-59 dBm against -50), moved on priority, registered there (area 2) and stayed through four more votes. A site's priority change reached its neighbor's broadcasts over mqtt-net with no restart. The radio's own fixes on the way: its allowed-site list, and re-registration on a move with DMRLA unset |
-| 8b | Bench: the composite TSCC (3.19) on the one-carrier modem site, the site's air MSs, a bench receiver on its outbound | done 2026-11-13. An individual call held TS2; a group call then got TV_GRANT on the TSCC (twice) and ran on TS1, both at once on one carrier. The CACH sent P_SYS_Parms with Payload Channel Type 1 from the grant to the P_CLEAR after the hang, then C_SYS_Parms; C_ALOHA came back. The first run aired the TS1 call without its voice header (heard by the TSCC during the grant slots); fixed (3.19, `rev` 2) and seen on air in the next run |
-| 8c | Bench: transmit interrupt (3.20) on the one-carrier modem site, the site's air MSs, a bench receiver on its outbound | done 2026-11-13. A talker on TS2, an MS in the call sent status 125 to the talkgroup: the RC cease command took one TSCC slot, C_ACKD followed, the talker ended its superframe with a terminator 0.3 s later, P_PROTECT(EN_PTT_ONE_MS) went out on TS2 and the interrupter's voice header followed 120 ms after it; then its voice, the hang and P_CLEAR. The first run found rdofradio's air MSs didn't read the RC (fixed); the site gave up after 3 s and kept the call, as 6.4.15.1 asks |
-| 8d | Bench: packet data across sites (5.10), the SDR site (site 1) and the modem site (site 2) on one mqtt-net, air MSs on both | done 2026-11-13. Confirmed individual data, site 2 to site 1: the far site checked the MS, granted a payload channel, delivered and the caller's call ended done; then site 1 to site 2 the same way. Unconfirmed group data, site 2 to talkgroup 1: every air MS on both sites got the text. The first try failed with MSaway (0x25): no private-call router ran on the broker, so the request on `pc/{dst}/{node}` reached nobody. With the router, the network services' flags fix (bit 2 kept) and a voice individual call checked first, all passed |
-| 8e | Bench: the real radio (a commercial portable with RadioFoundry's MS engine, 50 mW) against both sites, the bench offset image merged in (1e2549fe) | done 2026-11-13. Site 1: registration by syscode, by talkgroup and with a list, group and individual calls, status, poll and short data to an air MS (12 of 12); a broadcast and an all-call cleared right after the terminator (radio back on the TSCC 0.5 and 0.7 s after release), a group call after its 3 s hang; IP text messages (UDP 5016) unconfirmed and confirmed. Site 2: the same calls to an air MS on site 1 through the private-call router, and the text messages across sites. Found: UDT short data crossed sites with its pad octets (24 characters arrived as 34 octets), fixed in 12379fa8. Open: on site 2 the radio sends each registration twice although the site answers the first within 180 ms; the radio decodes few of the stock modem's CSBKs (1.4 a second against 8 on site 1) with no CRC errors |
-| 8f | Bench: power save (6.4.7) with the real radio (50 mW, PowerSave_RQ 2) on site 1, an air MS calling it | done 2026-11-14 UTC. Registered with offset 2; the radio's receiver was off 55-60% of the time with no hunts (after two fixes on its side). Everything to the sleeping radio arrived within one 1.92 s cycle: a status in 1.50 s, UDT short data in 1.51 s, a UDT poll's C_AHOY in 1.33 s (0.26 s with power save off). The radio answered each poll: C_NACKU MS_Not_Supported with no reply set, mirrored to the caller; with one, its C_UDTHU, and the air MS got "rfoundry 3101276 aslee" (22 octets: two UDTs asked). The caller repeated its C_RAND while the C_AHOY waited for the wake frame; the site now sends it C_WACKD |
-| 8g | Bench: IP connection advice (6.4.11) with the real radio (50 mW) on site 1 | done 2026-11-14 UTC. Registered with IP_Inform, PowerSave_RQ 2: C_AHOY from IPI (Service_Kind 0100b) 0.23 s after the C_RAND, the radio's C_UDTHU (12.47.82.92) at 0.31 s, C_ACKD 62h from IPI at 0.55 s, offset 2 granted; the site logged the address added. Again from a fresh start with no power save: 0.40 s and 0.64 s; the same address, held by the same MS, added again |
-| 8h | Bench: DGNA, call diversion, ALS and the IP address upload with the real radio (50 mW) on site 1 | done 2026-11-14 UTC. DGNA of TGs 11 and 12 from the site: the radio answered MS_Accepted (0x44) and followed air MS calls to both. Diversion to an air MS: the upload taken, a call to the radio diverted, the clear taken, then the call put through (C_ACKU 0x44). ALS from an air MS: C_ACKU 0x60, the radio sent for its 30 s and ended with P_MAINT. The upload before data to IPI: the address taken and PD_GRANT, but the datagram never reached the IP gateway: the site didn't start its `ipgw` app (fixed in 69483bd1). Rerun at 05:59: the datagram reached a host (a UDP text service on a lab machine), whose reply was dropped at the site (fixed after 08a562b6). C_MOVE to channel 2, no TSCC there: the radio moved, hunted in 5 s and camped back on the TSCC, registration kept |
-| 8i | Bench: the dedicated RC on air from the modem site (site 2, composite TSCC), the cease of an ALS call ended from site 1 | done 2026-11-14 21:31 UTC. A capture of the site's outbound (the box's own RTL, demodulated slot by slot): 9 RC bursts on TS1, the TSCC slot, 360 ms apart over the 3 s de-key, each between TS2's voice burst F and the next A; middle bits 2870D04F1F7E, EMB CC 2, PI 1, LCSS 00, RC info 0100b. TS2's voice stopped at the give-up's P_CLEAR. The radio (an MS with RadioFoundry's engine) didn't cease: its modem doesn't report a dedicated RC; reading it is radio-side work |
-| 8j | Bench: emergency pre-emption (3.9) on site 1 with one payload channel, a radio (an MS with RadioFoundry's engine, 50 mW) as the talker | done 2026-11-14 22:04 UTC. The radio talked to TG 1 on TS2; an air MS listening to it went to the TSCC and asked for an emergency call to TG 2; the site queued it, pre-empted the call (the RC cease in the TSCC's slot), the radio sent its terminator 1.09 s later and the emergency grant went out on TS2 0.2 s after that. The first try found the air MSs ran an emergency call only from the TSCC (fixed). Not run with the composite TSCC: there a waiting emergency takes the TSCC's slot, and once that slot is lent no request reaches the site |
-| 9 | Merge into main | the owner's go |
-
-Built since step 8e, host-tested (the bench steps above note what has run on air):
-
-| Commit | What |
-|---|---|
-| 2644bcf7 | rdofradio: up to four SDR carriers out of one SDR (each at 1/N amplitude) |
-| 7a0f2897, b509d4e6 | The TSCC's carrier and every carrier on a split radio's TX half (the CACH op in TX_SCHED), the SDR receiving only (9.4) |
-| d416216b, 2b660557 | A carrier on two split radios (a TX half and an RX half), no SDR; RX_META's slot number places each inbound burst (9.4) |
-| 71f92762 | A log line for each C_RAND's answer delay |
-| 523ec457 | UDT short data polling (6.6.5) |
-| 5f5a1b39 | Packet data's availability check waits for a sleeping MS's wake frame |
-| 77136033 | The IP address upload for data to IPI (6.6.3.2.4 b 2) |
-| d39ca8d4 | IP connection advice at registration (6.4.11) |
-| d3088e17 | UDT polls across sites (5.9 what 6); C_WACKD to the caller of a poll held for a wake frame; a log line per short data C_AHOY |
-| 6b48f42b | UDT polls from the site's application (C_AHOY from SDMI, 6.6.5.1.5) |
-| fe0e180c | The unsolicited radio check (6.4.12) of an MS or a talkgroup, the `radio_check` command; the MS engine answers it |
-| 53b11591 | The site's application polls an MS at another site |
-| 7e3f4787 | P_AHOY on a voice payload channel: the radio check and the selective clear (`clear_ms`); payload collisions in `t3air` |
-| dc77b752 | The same on a packet data channel (tables 6.51–6.53); `Ms::pd_hold` for a multi-item session that stays up |
-| 0555693a | ALS calls to an MS at another site (`SETUP_F_ALS`), and their termination there (status 123 by SD_INTR) |
-| 4f47a52c | P_ACKU (table 7.4) on the payload inbound: the site took C_ACKU there, so a real radio's answers were dropped |
-| 1c21e8cc | Supplementary user data on voice calls at the site (6.4.13, 3.21) |
-| f530d840 | `setsupp TEXT` for the air MSs, and a log line for what they take |
-| 16a996f7 | The far site grants single-item: its channel closes after the item (5.10) |
-| 2446e12e | The simulated MS uploads in a character format, strips the pad, and counts the same data again on a later call |
-| a0f54be6 | A voice call's supplementary user data to an MS or a wide talkgroup at another site (3.21, 5.9 what 7) |
-| 69483bd1 | A Tier III site starts its `ipgw` app: packet data to IPI reached no gateway before |
-| 85f794f4 | The site logs each MS's C_ACKU and C_NACKU on the TSCC |
-| 2f701fb2 | IP gateway counters for headers, header CRC failures and blocks; a log line for data handed to the site's gateway |
-| 08a562b6 | Supplementary user data on packet data calls, here and across sites (3.21) |
-| 5c1f0770 | The site's reply to an MS that just sent it data: on its open data channel, or after its call (3.16) |
-| d18264e3 | Supplementary user data on UDT short data, SUPLI before SDMI (3.21) |
-| 5455d696 | Supplementary user data on statuses (3.21) |
-| 7a0f0257 | Packet data to IPI with SUPED_VAL set is taken (table 6.50: only Appended_UDT must be 00); logs of the site's own data sends |
-| 29495f9d | A confirmed item's channel held 6 s for the sender's retry; the sim MS sends again on no response |
-| 971e7cb8 | The IP gateway's answers go down: the repeater's gateway no longer starts in a trunked site's place; responses only on the channel they answer, new data through the TSCC after a single item; a channel granted again while its P_CLEARs go out stays open; the site's data waits for the grant's lead; the sim MS takes the site's data from IPI. `rdofradio_e2e_t3_ipgw` |
-| f2bf1728 | Air MS data to a host's address (`@A.B.C.D`); the sim MS takes a poll's answer the same as an earlier one's as a new message (a repeat only within 10 s) |
-| 19df4357 | The IP gateway's failed blocks counted by cause (`rx_block_fec`, `rx_block_crc`); with `-v` the site logs each burst it gives the gateway in hex (on air it showed a radio's rate 3/4 blocks with octets 0-1 wrong) |
-| 54ae8191 | The site's ACK goes at once beside a reply waiting for its MS, and doesn't cut the confirmed item's 6 s hold: a radio that missed it is answered on its retry (`missack` in `rdofradio_e2e_t3_ipgw`) |
-| 991860dd | Rate 3/4 data blocks decoded again from any trellis start state when octets 0-1 fail the CRC-9 (`rdof_trellis34_decode_block`): an HR_C7000 radio's encoder started in state 4 or 7 |
-| d99eab09 | C_WACKD(Wait) in a Vote_Now block for a C_RAND the block would hold to the last frame NWait allows or past it (section 3.11; on air one waited 14 slots and the radio sent again) |
-| 446851f8 | The site's own log lines print without `-v` (the modem site's journal had no C_MOVE line for a move command) |
-| 5ccdea85 | Composite TSCC tests: individual call, confirmed data, emergency, a sleeping member, a network call on the lent slot; the modem e2e with composite on |
-| 5ddec72e | A C_RAND whose group call gets the lent slot logs that, not "no answer queued" |
-| 7d5bee67 | Composite: no lend while a payload channel clears; a queued call takes the slot once the TSCC's MBC is out; the sim MS holds random access while lent; a split half's composite outbound per slot; the split e2e with composite on |
-| a480d169 | Composite: a call opened on the other slot while the TSCC's slot was lent gets its grant when the TSCC is back (an individual or data call's grant was dropped with the stale answers); a C_AHOY owed meanwhile waits with its tries kept (it ran out unsent, MSaway) |
-| 30e8f691 | Full-queue test (Service Function 3, SYSbusy at once, a network call dropped); SITE 0 allowed in the settings and `cfg/node` |
-| eb74f38f | Tests: CSBKs lost on the air (one C_AHOY, C_ACKU, PV_GRANT, C_RAND; all C_AHOYs; both grants; a registration's C_ACKD) |
-| b673280c | Test: a network group call waits `net_queue_s`, then is dropped; a static talkgroup carried with no member |
-| b397a0a6 | Test: no composite lend during a short data transfer |
-| 0009e935 | Test: FOACSU across sites (alerting then answered, refused, busy, no answer) |
-| 5111dc2b | Test: mass re-registration with power save (sleeping MSs at 1:4 and 1:8) |
-| 691e44cf | Test: a standby takeover keeps the MS records (read back from the broker) |
-| 09174469 | Test: an MS roams between two sites (test_t3unit: where/, the old site drops its record, calls follow) |
-| 85f38d67 | Test: the standby setting's ranges and refusals (test_radiocfg) |
-| 24fec1b0 | `rdofradio -v`: each rate 3/4 block's trellis start state, from state 0 and from any start |
-| 0b828326 | The event text is 128 octets (log lines were cut at 63, the composite return's total among them) |
-| d92c72c5 | Test (sdr2): the composite TSCC on the simulated Pluto, its transmit IQ decoded |
-| 36a6c26d | Pluto bundle: a program too big for the flash (this site's, 745 KB xz) on the SD card's RDOF partition, the newer of the two run; install.sh checks the card first |
-| c2d689c2 | Merge main (USB radios on the Pluto's generic usb-serial, the simulated FPGA block) |
-
-State at the break (2026-11-15 02:50 UTC):
-- Both sites up: pluto-t3 (site 1, t3-24fec1b0, one carrier composite, TSCC 461.4625 / 461.0875) and hat-t3 (site 2,
-  t3-5c72bfbf on the Cubie's hat, TSCC 461.2875). The cross-site router runs ad hoc on the Mac.
-- pluto-t3 runs from RAM (`/tmp/rdof/web.xz`): too big for the flash, and the lab Pluto's SD card is a fake that
-  keeps writes past 121 MiB only at the front of each MiB, so install.sh made no RDOF partition. A reboot brings back
-  the flash's older t3-1113a until the image is put back. A genuine card fixes it (the owner's call, 14 item 5).
-- Next: the MD-380's rate 3/4 start state (rf-t3, when the radio is free); the owner's choices in section 14.
+Bugs the air found, all fixed: the grid moved when the host's clock was stepped after key-up (carrier 1 now keys once
+the clock settles); voice with no embedded LC; a talkgroup list's Response_Info with the wrong bits for refused
+talkgroups; the site's padding for character formats in UDT short data, and its pad octets sent across sites; an IP
+gateway not started at a trunked site, and replies to an MS dropped there; air MSs that didn't read the RC; rate 3/4
+blocks from a radio whose trellis encoder doesn't start in state 0 (now decoded from any start state).
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
 - An MBC last block's CRC had the header's mask 0xAAAA; it takes none (361-1 7.4.0, B.3.12). A standard radio would
   have dropped every Chan_Freq broadcast.
-- An MBC could start in the slot before a due C_ALOHA and push it to the fifth slot (this document's 3.2).
+- An MBC could start in the slot before a due C_ALOHA and push it to the fifth slot (3.2).
 - The simulated MS ignored the Aloha's Mask and Service Function (6.2.1.1.1, 6.2.1.1.2), made 6 attempts for an
   emergency request instead of NRand_NE (10), and sent P_MAINT to the called MS instead of TSI (table 7.32).
 - The settings refused SITE 0, which table 6.5 counts (a Small network's 5-bit SITE gives 32 sites). Nothing used
-  0 as "no site" (a peer's info is marked by a nonzero syscode, and PAR is never 0), so 0 is now allowed. (The
-  settings file and `cfg/node` still refused it until 30e8f691, 2026-11-15; the standard site in the off-air
-  captures sends SITE 0.)
+  0 as "no site" (a peer's info is marked by a nonzero syscode, and PAR is never 0), so 0 is allowed. The standard
+  site in the off-air captures sends SITE 0.
 
-Out of round 2, unchanged from section 1.2: more than two carriers on one device (four run in the simulator,
-section 9). MS authentication was added on 2026-11-12 (section 3.14), transmit interrupt and packet data across
-sites on 2026-11-13 (sections 3.20, 5.10), UDT polls across sites and the standby controller on 2026-11-14 (5.9,
-6.2).
-
-### 13.3 Support status (2026-11-14)
+### 13.2 Support tables (2026-11-15)
 
 "Sim": the host tests (cargo, the ETSI conformance suite, rdofradio's end-to-end runs). "On air": tested on air
-against two commercial portables running RadioFoundry's MS engine, and the air MSs (the site's simulated MSs, sent
+against radios running RadioFoundry's MS engine (commercial portables, a DM-1701, a DM-1801 Pro), and the air MSs (the site's simulated MSs, sent
 on air by the SDR). No standard Tier III radio from another maker has been tried: both ends follow our reading of
 the standard, so none of this shows a commercial Tier III radio works.
 
@@ -2242,20 +2158,20 @@ One site (the SDR site, two carriers):
 | Emergency alarm, emergency call, cancel | yes | yes |
 | Emergency pre-emption | yes | yes: the second radio (50 mW) talking to TG 1 on site 1 run with one payload channel (no composite TSCC), an air MS's emergency call to TG 2 made from inside that call; the radio ceased on the RC 1.09 s after the request was queued, and the emergency call had TS2 0.2 s later (2026-11-14 22:04 UTC) |
 | Status, status polls, UDT short data | yes | yes |
-| UDT short data polling | yes | yes: the radio polling an air MS, and an air MS polling the radio, asleep or not (13.2 step 8f) |
+| UDT short data polling | yes | yes: the radio polling an air MS, and an air MS polling the radio, asleep or not (2026-11-14) |
 | Packet data at rate 1/2, 3/4 and 1, up to 127 blocks | yes | yes: IP text messages, confirmed and unconfirmed; confirmed from a radio (the DM-1701, RadioFoundry's engine) to an air MS at rate 3/4, 1 and 1/2, each taken whole on its first send (2026-11-15 00:17 UTC); rate 3/4 from an HR_C7000 radio to the IP gateway (991860dd). Trellis start state per radio (`rdofradio -v`, 24fec1b0): the DM-1701 (HR_C6000) starts in state 0, all 10 blocks of a confirmed rate 3/4 packet at metric 0 (2026-11-15 02:30 UTC); the HR_C7000 portable in state 4 or 7 (they send the same first point); the MD-380 (HR_C5000) not yet measured. Long messages (127 blocks) host-tested only |
-| IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back down: on the Pluto's site with its air MSs (2026-11-14 13:16 UTC: the ACK on the payload channel, the host's pong on a grant of its own, confirmed and unconfirmed); to a real radio (an HR_C7000 portable, 2026-11-14): unconfirmed at 13:26, confirmed rate 1/2 at 15:30 and 15:46 (the ACK, then the pong). Its rate 3/4 blocks failed the CRC-9 (its trellis encoder doesn't start in state 0; the radio now sends confirmed IP at 1/2, and the site decodes such blocks since 991860dd) |
+| IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (2026-11-14: the C_AHOY from IPI, the radio's address upload and the C_ACKD within 0.64 s); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back down: on the Pluto's site with its air MSs (2026-11-14 13:16 UTC: the ACK on the payload channel, the host's pong on a grant of its own, confirmed and unconfirmed); to a real radio (an HR_C7000 portable, 2026-11-14): unconfirmed at 13:26, confirmed rate 1/2 at 15:30 and 15:46 (the ACK, then the pong). Its rate 3/4 blocks failed the CRC-9 (its trellis encoder doesn't start in state 0; the radio now sends confirmed IP at 1/2, and the site decodes such blocks since 991860dd) |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
-| DGNA, call diversion, ALS | yes | yes (13.2 step 8h) |
-| C_MOVE | yes | to a channel with no TSCC: the radio moved, hunted and came back (2026-11-14); between two sites' TSCCs, both ways (2026-11-14 15:59 UTC, the Pluto's site 1 and the hat's site 2): on site 2 and registered 0.65 s after the command, back on site 1 1.6 s after it (its first try's answer missed by the radio); with no C_MOVE, site 2 withdrawn: the radio's T_Nosig 5.3 s later, then site 1 from its adjacent list, registered on the first try 1.2 s after that (16:52 UTC) |
+| DGNA, call diversion, ALS | yes | yes (2026-11-14): DGNA of two talkgroups from the site, the radio following calls to both; a call to the radio diverted to an air MS, then the diversion cleared; an ALS call from an air MS, the radio sending for its 30 s |
+| C_MOVE | yes | to a channel with no TSCC: the radio moved, hunted and came back (2026-11-14); between two sites' TSCCs, both ways (2026-11-14 15:59 UTC, the SDR site 1 and the modem site 2): on site 2 and registered 0.65 s after the command, back on site 1 1.6 s after it (its first try's answer missed by the radio); with no C_MOVE, site 2 withdrawn: the radio's T_Nosig 5.3 s later, then site 1 from its adjacent list, registered on the first try 1.2 s after that (16:52 UTC) |
 | Kill | yes | no: not run on the one radio (it would take it off DMR) |
 | UDT polls from the site, the radio check (TSCC and payload), the selective clear | yes | the payload radio check and the selective clear, yes |
-| Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a group call, an individual call and a packet data call to a radio whose receiver sleeps (a DM-1801 Pro with RadioFoundry's MS engine, PowerSave_RQ 2, offset 1; 2026-11-15 00:14-00:15 UTC): each request, made just after its frame closed, held to its next frame (540 ms, 1.02 s, 0.90 s), the grant or C_AHOY early in that frame, and each call reached it |
+| Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio, each within one 1.92 s cycle, the radio's receiver off 55-60% of the time (2026-11-14); a group call, an individual call and a packet data call to a radio whose receiver sleeps (a DM-1801 Pro with RadioFoundry's MS engine, PowerSave_RQ 2, offset 1; 2026-11-15 00:14-00:15 UTC): each request, made just after its frame closed, held to its next frame (540 ms, 1.02 s, 0.90 s), the grant or C_AHOY early in that frame, and each call reached it |
 | Full-duplex individual calls | yes (off by default) | no |
 | Supplementary user data on voice calls (3.21) | yes | yes: both ways, to an MS and a talkgroup |
 | Supplementary user data on packet data, UDT short data and statuses (3.21) | yes | yes, across sites (below; 2026-11-14 19:25 and 20:43 UTC) |
 | Transmit interrupt | yes | yes: a second radio (an MS with RadioFoundry's engine, its modem's receive tap read for the dedicated RC) on the modem site, interrupted from site 1 in a TG 1 call; it decoded the RC cease, sent its terminator and stopped 1.2 s after the accept, and the interrupter's call followed on the same channel 0.16 s later (2026-11-14 21:43 UTC) |
-| Composite TSCC | yes (group, individual, data, emergency, network calls, a sleeping member; 3.19) | yes, on the Pluto as one carrier (2026-11-14 18:20 UTC, t3-fa58d1a8): the radio's call on the lent TS1 while TS2 carried another; an air MS's call on TS1 during the radio's on TS2; the idle radio camped through a 9 s lend, no hunt; its access held until the Aloha, then granted TS1 again. Across sites (2026-11-14 19:21 UTC, both sites one-carrier composite, hat-t3 on t3-5c72bfbf): with TS2 busy on both sites (a network TG 2 call), the radio's TG 1 call from site 2 and an air MS's TG 1 call back each took the lent TSCC slot on both sites; 66 and 49 bursts, BER 0, none lost |
+| Composite TSCC | yes (group, individual, data, emergency, network calls, a sleeping member; 3.19) | yes, on the Pluto as one carrier (2026-11-14 18:20 UTC, t3-fa58d1a8): the radio's call on the lent TS1 while TS2 carried another; an air MS's call on TS1 during the radio's on TS2; the idle radio camped through a 9 s lend, no hunt; its access held until the Aloha, then granted TS1 again. Across sites (2026-11-14 19:21 UTC, both sites one-carrier composite): with TS2 busy on both sites (a network TG 2 call), the radio's TG 1 call from site 2 and an air MS's TG 1 call back each took the lent TSCC slot on both sites; 66 and 49 bursts, BER 0, none lost |
 | Composite late entry (`composite_late_entry`, off by default) | yes (3.19) | yes: air MSs (2026-11-14 23:56 UTC, t3-d050bae9 on the Pluto): an air MS switched off through a TG 1 call's grants and switched on while another call held the lent TS1 followed the P_GRANT there in its hang time to TS2, before the TSCC came back. A radio (2026-11-15 00:06 UTC, the DM-1701 with RadioFoundry's MS engine, TGs 1 and 2): in a TG 2 call on TS2 it ignored TG 1's grant for the lent TS1; back on that slot after TG 2 cleared, it followed the P_GRANT for TG 1 (LCN 0, Late_Entry 1) 0.2 s into TG 1's hang, as did an air MS. A radio switched on during a lend camps only when the TSCC is back (it needs a C_ALOHA) and joins on the TSCC's own Late_Entry grant |
 | Three or four SDR carriers | yes | no: the SDR site runs two |
 
@@ -2282,8 +2198,9 @@ Hardware setups:
 | Two split TX halves for the two carriers, the SDR receiving | yes, end to end | no |
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
 | Standby controller (6.2) | yes: two boxes on a local broker through a crash and a hung broker | no |
+| BrandMeister login (5.11) | yes: a fake master, alone and beside mqtt-net | the real master, a simulated radio, no RF (2026-11-20) |
 
-Not built: calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
+Not built: calls through PSTN, PABX or dispatcher gateways (dialed digits); IPv6;
 across sites, duplex calls; talkgroup data from the IP side
 (225.x.y.z) to a talkgroup.
 
@@ -2292,14 +2209,12 @@ and RadioFoundry's MS can't use it: sending on both slots means keying without a
 the AT bits), and an MS that can only answer on one slot gains little from receiving on both. The optional
 availability check before a short data download or poll (3.15).
 
-## 14. Open questions for the owner
+## 14. Open
 
-1. A licensed frequency pair and an OK for the first bench TSCC (cabled), and later on air.
-2. Whether a third-party Tier III radio is available for the interop test, and which.
-3. The network identity to use for tests (MODEL/NET), and whether DMR IDs for sites follow the existing 999xxxx test
-   range.
-4. Whether mqtt-net's keys follow the new name too: info's `trunk` object and a path's `"trunk": true`, status's
-   `trunk` (shared with the network services; unchanged so far).
-5. The lab Pluto's program storage: a genuine SD card (install.sh then makes the RDOF partition), the boot
-   partition's `rdof/` (real storage there, mounted read-only, written only for an update), or a smaller program.
-6. A home for the cross-site router (a lab host, beside the IP host's service), in place of the ad hoc one on the Mac.
+- Interop with a standard Tier III radio from another maker: none tried yet. Every on-air result above is
+  RadioFoundry's site against RadioFoundry's MS engine.
+- mqtt-net's keys still use the old name: `info`'s `trunk` object, a path's `"trunk": true`, `status`'s `trunk`.
+  They are shared with the network services.
+- On the modem site a radio decodes few TSCC blocks and sends each registration twice (13.2).
+- Not on air yet: carrier B on a split radio, the all-split and two-radio sites, three or four SDR carriers, kill,
+  full-duplex calls, the standby controller; the MD-380's rate 3/4 trellis start state.

@@ -2,11 +2,11 @@
 
 Covers: calls between boxes, apps and a private-call router over one MQTT broker, with no master: topics, the binary
 call message, node state and events, arbitration, private-call routing, transports, security, and what phase 1 builds.
-Status: phase 1 built, 2026-11-02 (§1.1): `common/src/mqttnet.c`, run by rdofradio and the board
-(`esp_idf/main/mqttnet_task.c`). Run on the Pluto by rdofradio, 2026-11-05: a full duplex repeater's calls up to the
-network and back out from another node on both slots, speech, every voice burst in order; the board's task is built,
-not yet run on hardware. Today's MQTT calls (`{root}/calls/...`, DMRD packets, [mqtt.md](mqtt.md) §10) stay the
-default; this replaces them later.
+Status: phase 1 built (§1.1): `common/src/mqttnet.c`, run by rdofradio and the board
+(`esp_idf/main/mqttnet_task.c`). Run on a PlutoSDR by rdofradio (2026-11-05): a full duplex repeater's calls up to
+the network and back out from another node on both slots, speech, every voice burst in order. Two Tier III sites
+have run on air over it ([tier3.md](tier3.md)). Today's MQTT calls (`{root}/calls/...`, DMRD packets,
+[mqtt.md](mqtt.md) §10) stay the default; this replaces them later.
 Trunked sites (Tier III, [tier3.md](tier3.md)) use the same calls and topics, plus a call setup item (§9.4),
 registration records (§15), node status (§16) and provisioning from a manager (§17); a Tier II box needs only the
 setup answer (§9.4). The format stays 3: it is a draft until released.
@@ -759,7 +759,7 @@ change (frequencies, devices, carriers), is ignored and reported (in the log, or
 `cfg/node/{node}`, one site: `rev`, `at`, `name`, `site`, `par`, `area_bits`, `neighbors` (site numbers), `tg`,
 `static_tg`, `timers`, `broadcast`, `enabled` (false takes the site off the air: it withdraws its control channel).
 `site`, `par` and `area_bits` go at the document's top level (as the manager writes them) or in `system`. Both
-site-level documents take the same keys as the settings file's `trunk` app ([tier3.md](tier3.md) §4): `system`
+site-level documents take the same keys as the settings file's `tier3` app ([tier3.md](tier3.md) §4): `system`
 (`model`, `net`, `site`, `par`, `area_bits`), `registration` (`open`, `listed`), `ms`, `refuse_unlisted` (`denied`,
 `refused`), `private`, `tg`, `wide_tg`, `static_tg` (ID sets), `require_registration`, `foacsu`, `enabled`,
 `neighbors`, `timers` (names to numbers), `broadcast` (the control channel's broadcast intervals, [tier3.md](tier3.md)

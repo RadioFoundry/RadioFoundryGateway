@@ -206,5 +206,5 @@ release, run-time claims reusing released slots, the JSON and the log text. `com
 
 | Kconfig | Default | Meaning |
 |---|---|---|
-| `CONFIG_RDOF_MEM_MARGIN_KB` | 80 | internal RAM kept free for Wi-Fi, lwIP and what isn't planned |
+| `CONFIG_RDOF_MEM_MARGIN_KB` | 80 (w12: 96) | internal RAM kept free for Wi-Fi, lwIP and what isn't planned |
 | `CONFIG_RDOF_MEM_STRICT` | n | a role over the margin is refused, not started with an error |

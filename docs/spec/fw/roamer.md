@@ -6,7 +6,7 @@ Related: [radio.md](radio.md) (MMDVM protocol, modem, radio types, tuners), [dmr
 
 A roamer is one simplex radio on an MMDVM modem (USB, UART or the board's SDR modem; [radio.md](radio.md)). Between calls it is
 a receiver on its idle channel (or scanning). HBlink4 retunes it per call with DMRT; it answers DMRK and plays the call out
-in plain direct mode (the modem's slot 2). A call heard goes to the master on its frequency's slot (`slot`, 1 by default), the slot an answer comes back on.
+in plain direct mode (the modem's slot 2). A call heard goes to the master on its frequency's slot (`ts`, 1 by default), the slot an answer comes back on.
 
 ## 1. Instances and tasks
 

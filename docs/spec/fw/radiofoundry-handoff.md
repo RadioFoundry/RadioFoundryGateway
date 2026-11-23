@@ -4,9 +4,9 @@ A running list of what RadioFoundry's radio firmware needs to know or change for
 only what isn't already in a spec: requests, choices the gateway made, limits of what the gateway supports now, and
 facts found while building. Add to it as things come up; mark items done when RadioFoundry has them.
 
-Status (2026-11-13): RadioFoundry's MS engine has run against the site on air (tier3.md, phase 7). Section 2.1 is
-the phase 1 scope; the site does more now (tier3.md section 1). Section 2.5 lists the site's changes from the
-2026-11-13 audit that an MS sees.
+Status: RadioFoundry's MS engine has run against the site on air ([tier3.md](tier3.md)). Section 2.1 is the site's
+first scope; it does more now ([tier3.md](tier3.md) 1.1). Section 2.5 lists the site's changes from the 2026-11-13
+audit that an MS sees.
 
 ## 1. The radio as a split duplex transmitter (TX half)
 
@@ -16,7 +16,7 @@ slot-timing.md ("The 0xD6 additions").
 
 ### 1.1 Continuous duty (100 %)
 
-The owner modifies radios for continuous transmission (extra heat sinks, fans, mains power). The key limit should be
+Some users modify radios for continuous transmission (extra heat sinks, fans, mains power). The key limit should be
 a choice per radio, not a fixed cap in the firmware.
 
 - Today: SET_ROLE byte 4 (longest key-up, 10 s units) takes 1-60, so 600 s at most; the default is 180 s, then a 20 s
@@ -25,7 +25,7 @@ a choice per radio, not a fixed cap in the firmware.
   "continuous duty") says the radio accepts it, so the gateway can refuse a setting the radio won't honor instead of
   being clamped silently.
 - Keep: the unkey after 2 s of host silence. It's a safety stop, not a duty limit.
-- Keep: the power cap (byte 2). With continuous duty the owner sets it on purpose; the default 25 % stays.
+- Keep: the power cap (byte 2). With continuous duty the user sets it on purpose; the default 25 % stays.
 - Gateway side: `split.max_key_s` accepts `"none"` (sends 0xFF, needs the bit); numbers stay 0..600.
 
 ### 1.2 Slot clock drift on a long key-up
@@ -103,7 +103,7 @@ halves (`rdof_t3split3_tests`, both ways).
 What the gateway's trunked site does now, so RadioFoundry's MS knows what it will meet. The standard (361-4) is the
 spec for both; this lists only the gateway's choices and limits. The full design is tier3.md.
 
-### 2.1 What the site supports (phase 1)
+### 2.1 What the site supported first
 
 - Dedicated TSCC only: carrier A's TS1 is the control channel, all the time. No composite TSCC, no second TSCC, no
   asynchronous (hibernating) TSCC, no C_MOVE. Carrier A's TS2 and both slots of carrier B are payload channels.
@@ -171,8 +171,10 @@ spec for both; this lists only the gateway's choices and limits. The full design
   header / terminator / burst, or raw), each with its carrier, slot, target slot and timing error in µs. Each burst's
   fate comes back (heard, collided, no-slot, timing, loss, corrupted, late, bad) and is logged. Several clients and
   the simulated MSs share the air and collide. Format: `sdr/cli/rdofradio_simext.h`. Not yet: a scripted AT pattern.
-- On a device rdofradio runs two carriers: carrier A on the SDR (the TSCC on TS1, a payload channel on TS2) and
-  carrier B on a split TX half (both slots payload), the SDR's receiver hearing both inbounds. The first call takes
+- On a device rdofradio runs up to four carriers out of one SDR, or carriers on split TX halves, or one carrier on a
+  duplex MMDVM modem ([tier3.md](tier3.md) 1.1, [tier3-hat.md](tier3-hat.md)). With two carriers, carrier A on the
+  SDR (the TSCC on TS1, a payload channel on TS2) and carrier B on a split TX half (both slots payload), the SDR's
+  receiver hearing both inbounds: The first call takes
   carrier A's TS2; a second at the same time goes to carrier B. Carrier B's half counts UTC slots (aligned from the
   host's clock); carrier A's slots follow the SDR's own clock, so the two carriers aren't slot-synchronized
   (`site_sync` 0): a radio moving to carrier B must find its slot timing there (the payload warm-up).
@@ -182,7 +184,7 @@ spec for both; this lists only the gateway's choices and limits. The full design
   1.25 ms after the slot's start); a radio that sends late or early by more than half a slot lands in the wrong one.
 - The simulator is a second implementation of the MS procedures the site needs: when the radio and the site
   disagree, compare the radio's behavior with it, and check both against the standard.
-- First on-air tests: the Pluto on the SDR bench (cabled), on a frequency the owner gives.
+- First on-air tests: a PlutoSDR on the bench (cabled), on a licensed frequency.
 
 ### 2.5 Site changes an MS sees (2026-11-13 audit)
 

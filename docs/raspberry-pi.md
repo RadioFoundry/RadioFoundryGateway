@@ -8,12 +8,13 @@ takes the place of MMDVMHost: the two can't share the hat.
 | Simplex hat (MMDVM_HS_Hat, ZUMspot) | a hotspot | `config/examples/standalone-mmdvm-simplex.json` |
 | Duplex hat (MMDVM_HS_Dual_Hat) | a repeater | `config/examples/standalone-mmdvm-duplex.json` |
 | Either hat + an RTL-SDR | the same, and the RTL-SDR hears the input: levels, BER, the spectrum and the bench's receive jobs | `standalone-mmdvm-rtl-simplex.json`, `standalone-mmdvm-rtl-duplex.json` |
+| Duplex hat + an RTL-SDR | a one-carrier DMR Tier III trunked site | `ham-tier3-hotspot-box.json` with `ham-tier3-hotspot-brandmeister.json` (section 8) |
 
 Each also gets the web page (`--web`) and the bench API (`--bench`), and can log in to BrandMeister
 (`brandmeister-mmdvm-duplex.json`) or an HBlink4 master ([config-v3.md](spec/fw/config-v3.md) §7).
 
-Tested: a duplex MMDVM_HS hat and an RTL-SDR on a Debian 13 arm64 board, as a repeater and as a bench line (transmit
-jobs, bursts and captures on air), running as the systemd service below since 2026-11. A Pi runs the same build. On a
+Tested: a duplex MMDVM_HS hat and an RTL-SDR on a Debian 13 arm64 board, as a repeater, a Tier III site and a bench
+line (transmit jobs, bursts and captures on air), running as the systemd service below. A Pi runs the same build. On a
 Pi 3 or Zero 2 W, check the load with `top`; a lower SDR rate (`-r 960000`) costs less.
 
 ## 1. The OS
@@ -126,7 +127,8 @@ First in the foreground, to see it start:
   it.
 - `--bench 0.0.0.0:7373` lets anyone on the network key the hat within `bench.tx`. `--bench 127.0.0.1:7373` keeps
   it to the Pi. Check the bench from another machine with `tools/bench/rfgbench.py --bench <pi> info`.
-- On a duplex hat, a bench job stops the repeater for its length and brings it back.
+- On a duplex hat, a bench job stops the repeater for its length and brings it back. The bench's repeater jobs run
+  DMR, P25 or NXDN on a duplex hat ([bench-api.md](spec/bench-api.md) 14.3).
 
 ## 7. Run it as a service
 
@@ -161,3 +163,22 @@ journalctl -u rdofradio -f
 
 The command line alone runs a hat too, with `--rx`, `--tx`, `--duplex half|full`, `--cc` and `--bench-tx` for the
 bench's frequencies: [reference.md](reference.md), "An MMDVM modem on a serial port".
+
+## 8. A Tier III site
+
+A duplex hat and an RTL-SDR beside it run a one-carrier DMR Tier III trunked site
+([tier3-hat.md](spec/fw/tier3-hat.md)): the hat transmits the carrier, and the RTL-SDR hears its out and its in, so
+keep the two within about 1 MHz. It takes two files:
+
+- `--config`: the box (the hat, its calibration from section 5, the clock, the bench). Start from
+  `config/examples/ham-tier3-hotspot-box.json`.
+- `--tier3`: the site, with its BrandMeister login. Start from `config/examples/ham-tier3-hotspot-brandmeister.json`;
+  what each key is for is in [config/examples/README.md](../config/examples/README.md).
+
+```sh
+~/rfg/bin/rdofradio --soapy driver=rtlsdr -r 1536000 --gain 30 --ppm 0 --allow-tx --mmdvm /dev/ttyAMA0 \
+    --config ~/rfg/config.json --tier3 ~/rfg/site.json --web 0.0.0.0:8080
+```
+
+As a service (section 7), put `--tier3 /home/<you>/rfg/site.json` in `~/rfg/flags`, with the full path: `run.sh`
+doesn't expand `~`. The design and what's built: [tier3.md](spec/fw/tier3.md).

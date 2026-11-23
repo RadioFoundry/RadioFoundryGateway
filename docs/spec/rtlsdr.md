@@ -433,8 +433,8 @@ What no allowed source settles. Each is marked in the code where it's used.
 - **G.2 The IF filter in Hz.** Measured: R1.3; the narrow row now uses it (T1.6).
 - **G.3 The gain steps in dB.** Measured: R1.2; `gain_steps[]` now holds it (T1.10).
 - **G.4 The sign of the IF correction.** A CW carrier exactly at the center frequency should come out at 0 Hz
-  within 7 Hz (the DDC's step) at 100, 461 and 900 MHz. If it comes out at twice the PLL's error instead, the sign
-  in D1.6 is backward. Measured: right (R1.1).
+  within 7 Hz (the DDC's step) across the range (R1.1 used the crystal's harmonics, 115.2 to 1209.6 MHz). If it
+  comes out at twice the PLL's error instead, the sign in D1.6 is backward. Measured: right (R1.1).
 - **G.5 The VCO fine-tune check.** Read `R4[5:4]` after tuning across the range (the board's register dump has
   it); if it ever differs from 2 (R820T) or 1 (R828D), find out what W's divider step does there. R820T: never
   differs (R1.4); the R828D is still to check.

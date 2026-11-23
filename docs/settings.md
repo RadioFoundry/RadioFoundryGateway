@@ -14,7 +14,7 @@ is the short version. Every key, default and check is in [config-v3.md](spec/fw/
   "defaults": {"cc": 1},        // keys every frequency takes unless it sets its own
   "devices": [],                // the radios: SDRs and modems
   "frequencies": [],            // what is heard and sent
-  "apps": [],                   // repeater, parrot, IP gateway
+  "apps": [],                   // repeater, parrot, IP gateway, Tier III site
   "networks": []                // HBlink4, BrandMeister, another Homebrew master, MQTT
 }
 ```
@@ -23,9 +23,10 @@ is the short version. Every key, default and check is in [config-v3.md](spec/fw/
 |---|---|---|
 | `devices` | an `sdr` (`driver`: `rtlsdr`, `lr2021`, `soapy`, `iio`) or a `modem` (an MMDVM board or a radio in hotspot mode) and its `port` | [§4](spec/fw/config-v3.md#4-devices) |
 | `frequencies` | a number (MHz below 1e5, else Hz) or an object with `freq`, `name`, `cc`, `ts`, `tx` | [§5](spec/fw/config-v3.md#5-frequencies) |
-| `apps` | `repeater` (takes an `in` and an `out` frequency), `parrot`, `ipgw` | [§6](spec/fw/config-v3.md#6-apps) |
+| `apps` | `repeater` (takes an `in` and an `out` frequency), `parrot`, `ipgw`, `tier3` (a trunked site; not on a board) | [§6](spec/fw/config-v3.md#6-apps), [tier3.md](spec/fw/tier3.md) §4 |
 | `networks` | `hblink`, `brandmeister`, `homebrew`, `mqtt`: at most one of each, and one master | [§7](spec/fw/config-v3.md#7-networks) |
 | `policies` and the policy keys (`tg`, `ptt`, `pc`, `net`) | which calls go where | [§8](spec/fw/config-v3.md#8-policies) |
+| `rules` | calls kept off networks, for the whole box (TG 9 on the repeater only, say) | [§8.1](spec/fw/config-v3.md#81-rules) |
 | `bench`, `ntp`, `wifi`, `oled`, `location`, `slot_timing` | the rest | [§2](spec/fw/config-v3.md#2-document), [§16](spec/fw/config-v3.md#16-on-the-board) |
 
 Rules that catch people:
@@ -89,10 +90,10 @@ parrot on TG 9990.
   "defaults": {"cc": 1, "tg": "*"},
   "devices": [
     {"name": "w12", "kind": "sdr", "driver": "lr2021",
-     "rx": {"rate": 240000, "center_hz": 446.1},
+     "rx": {"rate": 240000, "center_hz": 438.5},
      "tx": {"power_dbm": 10}}
   ],
-  "frequencies": [446.075, 446.1, 446.125],
+  "frequencies": [438.475, 438.5, 438.525],
   "apps": [
     {"type": "parrot", "tg": 9990}
   ],
@@ -208,6 +209,14 @@ datagrams to private ID 9990 go to one server, and anything else through NAT.
   ([§6.3](spec/fw/config-v3.md#63-ipgw)).
 - On a host, ping through NAT needs a raw socket: run as root or give `rdofradio` `CAP_NET_RAW`.
 - How it works and what's left: [ipgw.md](spec/fw/ipgw.md).
+
+### A Tier III site
+
+A DMR Tier III trunked site is a `tier3` app: a control channel and payload channels on one to four carriers. It runs
+in `rdofradio` on a host or a PlutoSDR, not on an ESP32 board. Start from the `ham-tier3-*.json` files in
+[config/examples/](../config/examples/README.md): a site on a PlutoSDR alone, linked over MQTT or on BrandMeister, and
+a one-carrier site on a duplex MMDVM_HS hat with an RTL-SDR ([raspberry-pi.md](raspberry-pi.md), "A Tier III site").
+Every key: [tier3.md](spec/fw/tier3.md) §4.
 
 More complete files, with the parrot, the IP gateway, `ntp` and `bench`, are in
 [config/examples/](../config/examples/README.md).

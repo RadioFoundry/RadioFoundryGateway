@@ -10,7 +10,7 @@ Related: [bench-api.md](../bench-api.md) (`/api/bench/v1`), [mqtt.md](mqtt.md), 
 |---|---|---|
 | Server | ESP-IDF `esp_http_server`, plain HTTP on port 80 | `web.c:web_start` |
 | URI match | `bench_uri_match` (a `*` matches one path segment) with `CONFIG_RDOF_BENCH`, else `httpd_uri_match_wildcard` | `web.c:web_start` |
-| `max_uri_handlers` | 48 | `web.c:web_start` |
+| `max_uri_handlers` | 64 | `web.c:web_start` |
 | `max_open_sockets` | 8, `lru_purge_enable` | `web.c:web_start` |
 | Task | stack 8192, core 0 | `web.c:web_start` |
 | Auth | none, on any endpoint. The board sits on a private network. | |
@@ -45,6 +45,7 @@ The setup access point is `radiofoundry-<suffix>` (format `"radiofoundry-%s"`), 
 | POST | `/api/spike` | `CONFIG_RDOF_SDR` | none | 200 `restarting to run the USB spike once the RTL-SDR is in (about a minute; see the log)` | NVS `rd`/`spike` = 1 (u8), restart after 1 s; results in `/api/status` `spike` and the log |
 | GET | `/api/spectrum` | `CONFIG_RDOF_SDR` | `?since=N` (u32, default 0) | JSON (§6) | keeps the spectrum computed for 10 s (`sdr_task.c:sdr_spectrum_rows`, `spec_want_until`) |
 | GET | `/api/rtl/regs` | `CONFIG_RDOF_SDR` | none | JSON (§7), or 404 `no dongle` | reads the tuner over I2C under the receiver lock |
+| GET, POST | `/api/lr2021/*`: `mem`, `capture` (GET); `hold`, `cmd`, `spi`, `seq`, `tx`, `txmode`, `packet`, `dmr_rx`, `wake` (POST) | `CONFIG_RDOF_SDR_LR2021` | lab endpoints for LR2021 experiments (`tools/lr2021_lab.py`); `hold` takes the chip from the SDR first | see `web.c` | the chip's state; not for normal use |
 | POST | `/api/ota` | `CONFIG_RDOF_OTA` (default y) | body: the app image (`.bin`), any length | 200 `updated; restarting` | writes the next OTA partition, sets it to boot, restart after 1 s |
 | any | `/api/bench/v1/*` | `CONFIG_RDOF_BENCH` | see [bench-api.md](../bench-api.md) | | |
 | GET | `/api/clock` | always (netclock) | none | JSON (§8.1) | none |

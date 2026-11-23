@@ -3,23 +3,25 @@
 Covers: a device that receives and transmits run as two parts, a receiver of every frequency it hears and a
 transmitter tuned per stream to any frequency it may send on; the transmitter pool the router draws from; apps that
 answer through it; half duplex; several transmissions at once.
-Status: 2026-11-01. Built: the pool (§4, `rdof/txpool.h`), the transmitter as the roamer the router tunes (§3, §12),
-apps on the router (§5), the blind span (§6), the status (§8). Not yet: clear to send across paths (§3), slot timing
-across a blind span (§6), the MQTT network's requests (step 5), several at once (§9).
+Status: built: the pool (§4, `rdof/txpool.h`), the transmitter as the roamer the router tunes (§3, §12), apps on
+the router (§5), the blind span (§6), the status (§8), the MQTT network's streams through the pool (step 5). Not
+built: clear to send across paths (§3), slot timing across a blind span (§6), several at once (§9; a trunked site's
+carriers summed by rdofradio are its own, [tier3.md](tier3.md)).
 Related: [config-v3.md](config-v3.md) (devices, paths, §9.4, §12), [mqtt-net.md](mqtt-net.md) (paths and streams on
 the network), [sdr-tx.md](sdr-tx.md) (the modulator, the SDR modem), [sdr-rx.md](sdr-rx.md), [roamer.md](roamer.md).
 
 ## 1. Why
 
 A W12 should hear 3 to 5 frequencies at once and, when a call has to go out, key its one transmitter on that call's
-frequency. Today it can't, quite:
+frequency. Before the pool (version 2 of the settings) it couldn't, quite:
 
-- The settings made a transmitting SDR a `roamer` over its simplex frequencies plus a `monitor` of all of them
-  (config-v3.md §12). The roamer is a modem's state machine: one receive channel and the transmitter, tuned together.
-- The router already tunes that roamer to a network call's frequency (config-v3.md §9.4, `txvr_for`). Nothing else
-  uses that: the parrot and the IP gateway are options of a role and answer on the roamer's channel only, and they
-  hear only that channel (`sdrmodem.c` feeds the roamer's modem from its tuned channel).
+- The settings made a transmitting SDR a `roamer` over its simplex frequencies plus a `monitor` of all of them. The roamer is a modem's state machine: one receive channel and the transmitter, tuned together.
+- The router tuned that roamer to a network call's frequency (`txvr_for`). Nothing else used that: the parrot and
+  the IP gateway were options of a role and answered on the roamer's channel only, and they heard only that channel
+  (`sdrmodem.c` feeds the roamer's modem from its tuned channel).
 - An SDR transceiver that scans gets near this, but it hears one channel at a time.
+
+Sections 2 to 9 are the model (the status above says what of it is built); section 12 is how it is built.
 
 ## 2. The model
 
@@ -172,7 +174,7 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
 | 2 | The transmitter: the SDR modem's transmit half, tuned per stream. Done as the roamer (§12) | host test of the units (`test_plan.c`); the W12 on the §7 file, a network call on each frequency |
 | 3 | Apps on the router: calls carry their path; the parrot and IP gateway hear every path and answer by request. Done; the W12's parrot answered on each of its three frequencies (2026-11-01) | `test_site.c` (app bursts), `test_parrot.c:test_frequencies`; the parrot called on each of the W12's three frequencies |
 | 4 | Half duplex: the blind span (§6). Done, but not the slot timing | `test_sdr.c`; the W12 with calls on two frequencies while it transmits |
-| 5 | The MQTT network (mqtt-net.md phase 1): `dl` and `tg` streams make the same requests (`rdof_siteroute_app_burst` with the path byte, or the network path with `take_hold`) | mqtt-net.md §13 |
+| 5 | The MQTT network (mqtt-net.md phase 1): `dl` and `tg` streams make the same requests (`rdof_siteroute_burst_on`, on the board and in rdofradio). Done | mqtt-net.md §13 |
 | later | Two slots of one carrier, then carriers (§9) | |
 
 ## 11. Open

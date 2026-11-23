@@ -6,8 +6,9 @@ Related: [sdr.md](sdr.md), [sdr-rx.md](sdr-rx.md), [sdr-tx.md](sdr-tx.md), [../l
 
 ## 1. Interface (`frontend.h`)
 
-`device.type` picks the front end: `rtlsdr` (the default), `lr2021`, `sim`, or `sx1255` (parsed, not written).
-`"sim": true` forces `sim` (`config.c:rest`).
+The `sdr` device's `driver` ([config-v3.md](config-v3.md) §4.1) picks the front end: `rtlsdr` (the default), `lr2021`,
+`sim`, or `sx1255` (parsed, not written); `soapy` and `iio` are the host tool's. `"sim": true` forces `sim`
+(`sdr/src/config.c`).
 
 **Enums**: `rdof_fe_format_t` is CU8 (zero at 127.5), CS8 (/128) or CS16 (/32768). Duplex is `RX_ONLY`, `HALF` or
 `FULL`. TX mode is `NONE`, `IQ`, `FREQ` or `4FSK`. The gap filler is byte `0x80` for CU8, else 0.
@@ -51,7 +52,7 @@ Related: [sdr.md](sdr.md), [sdr-rx.md](sdr-rx.md), [sdr-tx.md](sdr-tx.md), [../l
 
 ## 2. Front ends
 
-| | `rtlsdr` (`fe_rtlsdr.c`) | `sim` (`fe_sim.c`) | `lr2021` (`fe_lr2021.c`, first run on the W12 2026-10-23) |
+| | `rtlsdr` (`fe_rtlsdr.c`) | `sim` (`fe_sim.c`) | `lr2021` (`fe_lr2021.c`, the W12) |
 |---|---|---|---|
 | format | CU8 | CU8 | CS16 |
 | rates | 240000 to 3200000 | 48000 to 3200000 | 48000 to 240000 (after resampling) |

@@ -52,6 +52,13 @@ Modules with no C twin (new code is written in Rust only; its C callers build wi
 | `sigmulti.rs` | `rdof/sigmulti.h`: several carriers in one bench transmit job, any signal mode's transmitter once a carrier |
 | `sigiq.rs` | `rdof/sigiq.h`: the bench's `iq` transmit mode, the client's cs16 baseband (`sdr/src/modes.c`) |
 
+The Tier III trunked site ([tier3.md](../docs/spec/fw/tier3.md) sections 8 and 9) is Rust only, behind two
+features: `t3`, the controller (`t3site.rs`, `t3tscc.rs` and the other `t3*.rs`, with the MS simulator `t3ms.rs` and
+the air model `t3air.rs`), and `tier3`, the site around it in `rdofradio` (`t3unit.rs`, `t3cfg.rs`, `t3rf.rs`,
+`t3sim.rs`, `t3split.rs`). Their C headers are the contract (`rdof/t3.h`, `rdof/t3unit.h` and the others).
+`rdofradio` and the host tests build them with `RDOF_TIER3` (on by default); the firmware doesn't. Their own tests,
+`t3*tests.rs` and `t3spec_*.rs`, run under `cargo test` (ctest runs them too).
+
 - `config.rs` and `benchcfg.rs` read the version 3 plan, which stays C (`siteplan.c`, `site.c`): `src/plan.rs`
   mirrors its structs and declares the accessors they call.
 - Code copied from RadioFoundry (`common/src/radiofoundry`) stays C for now; the Rust calls it through `src/ffi.rs`.
