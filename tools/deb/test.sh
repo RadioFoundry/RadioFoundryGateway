@@ -49,7 +49,10 @@ r=$(rdofradio --soapy driver=none -r 1536000 --rx 438.5 --listen --seconds 1 2>&
 echo "$r" | grep -q "apt install libsoapysdr" || { echo "FAIL: without SoapySDR: $r"; exit 1; }
 # with it (this release has one of 0.6, 0.7, 0.8): loaded, and its own error (no such device) comes back
 s=$(apt-cache search --names-only "^libsoapysdr0\.[678]" | sort | tail -1 | cut -d" " -f1)
-o=$(apt-get install -y "$s" 2>&1) || { echo "FAIL: apt install $s"; echo "$o" | tail -15; exit 1; }
+# once more after a failure: under QEMU the ldconfig trigger can crash (an emulator fault, not the package)
+o=$(apt-get install -y --no-install-recommends "$s" 2>&1) ||
+    o=$(dpkg --configure -a 2>&1 && apt-get install -y --no-install-recommends "$s" 2>&1) ||
+    { echo "FAIL: apt install $s"; echo "$o" | tail -15; exit 1; }
 r=$(rdofradio --soapy driver=none -r 1536000 --rx 438.5 --listen --seconds 1 2>&1 || true)
 echo "$r" | grep -q "apt install libsoapysdr" && { echo "FAIL: SoapySDR not loaded: $r"; exit 1; }
 v=$(dpkg-query -W -f "\${db:Status-Abbrev}\${Package} \${Version}\n" "libsoapysdr0.*" 2>/dev/null | awk "/^ii/ {print \$2, \$3}")
