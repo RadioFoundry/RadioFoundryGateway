@@ -2198,6 +2198,78 @@ static void test_run(void)
     rdof_bl_closed(bl, ct, now);
     rdof_bl_closed(bl, cw, now);
 
+    /* {"op":"end"} on a 60 s listen's own connection: it ends at once with its records, as its timer would */
+    {
+        const int l2 = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"listen\",\"freq\":438.1125,"
+                               "\"seconds\":60,\"json\":true}}", now);
+        const int t2 = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
+                               "\"cc\":2,\"src\":9990303,\"dst\":9990199,\"private\":true,\"superframes\":2}}", now);
+        nl = no = 0;
+        lis[0] = 0;
+        for (int i = 0; i < 700 && !rdof_bl_finished(bl, t2); i++) {
+            rdof_bl_tick(bl, now += 0.01);
+            tx_air(bl, now, 1);
+            no = drain_all(bl, t2, out, sizeof out, no);
+            nl = drain_all(bl, l2, lis, sizeof lis, nl);
+        }
+        for (int i = 0; i < 50; i++) /* the call's end heard */
+            rdof_bl_tick(bl, now += 0.01), nl = drain_all(bl, l2, lis, sizeof lis, nl);
+        CHECK(!strstr(lis, "\"exit\"") && strstr(lis, "9990303"), "the listen runs on, the call heard: %.300s", lis);
+        const char *junk = "{\"op\":\"info\"}\n";
+        rdof_bl_input(bl, l2, junk, strlen(junk), now);
+        rdof_bl_tick(bl, now += 0.01);
+        nl = drain_all(bl, l2, lis, sizeof lis, nl);
+        CHECK(strstr(lis, "only {\\\"op\\\":\\\"end\\\"} is read") && !strstr(lis, "\"exit\""),
+              "another line is noted, the job goes on: %.300s", lis + (nl > 300 ? nl - 300 : 0));
+        const double t_end = now;
+        const char *end = "{\"op\":\"end\"}\n";
+        rdof_bl_input(bl, l2, end, strlen(end), now);
+        for (int i = 0; i < 5 && !rdof_bl_finished(bl, l2); i++)
+            rdof_bl_tick(bl, now += 0.01), nl = drain_all(bl, l2, lis, sizeof lis, nl);
+        CHECK(rdof_bl_finished(bl, l2) && now - t_end < 0.1 && strstr(lis, "stopped by the client") &&
+                  strstr(lis, "\"exit\":0") && count(lis, "9990303") >= 2,
+              "ended now, its call summary out, exit 0: %.600s", lis + (nl > 600 ? nl - 600 : 0));
+        rdof_bl_closed(bl, l2, now);
+        rdof_bl_closed(bl, t2, now);
+    }
+    /* end during a TX job's key-up: the key-up goes out whole, its listen_after doesn't run */
+    {
+        const int t4 = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
+                               "\"cc\":2,\"superframes\":2,\"listen_after\":30}}", now);
+        no = 0;
+        for (int i = 0; i < 20; i++)
+            rdof_bl_tick(bl, now += 0.01), tx_air(bl, now, 1), no = drain_all(bl, t4, out, sizeof out, no);
+        const char *end = "{\"op\":\"end\"}\n";
+        rdof_bl_input(bl, t4, end, strlen(end), now);
+        for (int i = 0; i < 700 && !rdof_bl_finished(bl, t4); i++)
+            rdof_bl_tick(bl, now += 0.01), tx_air(bl, now, 1), no = drain_all(bl, t4, out, sizeof out, no);
+        CHECK(strstr(out, "sent ") && strstr(out, "\"exit\":0") && !strstr(out, "listening on") && !tx.open,
+              "the key-up whole, no listen_after: %.600s", out + (no > 600 ? no - 600 : 0));
+        rdof_bl_closed(bl, t4, now);
+    }
+    /* {"op":"stop","job":ID} from another connection; a job that isn't there */
+    {
+        const int l3 = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"listen\",\"freq\":438.1125,"
+                               "\"seconds\":60,\"json\":true}}", now);
+        rdof_bl_tick(bl, now += 0.01);
+        nl = drain_all(bl, l3, lis, sizeof lis, 0);
+        char id[24] = "", req[96];
+        CHECK(field(lis, "started", id, sizeof id), "a listen says its job: %s", lis);
+        snprintf(req, sizeof req, "{\"op\":\"stop\",\"job\":%s}", id);
+        c = ask(bl, req, now);
+        drain(bl, c, out, sizeof out);
+        CHECK(strstr(out, "{\"stopped\":"), "stopped: %s", out);
+        rdof_bl_closed(bl, c, now);
+        for (int i = 0; i < 5 && !rdof_bl_finished(bl, l3); i++)
+            rdof_bl_tick(bl, now += 0.01), nl = drain_all(bl, l3, lis, sizeof lis, nl);
+        CHECK(rdof_bl_finished(bl, l3) && strstr(lis, "\"exit\":0"), "the job ended, exit 0: %s", lis);
+        rdof_bl_closed(bl, l3, now);
+        c = ask(bl, req, now);
+        drain(bl, c, out, sizeof out);
+        CHECK(strstr(out, "\"code\":\"bad_request\"") && strstr(out, "no running job"), "gone: %s", out);
+        rdof_bl_closed(bl, c, now);
+    }
+
     /* closing the connection mid-call unkeys */
     c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"superframes\":5}}",
             now);
