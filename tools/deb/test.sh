@@ -27,6 +27,7 @@ CACHE=()
 [ -n "${APT_CACHE:-}" ] && mkdir -p "$APT_CACHE" && CACHE=(-v "$(cd "$APT_CACHE" && pwd)":/var/cache/apt/archives)
 fail=0
 for img in "${IMAGES[@]}"; do
+    docker pull -q --platform $PLAT "$img" >/dev/null
     out=$(docker run --rm --platform $PLAT ${CACHE[@]+"${CACHE[@]}"} -v "$DEB":/tmp/rdofradio.deb:ro "$img" bash -c '
 set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -38,7 +39,7 @@ case $VERSION_CODENAME in buster | bullseye)
     echo "deb http://archive.debian.org/debian $VERSION_CODENAME main" > /etc/apt/sources.list ;;
 esac
 apt-get -qq update >/dev/null 2>&1
-apt-get -qq install -y /tmp/rdofradio.deb >/dev/null 2>&1 || { echo "FAIL: apt install"; apt-get install -y /tmp/rdofradio.deb 2>&1 | tail -5; exit 1; }
+o=$(apt-get install -y /tmp/rdofradio.deb 2>&1) || { echo "FAIL: apt install"; echo "$o" | tail -25; exit 1; }
 rdofradio --help 2>&1 | grep -q "^usage: rdofradio" || { echo "FAIL: rdofradio --help"; rdofradio --help 2>&1 | head -3; exit 1; }
 test -f /etc/rdofradio/config.json && getent passwd rdofradio >/dev/null || { echo "FAIL: settings or user"; exit 1; }
 # the settings it installs parse: --check-config reads them and stops
@@ -53,16 +54,26 @@ r=$(rdofradio --soapy driver=none -r 1536000 --rx 438.5 --listen --seconds 1 2>&
 echo "$r" | grep -q "apt install libsoapysdr" && { echo "FAIL: SoapySDR not loaded: $r"; exit 1; }
 v=$(dpkg-query -W -f "\${db:Status-Abbrev}\${Package} \${Version}\n" "libsoapysdr0.*" 2>/dev/null | awk "/^ii/ {print \$2, \$3}")
 echo "ok ($PRETTY_NAME, glibc $(ldd --version | head -1 | grep -oE "[0-9.]+$"), $v)"
-' 2>&1 | tail -6) || true
-    echo "$img: $out"
-    case $out in ok*) ;; *) fail=1 ;; esac
+' 2>&1) || true
+    case $(echo "$out" | tail -1) in
+    ok*) echo "$img: $(echo "$out" | tail -1)" ;;
+    *) echo "$img: FAIL"; echo "$out" | tail -25 | sed "s/^/    /"; fail=1 ;;
+    esac
 done
 if [ "$ARCH" = armhf ]; then
-    # a Pi Zero's CPU: every instruction rdofradio runs at its start must be ARMv6
-    out=$(docker run --rm --platform linux/arm/v7 -v "$DEB":/tmp/rdofradio.deb:ro debian:bookworm bash -c '
-apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y qemu-user /tmp/rdofradio.deb >/dev/null 2>&1 || exit 1
-qemu-arm -cpu arm1176 /usr/bin/rdofradio --help 2>&1 | head -1' 2>&1 | tail -2)
+    # a Pi Zero's CPU (ARM1176, ARMv6): rdofradio on the C library it was built against (build.sh's Raspbian sysroot),
+    # run by QEMU on the host's architecture; an ARMv7 instruction would stop it
+    SYSROOT=${SYSROOT:-$(dirname "$DEB")/../sysroot-armhf}
+    SYSROOT=$(cd "$SYSROOT" && pwd)
+    out=$(docker run --rm --platform linux/amd64 ${CACHE[@]+"${CACHE[@]}"} -v "$DEB":/tmp/rdofradio.deb:ro \
+        -v "$SYSROOT":/sysroot:ro debian:trixie bash -c '
+echo "APT::Sandbox::User \"root\";" > /etc/apt/apt.conf.d/99root
+apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y --no-install-recommends qemu-user >/dev/null 2>&1 || exit 1
+dpkg-deb -x /tmp/rdofradio.deb /tmp/x
+q() { qemu-arm -cpu arm1176 -L /sysroot /tmp/x/usr/bin/rdofradio "$@" 2>&1; }
+q --help | head -1
+q --config /tmp/x/usr/share/rdofradio/config.json --check-config | cut -c1-60' 2>&1 | tail -2)
     echo "ARMv6 (arm1176): $out"
-    case $out in "usage: rdofradio"*) ;; *) fail=1 ;; esac
+    case $out in "usage: rdofradio"*"config.json: ok"*) ;; *) fail=1 ;; esac
 fi
 exit $fail
