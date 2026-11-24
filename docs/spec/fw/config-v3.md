@@ -601,8 +601,8 @@ required: each login's `RPTC` carries it, and BrandMeister checks it against the
 |---|---|---|---|
 | `host` | str | | required: the master, `<country code>.master.brandmeister.network` |
 | `port` | int | 62030 | the 2015 dialect's port ([brandmeister.md](brandmeister.md) §3) |
-| `password` | str, 1..63 | | required: the hotspot security password (SelfCare), or a repeater's device password |
-| `peer_ids` | object | | required: `{"<frequency or repeater>": id}`, a registered ID for each path on the network (a hotspot: the DMR ID and two digits). No two paths share one, and none is derived |
+| `password` | str, 0..63 | | required: the hotspot security password (SelfCare), or a repeater's device password. Empty: not set up yet (below) |
+| `peer_ids` | object | | required: `{"<frequency or repeater>": id}`, a registered ID for each path on the network (a hotspot: the DMR ID and two digits). No two paths share one, and none is derived. Empty, or an ID 0: not set up yet. A network not set up (its host or password empty too) is left off, not refused: `/api/status` `settings_warning` says what's left |
 | `location` | str, ≤ 20 | `""` | `RPTC` location text |
 | `description` | str, ≤ 19 | `""` | `RPTC` description |
 | `url` | str, ≤ 124 | `""` | `RPTC` URL |

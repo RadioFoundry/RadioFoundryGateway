@@ -1004,6 +1004,8 @@ static void test_fixtures(const char *dir)
         }
 #endif
         CHECK(ok == good, "%s: %s", e->d_name, ok ? "taken" : err);
+        if (ok && strstr(e->d_name, "-not-set-up")) /* a login left to fill in: off, and said so */
+            CHECK(S.nnet == 0 && strstr(S.setup, "isn't set up"), "%s: nnet %d, setup '%s'", e->d_name, S.nnet, S.setup);
         if (!good)
             printf("  %s: %s\n", e->d_name, err);
         if (good && ok && !trunk) {

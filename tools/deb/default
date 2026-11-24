@@ -1,0 +1,5 @@
+# rdofradio's options (rdofradio --help), for the rdofradio service. The settings are in /etc/rdofradio/config.json.
+# A hotspot board on the Pi's serial port, the web page on port 8080:
+RDOF_ARGS="--mmdvm /dev/ttyAMA0 --web 0.0.0.0:8080"
+# with an RTL-SDR too (and the libsoapysdr0.8 and soapysdr-module-rtlsdr packages):
+#RDOF_ARGS="--mmdvm /dev/ttyAMA0 --soapy driver=rtlsdr --web 0.0.0.0:8080"

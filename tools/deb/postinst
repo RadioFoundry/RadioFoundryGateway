@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+set -e
+if [ "$1" = configure ]; then
+    if ! getent passwd rdofradio >/dev/null; then
+        adduser --system --group --home /var/lib/rdofradio --gecos "RadioFoundry Gateway" rdofradio >/dev/null
+    fi
+    for g in dialout plugdev; do
+        getent group $g >/dev/null && adduser rdofradio $g >/dev/null 2>&1 || true
+    done
+    # the settings: the example the first time; rdofradio's web page saves them, so the folder is its own
+    mkdir -p /etc/rdofradio
+    [ -f /etc/rdofradio/config.json ] ||
+        cp /usr/share/rdofradio/config.json /etc/rdofradio/config.json
+    # the page saves the settings there; named, not -R: a 32-bit chown can't read a directory with 64-bit inode numbers
+    chown rdofradio:rdofradio /etc/rdofradio /etc/rdofradio/config.json
+    chmod 750 /etc/rdofradio
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null || true
+        # an upgrade restarts it if it runs; a first install leaves it off until it's set up
+        [ -n "$2" ] && systemctl try-restart rdofradio.service >/dev/null 2>&1 || true
+    fi
+    [ -n "$2" ] || echo "rdofradio: fill in the lines marked SET in /etc/rdofradio/config.json (the modem port is in /etc/default/rdofradio), then: sudo systemctl enable --now rdofradio"
+fi
+exit 0

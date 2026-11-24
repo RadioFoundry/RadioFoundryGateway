@@ -1,0 +1,27 @@
+// RadioFoundry Gateway: a simplex hotspot on an MMDVM hotspot board (an MMDVM_HS hat or a USB one), on BrandMeister.
+// Fill in the lines marked SET, then: sudo systemctl enable --now rdofradio. Until BrandMeister's password and your
+// hotspot's ID are set, it runs on its own (a call to TG 9990 is played back) and the web page says what's missing.
+// The modem's serial port is in /etc/default/rdofradio. Every key: https://radiofoundry.org (docs/settings.md).
+{
+  "version": 3,
+  "name": "hotspot",
+  "callsign": "N0CALL",                       // SET: your callsign
+  "defaults": {"cc": 1},                      // the color code your radio uses on this frequency
+  "devices": [
+    {"name": "hat", "kind": "modem", "type": "mmdvm_hs", "port": {"path": "/dev/ttyAMA0"}}
+  ],
+  "frequencies": [
+    {"name": "hotspot", "freq": 438.5}        // SET: a simplex frequency in your band plan (MHz)
+  ],
+  "apps": [
+    {"type": "parrot", "tg": 9990}
+  ],
+  "networks": [
+    {"type": "brandmeister",
+     "host": "3102.master.brandmeister.network",  // SET: your country's master (brandmeister.network, Masters)
+     "password": "",                              // SET: the hotspot security password from BrandMeister SelfCare
+     "peer_ids": {"hotspot": 0}}                  // SET: your DMR ID with two digits after it (e.g. 310012301)
+  ],
+  // the clock: public servers that don't smear a leap second
+  "ntp": {"servers": "time-a-g.nist.gov time-a-b.nist.gov tick.usno.navy.mil tock.usno.navy.mil time.apple.com time.cloudflare.com"}
+}

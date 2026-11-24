@@ -38,6 +38,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Rust for Xtensa (the firmware builds rust/)
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # espup asks GitHub's API for the toolchain: the runners share the anonymous limit
         run: |
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           . $HOME/.cargo/env

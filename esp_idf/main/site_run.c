@@ -34,7 +34,7 @@ static rdof_site_t *S;
 static rdof_siteroute_t *SR;
 static SemaphoreHandle_t lock;
 static int hblink = -1, parrot = -1, mqttnet = -1;
-static char warning[160]; /* a setting this build doesn't carry (site_load), for the log and the page */
+static char warning[220]; /* a setting this build doesn't carry (site_load), for the log and the page */
 static roam_t *owner;
 #if RDOF_FEATURE_TX
 static rdof_parrot_t *P;
@@ -118,7 +118,9 @@ const char *site_warning(void)
     if (!warning[0] && !looked && SR) {
         looked = true;
         const char *h = sample_host();
-        if (h)
+        if (S->setup[0]) /* a network left to set up, or the placeholder callsign (rdof_site_t setup) */
+            snprintf(warning, sizeof warning, "%s", S->setup);
+        else if (h)
             snprintf(warning, sizeof warning, "a network's host is %s, a sample address: nothing connects until "
                                               "the real one is set", h);
     }

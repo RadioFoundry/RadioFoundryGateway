@@ -80,14 +80,21 @@ Optional, found by the host build (CMake) when installed; linked, not copied.
 | SoapySDR (C API, 0.8) | BSL-1.0 | `rdofsdr --soapy`, `rdofradio --soapy`: any SoapySDR device |
 | libiio (0.x, C API) | LGPL-2.1-or-later | `rdofradio --iio`: an AD9361 (the PlutoSDR family) through the Linux IIO driver; dynamically linked, the PlutoSDR firmware's own copy on the Pluto |
 | libad9361 | LGPL-2.1-or-later | `rdofradio --iio`: `ad9361_set_bb_rate` (the chip's FIR for rates under 2.083 MS/s); dynamically linked, optional |
-| libmosquitto (2.x; eclipse-mosquitto/mosquitto) | EPL-2.0 OR EDL-1.0 (BSD-3-Clause), taken under EDL-1.0 (`LICENSES/EDL-1.0-mosquitto.txt`) | `rdofradio`'s MQTT (`sdr/cli/rdofradio_mqtt.c`): the client library's API only. Linked dynamically on a host (the OS's package); in the PlutoSDR bundle, 2.1.2 built from its release tarball and linked statically, so the bundle carries the notice |
-| cJSON 1.7.18 (DaveGamble/cJSON) | MIT (`LICENSES/MIT-cJSON.txt`) | the PlutoSDR bundle only: libmosquitto 2.1's build needs it; built from its release tarball, linked statically where libmosquitto uses it |
+| libmosquitto (2.x; eclipse-mosquitto/mosquitto) | EPL-2.0 OR EDL-1.0 (BSD-3-Clause), taken under EDL-1.0 (`LICENSES/EDL-1.0-mosquitto.txt`) | `rdofradio`'s MQTT (`sdr/cli/rdofradio_mqtt.c`): the client library's API only. Linked dynamically on a host (the OS's package); in the PlutoSDR bundle and the apt packages, 2.1.2 built from its release tarball (no TLS) and linked statically, so they carry the notice |
+| cJSON 1.7.18 (DaveGamble/cJSON) | MIT (`LICENSES/MIT-cJSON.txt`) | the PlutoSDR bundle and the apt packages: libmosquitto 2.1's build needs it; built from its release tarball, linked statically where libmosquitto uses it |
 
 `tools/pluto/build.sh` builds against the libiio and libad9361 headers and libraries in ADI's plutosdr-fw v0.38
 sysroot (downloaded, checked by SHA-256, not committed). It downloads libmosquitto 2.1.2 and cJSON 1.7.18 the same way
 and builds them in its container. Its fixes for libmosquitto's static build are include flags and a `sys/random.h`
 of its own (`getrandom` as the kernel call: the container's glibc is 2.24), and one line of libmosquitto's changed in
 the build tree: `random_common.c`'s glibc 2.25 check, so that header is used.
+
+`tools/deb/build.sh` (the apt packages) builds the same two tarballs, unchanged, against a Debian or Raspbian buster
+sysroot (glibc 2.28). The packages carry `LICENSES/` and this file in `/usr/share/doc/rdofradio/`. In them SoapySDR is
+loaded at run time (`sdr/cli/rdofradio_soapydl.c`, written here against SoapySDR 0.8's public C API; 0.6 and 0.7's
+`SoapySDRDevice_setupStream` signature from their headers, as an interface fact), so no SoapySDR code is in them.
+The arm64 package links `tools/deb/aarch64_atomics.c`, written here: the outline-atomics helpers by their documented
+names and semantics, as plain C atomics.
 
 ## Firmware dependencies
 

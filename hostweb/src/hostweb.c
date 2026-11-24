@@ -114,6 +114,7 @@ void rdof_hostweb_settings(const rdof_hostweb_settings_t *s)
     if (s)
         W.set = *s;
     W.set.source[sizeof W.set.source - 1] = 0;
+    W.set.warning[sizeof W.set.warning - 1] = 0;
     W.have_set = s != NULL;
     pthread_mutex_unlock(&W.set_mu);
 }
@@ -625,6 +626,12 @@ static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
     if (at == RDOF_WEBAPI_AT_BOARD) {
         host_cpu(j);
         exit_json(j);
+        pthread_mutex_lock(&W.set_mu);
+        char warning[sizeof W.set.warning];
+        memcpy(warning, W.set.warning, sizeof warning);
+        pthread_mutex_unlock(&W.set_mu);
+        if (warning[0])
+            rdof_json_str(j, "settings_warning", warning);
     }
     if (at != RDOF_WEBAPI_AT_RADIOS)
         return;

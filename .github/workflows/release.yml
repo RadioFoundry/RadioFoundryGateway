@@ -1,0 +1,88 @@
+name: Release
+
+# A tag v1.2.3: the rdofradio packages (amd64, arm64, armhf), each installed and run on every release it's for, on
+# the GitHub release, and the apt repository at apt.radiofoundry.org (tools/deb/README.md) with this release's and the
+# two before it. A pull request that changes the packaging: the packages, built and tested only.
+#
+# Secrets: APT_SIGNING_KEY (the repository's private key, ASCII armored), CLOUDFLARE_API_TOKEN (Cloudflare Pages:
+# Edit) and CLOUDFLARE_ACCOUNT_ID. Without them a release still gets its packages; the repository isn't published.
+on:
+  push:
+    tags: ['v[0-9]*']
+  pull_request:
+    paths: ['tools/deb/**', 'sdr/cli/tools.cmake', 'sdr/cli/rdofradio_soapydl.c', '.github/workflows/release.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64, armhf]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: QEMU (the ARM packages' tests run emulated)
+        if: matrix.arch != 'amd64'
+        uses: docker/setup-qemu-action@v3
+      - name: Build
+        run: tools/deb/build.sh ${{ matrix.arch }}
+      - name: Install and run on each release
+        run: tools/deb/test.sh build/deb/out/rdofradio_*_${{ matrix.arch }}.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: build/deb/out/*.deb
+
+  publish:
+    needs: deb
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HAVE_KEY: ${{ secrets.APT_SIGNING_KEY != '' }}
+      HAVE_CF: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          merge-multiple: true
+          path: debs
+      - name: The GitHub release
+        run: |
+          pre=; case $GITHUB_REF_NAME in *-*) pre=--prerelease ;; esac   # v26.11-beta1
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $pre
+          gh release upload "$GITHUB_REF_NAME" debs/*.deb --clobber
+      - name: The two releases before it
+        if: env.HAVE_KEY == 'true' && env.HAVE_CF == 'true'
+        run: |
+          for t in $(gh release list --limit 10 --json tagName,isDraft,isPrerelease \
+                       --jq '.[] | select(.isDraft | not) | select(.isPrerelease | not) | .tagName' |
+                     grep -vx "$GITHUB_REF_NAME" | head -2); do
+            gh release download "$t" --pattern '*.deb' --dir debs --skip-existing || true
+          done
+          ls -la debs
+      - name: The repository
+        if: env.HAVE_KEY == 'true' && env.HAVE_CF == 'true'
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          sudo apt-get -qq update && sudo apt-get -qq install -y apt-utils >/dev/null
+          tools/deb/publish.sh debs site
+      - name: To Cloudflare Pages
+        if: env.HAVE_KEY == 'true' && env.HAVE_CF == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy site --project-name=radiofoundry-apt --branch=main --commit-dirty=true
+      - name: No repository yet
+        if: env.HAVE_KEY != 'true' || env.HAVE_CF != 'true'
+        run: |
+          echo "::warning::the apt repository isn't published (APT_SIGNING_KEY, CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID isn't set)"

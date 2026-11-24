@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# rdofradio from the package: settings in /etc/rdofradio/config.json (the web page saves there too), options in
+# /etc/default/rdofradio. Installed stopped and disabled: set both, then systemctl enable --now rdofradio.
+[Unit]
+Description=RadioFoundry Gateway (rdofradio)
+Documentation=file:///usr/share/doc/rdofradio/README.Debian
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rdofradio
+Group=rdofradio
+SupplementaryGroups=dialout plugdev
+EnvironmentFile=-/etc/default/rdofradio
+StateDirectory=rdofradio
+WorkingDirectory=/var/lib/rdofradio
+ExecStart=/usr/bin/rdofradio --config /etc/rdofradio/config.json --last-exit /var/lib/rdofradio/last_exit $RDOF_ARGS
+Restart=always
+RestartSec=5
+# the receive loop and the modem thread ask for SCHED_FIFO and nice -10 when they can
+LimitRTPRIO=10
+LimitNICE=-10
+KillMode=control-group
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -134,7 +134,8 @@ An MMDVM_HS HAT on a Raspberry Pi, simplex on 438.5 MHz, logged in to BrandMeist
 ```
 
 - `peer_ids`: the hotspot's ID, your DMR ID with two digits after it, registered on BrandMeister. `password` is the
-  hotspot security password from SelfCare. `host` is your country's master.
+  hotspot security password from SelfCare. `host` is your country's master. Left empty (or the ID 0), the network
+  stays off and the web page says what's missing; the rest runs.
 - `callsign` is required; the top-level `id` isn't.
 - `"tg": "*"` sends up whatever a radio keys; BrandMeister decides what comes down (static and dynamic talkgroups).
 - On an ESP32 board, the port is `{"usb": "auto"}` or `{"uart": 1, "tx": 5, "rx": 6}` in place of `path`

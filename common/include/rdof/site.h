@@ -157,6 +157,9 @@ typedef struct {
     rdof_rule_t rule[RDOF_SITE_MAX_RULES];
     /* the rules, by network: the talkgroups and private-call IDs it may not carry (first matching rule wins) */
     rdof_idset_t net_deny_tg[RDOF_SITE_MAX_NETS], net_deny_pc[RDOF_SITE_MAX_NETS];
+    /* what's left to set up, said and shown (/api/status settings_warning); "" none. A login network with its
+       host, password or an ID left empty or 0 is left out (not an error), and named here */
+    char setup[200];
 } rdof_site_t;
 
 /* Version 3 settings into s. false with err set: "path: message", path as frequencies[3].tg or apps.R1.in. */
