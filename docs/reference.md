@@ -236,7 +236,7 @@ Flashing each board for the first time: [esp32-boards.md](esp32-boards.md).
 | `host-tests/` | the host build of `common/`, `sdr/`, `rtlsdr/` and the components' portable parts, the tests, the golden fixtures, the fake radios (`fake_radio.c`) |
 | `systest/` | the system tests: `radiosim`, `radiolink.c`, `test_radiosim.c` |
 | `hil-tests/` | hardware-in-the-loop tests (pytest) |
-| `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`, `burstramp.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `linux-arm64/` (rdofradio cross-built for a Debian 13 arm64 host with the Rust modules, its run script and systemd unit), `rtl_probe/` (the RTL-SDR driver on a Linux host over usbfs, for bench checks), `config_check.py`, `hblink4_sctp_check.sh`, `lr2021_lab.py` (LR2021 experiments over a board's `/api/lr2021/*`), `rtl_fir_design.py` |
+| `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`, `burstramp.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `deb/` (the apt packages: build, test, publish; [README](../tools/deb/README.md)), `linux-arm64/` (rdofradio cross-built for a Debian 13 arm64 host with the Rust modules, its run script and systemd unit), `rtl_probe/` (the RTL-SDR driver on a Linux host over usbfs, for bench checks), `config_check.py`, `hblink4_sctp_check.sh`, `lr2021_lab.py` (LR2021 experiments over a board's `/api/lr2021/*`), `rtl_fir_design.py` |
 | `config/` | the settings' JSON schema (`rdof-config.schema.json`); `examples/`: settings to start from ([README](../config/examples/README.md)) |
 | `docs/` | the guides ([README](README.md)), this reference, the specs (`spec/`) |
 | `LICENSES/`, `PROVENANCE.md` | third-party license texts, and where each piece of copied or ported code came from |
@@ -1492,6 +1492,29 @@ build/linux/rdofradio --soapy driver=rtlsdr -r 2.4e6 --gain 30 --ppm PPM --allow
   dropped off USB comes back with a new process. Sessions, claims and running requests end with it; a client sees
   `lost` or an `unavailable` connection. A modem that stops answering but keeps its port fails its jobs (`no reply`)
   and isn't restarted.
+
+### apt packages
+
+`tools/deb/` builds one `rdofradio` package per architecture (amd64, arm64, armhf) that installs on Debian 10 to 13,
+Raspberry Pi OS and Pi-Star 4.x, and Ubuntu 20.04 to 26.04 ([README](../README.md#install-with-apt) has the lines to
+paste; [tools/deb/README.md](../tools/deb/README.md) how they're built and published).
+
+| Part | How it runs on all of them |
+|---|---|
+| C library | Built against a buster sysroot (glibc 2.28): the newest symbol it needs is 2.27 |
+| armhf | Raspbian buster's sysroot, `-march=armv6 -mfpu=vfp`: a Pi Zero or Pi 1 (Debian's armhf is ARMv7) |
+| libmosquitto | 2.1.2 linked statically, without TLS (buster has 1.5, without MQTT v5) |
+| SoapySDR | Loaded at run time (`RDOF_SOAPY_DLOPEN`, `rdofradio_soapydl.c`): 0.8, 0.7 or 0.6, or none (an MMDVM modem needs none; `--soapy` then says what to install) |
+| libiio | Linked: `libiio0` is in every release (0.16 on). libad9361 is left out: `--iio` under 2.083 MS/s isn't in the package |
+| arm64 atomics | Rust's std calls `__aarch64_ldadd4_relax` and the like, which buster's libgcc lacks: `tools/deb/aarch64_atomics.c` |
+
+The package installs `/usr/bin/rdofradio`, the `rdofradio` service (not enabled), `/etc/default/rdofradio` (the
+device arguments: an MMDVM modem on `/dev/ttyAMA0`, the web page on port 8080) and `/etc/rdofradio/config.json`, a
+BrandMeister simplex hotspot from `tools/deb/config.json` with its callsign, password and hotspot ID left to fill in.
+A `brandmeister` or `homebrew` network with its host or password empty, or a peer ID missing or 0, isn't an error: the
+network is left off and `/api/status` `settings_warning` (the page's banner) says what's left, as does
+`rdofradio --config FILE --check-config`, which reads the settings and stops (0 when they will run). The callsign
+`N0CALL` gets the same warning.
 
 ### Host web page
 

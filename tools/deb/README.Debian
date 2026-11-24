@@ -1,0 +1,22 @@
+rdofradio (RadioFoundry Gateway) from the package
+=================================================
+
+Installed stopped. To set it up:
+
+1. Settings: /etc/rdofradio/config.json, a simplex hotspot on BrandMeister. Fill in the lines marked SET: your
+   callsign, the frequency, BrandMeister's master, the hotspot password from SelfCare and your hotspot's ID. Until
+   the password and the ID are set it runs on its own (TG 9990 plays a call back) and the web page says what's
+   missing; rdofradio --config /etc/rdofradio/config.json --check-config says it too. Other setups to start from
+   (a repeater, an RTL-SDR, a PlutoSDR, Tier III) are in /usr/share/doc/rdofradio/examples/. The web page can edit
+   and save the settings too.
+2. Options: /etc/default/rdofradio (RDOF_ARGS: the modem's serial port, --web, rdofradio --help for the rest).
+3. sudo systemctl enable --now rdofradio; journalctl -u rdofradio -f shows what it does.
+
+Anything else that holds the modem's port (MMDVMHost on Pi-Star or WPSD) has to be stopped and disabled first.
+
+An RTL-SDR needs SoapySDR and its module, loaded only when --soapy is given:
+    sudo apt install libsoapysdr0.8 soapysdr-module-rtlsdr     (Debian 10: libsoapysdr0.6, Debian 11: 0.7)
+A PlutoSDR goes through libiio (installed with the package): --iio usb: or --iio ip:192.168.2.1.
+
+The program runs as the rdofradio user, in the dialout and plugdev groups (serial ports, USB SDRs). Updates come
+with apt (sudo apt update && sudo apt upgrade); the web page's program update isn't used here.

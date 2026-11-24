@@ -62,6 +62,29 @@ Tested on air with RadioFoundry radios; other manufacturers' radios are untested
 
 ## Getting started
 
+### Install with apt
+
+For a Raspberry Pi (any, Pi Zero included), Pi-Star 4.x, Debian 10 or later, or Ubuntu 20.04 or later, on 32-bit
+ARM, 64-bit ARM or x86-64:
+
+```sh
+sudo apt install -y curl ca-certificates
+sudo curl -fsSL https://apt.radiofoundry.org/radiofoundry.gpg -o /usr/share/keyrings/radiofoundry.gpg
+echo "deb [signed-by=/usr/share/keyrings/radiofoundry.gpg] https://apt.radiofoundry.org stable main" | sudo tee /etc/apt/sources.list.d/radiofoundry.list
+sudo apt update && sudo apt install -y rdofradio
+```
+
+It installs set up as a BrandMeister hotspot on an MMDVM hotspot board. Fill in the lines marked `SET` in
+`/etc/rdofradio/config.json` (callsign, frequency, BrandMeister password and hotspot ID), then start it:
+
+```sh
+sudo systemctl enable --now rdofradio
+```
+
+The web page is on port 8080. On Pi-Star, run `rpi-rw` first, and stop MMDVMHost, which holds the modem.
+
+### Other ways
+
 | Hardware | Guide |
 |---|---|
 | Raspberry Pi with an MMDVM HAT | [raspberry-pi.md](docs/raspberry-pi.md) |

@@ -1,0 +1,9 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+set -e
+[ -d /run/systemd/system ] && systemctl daemon-reload >/dev/null 2>&1 || true
+# purge: the settings and the state go; the rdofradio user stays (files elsewhere may be its)
+if [ "$1" = purge ]; then
+    rm -rf /etc/rdofradio /var/lib/rdofradio
+fi
+exit 0
