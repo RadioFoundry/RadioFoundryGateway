@@ -165,6 +165,7 @@ typedef struct {
 typedef struct {
     bool writable;    /* false: the page shows them read-only (say why in source) */
     char source[160]; /* where they come from: "file /etc/x.json", "command line flags" */
+    char warning[200]; /* what's left to set up (the status's settings_warning, a problem on the page); "" none */
     /* the settings text: malloc'd, the server frees it; NULL if there is none */
     char *(*get)(void *ctx);
     /* Validate and store a new document (text is NUL terminated). True: stored; the server answers "saved;

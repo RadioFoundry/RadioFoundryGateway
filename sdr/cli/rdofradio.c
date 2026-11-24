@@ -86,7 +86,8 @@
  * --config FILE takes the radio from the firmware's settings document (rdofradio_cfg.h) in place of --rx, --tx,
  * --duplex, --cc and --parrot; the device stays on the command line. With --web, the page edits the file: a save
  * stops the loop, closes the device (the TX gain to its least first) and starts rdofradio again with the same
- * arguments.
+ * arguments. --check-config with --config FILE reads the file, says what's wrong or left to set up (a BrandMeister
+ * login with its password or ID empty is left off, not an error), and stops: 0 when it will run.
  *
  * Each turn reads a chunk of the receive stream, polls the repeater, pulls as many samples from the modulator into
  * a ring, then runs the chunk through the receiver; a second thread writes the ring to the transmit stream. A
@@ -325,6 +326,7 @@ static void on_signal(int s) { stop = 1; }
 
 /* --config: the file, and the radio it (or the command line) sets */
 static const char *config_path;
+static bool check_config; /* --check-config: read the settings, say what's left to set up, and stop */
 /* a trunked site's (rdofradio_t3.h): --sim-air and the rest */
 static struct {
     int sim_n, air_ms;
@@ -4902,6 +4904,7 @@ static void web_settings(int argc, char **argv)
     for (int i = 1; i < argc && n < sizeof web_device; i++)
         n += (size_t)snprintf(web_device + n, sizeof web_device - n, "%s%s", i > 1 ? " " : "", argv[i]);
     rdof_hostweb_settings_t s = {0};
+    snprintf(s.warning, sizeof s.warning, "%s", rcfg.site.setup);
     s.writable = config_path != NULL;
     if (config_path)
         snprintf(s.source, sizeof s.source, "file %s", config_path);
@@ -6978,6 +6981,8 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--config")) {
             NEXT();
             config_path = v;
+        } else if (!strcmp(a, "--check-config")) {
+            check_config = true;
         } else if (!strcmp(a, "--sim-air")) {
             NEXT();
             t3_opts.sim_n = atoi(v);
@@ -7237,6 +7242,17 @@ int main(int argc, char **argv)
         }
         const bool ok = rdofradio_cfg_parse(text, len, &rcfg, err, sizeof err);
         free(text);
+        if (check_config) {
+            if (!ok)
+                fprintf(stderr, "%s: %s\n", config_path, err);
+            else if (rcfg.site.setup[0])
+                printf("%s: ok; %s\n", config_path, rcfg.site.setup);
+            else
+                printf("%s: ok\n", config_path);
+            return ok ? 0 : 1;
+        }
+        if (ok && rcfg.site.setup[0])
+            fprintf(stderr, "%s: %s\n", config_path, rcfg.site.setup);
         if (!ok) {
             char why[300];
             snprintf(why, sizeof why, "%s: %s", config_path, err);

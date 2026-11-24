@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "rdof/jsonp.h"
 #include "site_ctx.h"
@@ -623,6 +624,23 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
         snprintf(n->name, sizeof n->name, "%s", nmv ? nmv : t);
         if (rdof_site_net(s, n->name) >= 0)
             return fail(c, "%s.name: two networks called %s (two of one type need names)", path, n->name);
+        if (n->login) { /* not set up yet (the package's settings): its host, password or an ID left empty or 0 */
+            const char *h = str_of(c, get(c, e, "host")), *pw = str_of(c, get(c, e, "password"));
+            const int ids = get(c, e, "peer_ids");
+            bool unset = !h || !h[0] || !pw || !pw[0] || !is_type(c, ids, RDOF_JOBJ) || !count(c, ids);
+            for (int k2 = 0; !unset && k2 < count(c, ids); k2++) {
+                double v;
+                unset = num_of(c, at(c, ids, k2), &v) && v == 0;
+            }
+            if (unset) {
+                const size_t m = strlen(s->setup);
+                snprintf(s->setup + m, sizeof s->setup - m,
+                         "%snetworks.%s isn't set up: it stays off until its host, password and peer_ids (the IDs "
+                         "registered there) are filled in", m ? "; " : "", n->name);
+                memset(n, 0, sizeof *n);
+                continue;
+            }
+        }
         if (!str_of(c, get(c, e, "host")) || !str_of(c, get(c, e, "host"))[0])
             return fail(c, "%s.host: the %s's host name or address", path,
                         n->homebrew ? "Homebrew master" : n->login ? "BrandMeister master" : n->type == RDOF_NET_HBLINK ? "HBlink4 master" : "MQTT broker");
@@ -1521,6 +1539,11 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
                                  "8 characters at most"
                                : "callsign: the owner's callsign, required with a brandmeister network (BrandMeister "
                                  "checks it against the logins' IDs), 8 characters at most");
+    }
+    const char *cs0 = str_of(c, get(c, c->root, "callsign"));
+    if (cs0 && !strcasecmp(cs0, "N0CALL")) { /* the examples' placeholder */
+        const size_t m = strlen(s->setup);
+        snprintf(s->setup + m, sizeof s->setup - m, "%scallsign is N0CALL, a placeholder: set yours", m ? "; " : "");
     }
     uint32_t next = s->id;
     int ids = hb >= 0 ? get(c, c->nnode[hb], "peer_ids") : -1;

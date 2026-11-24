@@ -169,6 +169,7 @@ pub struct RdofSite {
     pub rule: [RdofRule; MAX_RULES],
     pub net_deny_tg: [RdofIdset; MAX_NETS],
     pub net_deny_pc: [RdofIdset; MAX_NETS],
+    pub setup: [u8; 200],
 }
 
 /// rdof_rule_t
