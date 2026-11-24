@@ -25,11 +25,12 @@ arm64) TRIPLE=aarch64-linux-gnu RUST=aarch64-unknown-linux-gnu CFLAGS_ARCH= ;;
 armhf) TRIPLE=arm-linux-gnueabihf RUST=arm-unknown-linux-gnueabihf CFLAGS_ARCH="-march=armv6 -mfpu=vfp -mfloat-abi=hard -marm" ;;
 *) echo "build.sh: amd64, arm64 or armhf" >&2; exit 2 ;;
 esac
-# the package version: a tag v1.2.3 is 1.2.3; else 0~git<date>.<hash>
+# the package version: a tag v26.11 is 26.11, v26.11-beta1 is 26.11~beta1 (before 26.11); else 0~git<date>.<hash>
 if [ $# -ge 2 ]; then
     VER=$2
 elif T=$(git -C "$ROOT" describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null); then
     VER=${T#v}
+    VER=${VER//-/\~}
 else
     VER=0~git$(git -C "$ROOT" log -1 --format=%cd --date=format:%Y%m%d).$(git -C "$ROOT" rev-parse --short=8 HEAD)
 fi

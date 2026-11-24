@@ -5,7 +5,7 @@ package runs on every release from Debian 10 on: [reference.md, apt packages](..
 
 | File | What |
 |---|---|
-| `build.sh ARCH [VERSION]` | One package, in a Debian container on an x86-64 host with Docker: `build/deb/out/rdofradio_<version>_<arch>.deb`. The version: a tag `v1.2.3` gives `1.2.3`, else `0~git<date>.<hash>` |
+| `build.sh ARCH [VERSION]` | One package, in a Debian container on an x86-64 host with Docker: `build/deb/out/rdofradio_<version>_<arch>.deb`. The version: a tag `v26.11` gives `26.11`, `v26.11-beta1` gives `26.11~beta1` (a prerelease on GitHub, sorted before `26.11`), else `0~git<date>.<hash>` |
 | `inside.sh` | `build.sh`'s part in the container: the sysroot, clang, Rust, libmosquitto, rdofradio, the package |
 | `test.sh DEB [IMAGE ...]` | Installs the package in a clean container of each release and runs it (ARM ones under QEMU; armhf also on an emulated ARMv6). `APT_CACHE=DIR` keeps the downloads in DIR |
 | `publish.sh DEBS SITE` | The repository from a folder of packages, signed with `APT_SIGNING_KEY` (the private key, ASCII armored) |
