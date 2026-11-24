@@ -455,7 +455,9 @@ shares its parts: the sessions, the burst feed, the I/Q history and the transmit
   (`esp32s3-gateway`, `rdofradio`), `ver` and, on a board, `mac` (the Wi-Fi station's).
 - One request a connection: a JSON object on one line. The replies are JSON objects, one a line. A reply line with
   `"bytes": N` is followed by N bytes of payload (I/Q samples) before the next line.
-- Closing the connection cancels the request: a capture stops, a transmission unkeys, a session ends.
+- Closing the connection cancels the request: a capture stops, a transmission unkeys, a session ends. A `run`,
+  `bursts` or `listen` can instead be ended now with what its timer's end gives: `{"op": "end"}` on its own
+  connection, or `stop` from another (section 14.3).
 - Errors are `{"error": "text", "code": "..."}`, the request's last line, with the codes of section 1 plus the
   daemon's `deadlock`. A wait is reported as the daemon's: `{"state": "queued", "kind", "eta_s", "worst_s",
   "ahead", "blockers"}`, then `{"state": "granted", "kind", "waited_s"}`. `{"note": "text"}` is for the user.
@@ -477,6 +479,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `run` | `session`, `job` (section 14.3), `argv`, `kind`, `expect_s`, `max_s`, `wait_max` | queued / granted, `{"started": ID}`, `{"out": line}` and `{"err": line}`, `{"exit": code}` |
 | `bursts` | `session`, `freq`, `seconds`, `max_bursts`, `until_end`, `cc`, `soft` | `{"ready": t0}`, `{"burst": record}`, `{"done": summary}`, or `no_signal` |
 | `listen` | `freq`, `seconds` | `{"burst": record}` |
+| `stop` | `job` (a `run`'s `started` ID), `session` (the job's, when it has one) | `{"stopped": ID}`; `bad_request` when no such job runs, `refused` for another session's job or an `outbound` |
 | `capture` | `session`, `freq`, `seconds`, `pre_s`, `gain`, `mode`, `offset_khz` | `{"ready": t0, "shared": true, "center": MHz, "pre_s", "fs", "sc0"}` (sc0: the first sample's, so a client places every frame, gaps as zeros), `{"iq": {"seq", "n", "sc", "flags"}, "bytes": N}` + cs8 samples, `{"done": meta}` |
 | `trigger` | `session`, `freq`, `bw`, `pre_s`, `post_s`, `threshold_db`, `min_ms`, `timeout_s`, `fmt`, `until_end`, `max_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"iq": ...}` + samples (`sc` the channel sample's index), `{"done": meta}`, or `no_signal` |
 | `track` | `session`, `freq`, `mode` (`fm`, `4fsk`), `bw`, `interval_ms`, `line_ms`, `threshold_db`, `min_ms`, `timeout_s`, `max_s`, `post_s`, `drift_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"track": line}` an interval, `{"done": summary}`, or `no_signal` (section 14.8) |
@@ -775,6 +778,14 @@ tool's own `ambe` (its bytes come as `ambe_hex`), `port` and `verbose` pass.
   is 0, 1 when the transmitter failed, or -9 with `killed` when the job ran past `max_s`. A TX job's `started`
   comes when it has the modem; `listen` starts at once.
 - Files a job writes (`--ambe-out`) are the client's: the job sends their bytes as `{"file": name, "bytes": N}`.
+- Ending a job now: a line `{"op": "end"}` on the job's own connection, any time after the request, or
+  `{"op": "stop", "job": ID}` on another (ID: its `started`; a session's job only with that `session`). The job ends
+  as its timer's end would: a `listen` (or a TX job's `listen_after`) sends its per-call summaries and its files, a
+  `bench_repeater` closes and sends its `summary`, and the exit is 0. A key-up on the air goes out whole; the job's
+  later key-ups and its `listen_after` don't. A job still waiting for the modem exits 0 and never keys. The log has
+  `stopped by the client`. An `outbound` runs to its end (`refused`, or a note on its own connection). A
+  `bursts` ends with its `done` (`reason` `"stopped"`), a `listen` op as at its `seconds`. Any other line after the
+  request is answered with a note and ignored; closing the connection still cancels with nothing sent.
 
 ### 14.4 Arbitration
 
@@ -826,6 +837,9 @@ MHz...]` and `release --tune` of its own. Its stdout and stderr are the daemon c
 `READY` and `wrote` lines, the `rfoundry-bench:` notes, the JSON lines), and so are its exit codes: 0, 1, 3 nothing
 heard, 69 the gateway can't be reached or can't do it, 75 busy or timed out, 77 refused. `run -- python bench_tx.py
 ARGS` (any interpreter, any directory) sends the job; `--file` and `--out` files are written where the client runs.
+On `run`, `listen` and `dmr-bursts` the first SIGINT or SIGTERM sends `{"op": "end"}` (section 14.3), so the job
+ends now with its summary, files and exit code; a second one (or 30 s with no reply, an older gateway) closes the
+connection, which cancels it. `rfgbench.py stop JOB [--session ID]` ends a job from elsewhere.
 
 ### 14.6 Signal modes: tx and rx
 

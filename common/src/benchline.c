@@ -59,6 +59,7 @@ typedef struct {
     int state;
     double until, started, max_s;
     bool tx_open, listening;
+    bool stop;                /* the client asked it to end now ({"op":"end"} or stop) */
     rdof_bj_listener_t lis;
     /* bench_repeater */
     bool rpt_open, keyed;
@@ -228,6 +229,9 @@ typedef struct {
     struct envx *ex;          /* bursts with "envelope": its segments waiting for their bursts, the figures */
     struct sigtx *stx;        /* tx */
     bool in_eof;              /* the client shut its sending side (a tx stream's end): nothing more is read */
+    char tail[64];            /* a line after a run's, listen's or bursts' request ({"op":"end"}) */
+    int tn;
+    bool stop_early;          /* {"op":"end"} came while a retune held the request back: it ends as it starts */
     struct sigrx *srx;        /* rx */
 } conn_t;
 
@@ -696,6 +700,7 @@ static size_t stx_room(const conn_t *c);
 static bool stx_input_end(conn_t *c);
 static void sig_end(rdof_bl_t *bl, conn_t *c);
 static double trig_utc(const rdof_bl_t *bl, uint64_t sc, double now, uint64_t next, double fs);
+static void tail_input(rdof_bl_t *bl, conn_t *c, const char *b, size_t n, double now);
 
 void rdof_bl_input(rdof_bl_t *bl, int ci, const char *data, size_t n, double now)
 {
@@ -729,6 +734,8 @@ void rdof_bl_input(rdof_bl_t *bl, int ci, const char *data, size_t n, double now
     /* After the request only a tx op's stream counts (the rest is dropped); closing is what counts. */
     if (i < n && c->stx)
         stx_input(bl, c, (const uint8_t *)data + i, n - i);
+    else if (i < n && c->state == C_ACTIVE && (c->op == OP_RUN || c->op == OP_BURSTS || c->op == OP_LISTEN || c->rerun || c->autotune))
+        tail_input(bl, c, data + i, n - i, now);
     unlock(bl);
 }
 
@@ -2241,6 +2248,7 @@ static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
     }
     c->job = J;
     c->op = OP_RUN;
+    J->stop = c->stop_early;
     c->ch = kr >= 0 ? bl->f[kr].ch : -1;
     J->max_s = jnum(bl, root, "max_s", 0);
     J->id = ++bl->next_seq;
@@ -2343,6 +2351,7 @@ static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
         return;
     c->job = J;
     c->op = OP_RUN;
+    J->stop = c->stop_early;
     c->ch = k >= 0 ? bl->f[k].ch : -1;
     J->max_s = jnum(bl, root, "max_s", 0);
     J->id = ++bl->next_seq;
@@ -2457,6 +2466,7 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
     }
     c->job = J;
     c->op = OP_RUN;
+    J->stop = c->stop_early;
     c->ch = k >= 0 ? bl->f[k].ch : -1;
     J->max_s = jnum(bl, root, "max_s", 0);
     J->id = ++bl->next_seq;
@@ -2642,7 +2652,7 @@ static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
             }
             rdof_bj_rpt_record(utc_now(bl, now), body, rpt_out, &rc);
         }
-        if (now < J->ends)
+        if (now < J->ends && !J->stop)
             break;
         bl->p.rpt_close(bl->p.ctx);
         J->rpt_open = false;
@@ -2933,6 +2943,10 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
     }
     switch (J->state) {
     case J_OPEN: {
+        if (J->stop) { /* stopped as it got the modem: nothing keys */
+            run_exit(bl, c, 0, NULL);
+            return;
+        }
         static const char *const CMDS[] = {"", "voice", "csbk", "data", "listen", "repeater", "outbound", "raw"};
         const char *fam = family_why(bl, j); /* the path may have changed while the job waited */
         if (fam) {
@@ -2987,7 +3001,7 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
         run_log(bl, c, now, "sent %d bursts", J->nb);
         if (J->done[0])
             run_log(bl, c, now, "%s", J->done);
-        if (++J->part < J->nparts) {
+        if (++J->part < J->nparts && !J->stop) {
             J->until = now + rdof_bj_gap(j);
             J->state = J_GAP;
             break;
@@ -2995,7 +3009,7 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
         bl->p.tx_close(bl->p.ctx);
         J->tx_open = false;
         bl->tx_conn = -1;
-        if (j->listen_after > 0) {
+        if (j->listen_after > 0 && !J->stop) {
             run_log(bl, c, now, "listening on %.4f MHz for %.0f s", j->freq_mhz, j->listen_after);
             run_listen(bl, c, now, j->listen_after);
         } else {
@@ -3003,11 +3017,18 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
         }
         break;
     case J_GAP:
-        if (now >= J->until)
+        if (J->stop) {
+            bl->p.tx_close(bl->p.ctx);
+            J->tx_open = false;
+            bl->tx_conn = -1;
+            run_log(bl, c, now, "stopped after %d of %d key-ups", J->part, J->nparts);
+            run_exit(bl, c, 0, NULL);
+        } else if (now >= J->until) {
             run_build(bl, c, now);
+        }
         break;
     case J_LISTEN:
-        if (now >= J->until) {
+        if (now >= J->until || J->stop) {
             run_ctx_t r = {bl, c};
             rdof_bj_listen_summary(&J->lis, j->ambe_out, run_out, run_file, &r);
             run_exit(bl, c, 0, NULL);
@@ -3905,6 +3926,88 @@ static void op_mssim(rdof_bl_t *bl, conn_t *c, int root, double now)
     emit(bl, c, "{\"mssim\":{%s}}", out);
 }
 
+/* End a run, listen or bursts request now, as its timer would: the same records, summary, files and exit 0
+ * (section 14.3). A key-up on the air goes out whole; what would come after it (more key-ups, listen_after) doesn't.
+ * NULL, or why it can't. */
+static const char *job_stop(rdof_bl_t *bl, conn_t *c, double now)
+{
+    if (c->state != C_ACTIVE)
+        return "it has ended";
+    if (c->op != OP_RUN && (c->rerun || c->autotune)) { /* not started yet: a retune first */
+        c->stop_early = true;
+        return NULL;
+    }
+    if (c->op == OP_BURSTS || c->op == OP_LISTEN) {
+        bursts_done(bl, c, "stopped", now);
+        return NULL;
+    }
+    job_t *J = c->job;
+    if (c->op != OP_RUN || !J)
+        return "it isn't a job";
+    if (J->job.cmd == RDOF_BJ_OUTBOUND)
+        return "an outbound runs to its end";
+    if (!J->stop)
+        run_log(bl, c, now, "stopped by the client");
+    J->stop = true;
+    if (c->wait != W_NONE) { /* still waiting for the modem: it never keys */
+        c->wait = W_NONE;
+        run_exit(bl, c, 0, NULL);
+    }
+    return NULL;
+}
+
+/* A line after the request, on its own connection: {"op":"end"} ends it now (job_stop); anything else is noted. */
+static void tail_input(rdof_bl_t *bl, conn_t *c, const char *b, size_t n, double now)
+{
+    for (size_t i = 0; i < n && c->state == C_ACTIVE; i++) {
+        if (b[i] != '\n') {
+            if (c->tn + 1 < (int)sizeof c->tail)
+                c->tail[c->tn++] = b[i];
+            continue;
+        }
+        c->tail[c->tn] = 0;
+        const int tn = c->tn;
+        c->tn = 0;
+        if (!tn || (tn == 1 && c->tail[0] == '\r'))
+            continue;
+        bl->doc = (rdof_jdoc_t){.nodes = bl->nodes, .max = NODES, .buf = bl->strbuf, .cap = RDOF_BL_LINE_MAX + 64};
+        const int root = rdof_jparse(&bl->doc, c->tail, (size_t)tn);
+        const rdof_jnode_t *r = rdof_jnode(&bl->doc, root);
+        const char *op = r && r->type == RDOF_JOBJ ? jstrv(bl, root, "op") : NULL;
+        const char *no = op && !strcmp(op, "end") ? job_stop(bl, c, now) : "only {\"op\":\"end\"} is read after the request";
+        if (no) {
+            char m[120], q[160];
+            snprintf(m, sizeof m, "not ended: %s", no);
+            jstr(m, q, sizeof q);
+            emit(bl, c, "{\"note\":%s}", q);
+        }
+    }
+}
+
+/* {"op":"stop","job":ID}: another connection ends job ID now, as {"op":"end"} on its own would. A job of a session
+ * is stopped only by a request naming that session. */
+static void op_stop(rdof_bl_t *bl, conn_t *c, int root, double now)
+{
+    const double id = jnum(bl, root, "job", NAN);
+    const char *sess = jstrv(bl, root, "session");
+    for (int i = 0; i < RDOF_BL_CONNS; i++) {
+        conn_t *o = &bl->c[i];
+        if (o->state != C_ACTIVE || o->op != OP_RUN || !o->job || (double)o->job->id != id)
+            continue;
+        if (o->sess >= 0 && (!sess || strcmp(sess, bl->s[o->sess].id))) {
+            fail(bl, c, "refused", "job %.0f is session %s's", id, bl->s[o->sess].id);
+            return;
+        }
+        const char *no = job_stop(bl, o, now);
+        if (no)
+            fail(bl, c, "refused", "job %.0f: %s", id, no);
+        else
+            emit(bl, c, "{\"stopped\":%.0f}", id);
+        return;
+    }
+    fail(bl, c, "bad_request", "no running job %.0f here", id);
+}
+
 static void request(rdof_bl_t *bl, int ci, double now)
 {
     conn_t *c = &bl->c[ci];
@@ -3952,6 +4055,8 @@ static void request(rdof_bl_t *bl, int ci, double now)
         op_tune(bl, c, root, now);
     else if (!strcmp(op, "mssim"))
         op_mssim(bl, c, root, now);
+    else if (!strcmp(op, "stop"))
+        op_stop(bl, c, root, now);
     else if (!strcmp(op, "activity") || !strcmp(op, "burstlog") || !strcmp(op, "bridge"))
         fail(bl, c, "unsupported", "this bench has no %s yet", op);
     else
@@ -4721,7 +4826,9 @@ static void tick_bursts(rdof_bl_t *bl, double now)
         conn_t *c = &bl->c[i];
         if (c->state != C_ACTIVE || (c->op != OP_BURSTS && c->op != OP_LISTEN))
             continue;
-        if (c->max && c->sent >= c->max)
+        if (c->stop_early)
+            bursts_done(bl, c, "stopped", now);
+        else if (c->max && c->sent >= c->max)
             bursts_done(bl, c, "bursts", now);
         else if (c->until_end && c->sent && now - c->last_mono > UNTIL_END_S + 0.1)
             bursts_done(bl, c, "ended", now);

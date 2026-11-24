@@ -160,22 +160,46 @@ def request(where, req: dict) -> dict:
         c.close()
 
 
+END_WAIT_S = 30.0   # after {"op":"end"}: an older gateway ignores it, so the client closes after this long quiet
+
+
 def stream(where, req: dict, on_line: Callable[[dict, Optional[bytes]], Optional[int]],
-           hold: Optional[dict] = None) -> int:
+           hold: Optional[dict] = None, soft_end: bool = False) -> int:
     """Send req; waits and notes to stderr, every other line to on_line (which may return an exit code). hold: gets
-    the connection as hold["conn"], for a deadline to end it."""
+    the connection as hold["conn"], for a deadline to end it. soft_end (run, listen, dmr-bursts): the first SIGINT or
+    SIGTERM sends {"op":"end"}, so the request ends now with what its timer's end gives (records, summary, files,
+    exit 0, bench-api.md 14.3); a second one closes the connection, which cancels it."""
     c = Conn(where)
     if hold is not None:
         hold["conn"] = c
+    ending = [0]
 
     def stop(signum, frame):
+        if soft_end and not ending[0]:
+            ending[0] = signum
+            try:
+                c.s.sendall(b'{"op":"end"}\n')
+                c.s.settimeout(END_WAIT_S)
+                print(f"{NOTE} ending it now (again to drop it)", file=sys.stderr, flush=True)
+                return
+            except OSError:
+                pass
         c.close()
         sys.exit(128 + signum)
     for sg in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sg, stop)
     try:
         c.send(req)
-        for d, data in c.lines():
+        it = c.lines()
+        while True:
+            try:
+                d, data = next(it)
+            except StopIteration:
+                break
+            except (socket.timeout, TimeoutError):
+                print(f"{NOTE} the gateway didn't end it in {END_WAIT_S:.0f} s (an older build?): dropped",
+                      file=sys.stderr, flush=True)
+                return 128 + ending[0]
             if "error" in d:
                 print(f"{NOTE} {d['error']}", file=sys.stderr, flush=True)
                 return EXIT.get(d.get("code"), 1)
@@ -543,6 +567,16 @@ def cmd_info(a) -> int:
     return 0
 
 
+def cmd_stop(a) -> int:
+    """stop JOB: a running job (its started number) ends now, as its own client's {"op":"end"} would."""
+    d = request(a.where, {"op": "stop", "job": a.job, "session": a.session})
+    if "error" in d:
+        print(f"{NOTE} {d['error']}", file=sys.stderr)
+        return EXIT.get(d.get("code"), 1)
+    print(f"{NOTE} stopped job {d['stopped']}", file=sys.stderr)
+    return 0
+
+
 def cmd_status(a) -> int:
     d = request(a.where, {"op": "status"})
     if a.json or "error" in d:
@@ -624,7 +658,8 @@ def cmd_listen(a) -> int:
     def on(d, data):
         if "burst" in d:
             print(json.dumps(d["burst"]), flush=True)
-    return stream(a.where, {"op": "listen", "freq": a.freq, "seconds": a.seconds, "session": a.session}, on)
+    return stream(a.where, {"op": "listen", "freq": a.freq, "seconds": a.seconds, "session": a.session}, on,
+                  soft_end=True)
 
 
 def ramp_table(ramps: list, totals: dict) -> str:
@@ -729,7 +764,8 @@ def cmd_dmr_bursts(a) -> int:
                               "max_bursts": a.bursts, "until_end": a.until_end, "cc": a.cc, "soft": a.soft,
                               "wait_max": a.wait_max, **({"envelope": True} if a.envelope else {}),
                               **({"ramp": True} if a.ramp else {}),
-                              **({"raw": True, **({"rate": a.rate} if a.rate else {})} if a.raw else {})}, on, hold)
+                              **({"raw": True, **({"rate": a.rate} if a.rate else {})} if a.raw else {})}, on, hold,
+                    soft_end=True)
         if not hold["done"] and rc == 0:          # the stream ended with no summary: one from here
             s = {"bursts": n[0], "freq": a.freq * 1e6, "reason": "the gateway stopped answering"
                  if timer else "the connection ended"}
@@ -1456,7 +1492,7 @@ def cmd_run(a) -> int:
         return None
     return stream(a.where, {"op": "run", "session": a.session, "job": job, "argv": argv, "modem": a.modem,
                             "kind": a.kind, "label": a.label, "expect_s": a.expect, "max_s": a.max,
-                            "wait_max": a.wait_max}, on)
+                            "wait_max": a.wait_max}, on, soft_end=True)
 
 
 def main(argv=None) -> int:
@@ -1480,6 +1516,8 @@ def main(argv=None) -> int:
     s.add_argument("--seconds", type=float, default=1.5, help="how long to listen for DNS-SD answers")
     s = p("info", cmd_info, False)
     s.add_argument("--json", action="store_true")
+    s = p("stop", cmd_stop)
+    s.add_argument("job", type=int, help="the job's number (its started line)")
     s = p("status", cmd_status, False)
     s.add_argument("--json", action="store_true")
     s = p("session", cmd_session, False)
