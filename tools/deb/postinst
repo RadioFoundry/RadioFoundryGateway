@@ -12,7 +12,8 @@ if [ "$1" = configure ]; then
     mkdir -p /etc/rdofradio
     [ -f /etc/rdofradio/config.json ] ||
         cp /usr/share/rdofradio/config.json /etc/rdofradio/config.json
-    chown -R rdofradio:rdofradio /etc/rdofradio
+    # the page saves the settings there; named, not -R: a 32-bit chown can't read a directory with 64-bit inode numbers
+    chown rdofradio:rdofradio /etc/rdofradio /etc/rdofradio/config.json
     chmod 750 /etc/rdofradio
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload >/dev/null || true
