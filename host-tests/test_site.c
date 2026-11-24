@@ -548,6 +548,30 @@ static void test_siteroute(const char *dir)
         CHECK(rdof_siteroute_burst(&sr, 0, path("dc/2")->peer_id, &b, 1) == 1ull << rdof_site_path(&S, "dc/2") &&
                   d.net_count == 1 && d.net_in[0].slot == 2, "TG 3105: slot 2");
     }
+    /* a login (BrandMeister): the master picks the slot; a TG both slots carry goes out on the one it came down on */
+    static const char bm[] = "{\"version\": 3, \"id\": 9800100, \"callsign\": \"N0CALL\", \"defaults\": {\"cc\": 1}, "
+                             "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"sim\"}], "
+                             "\"policies\": [{\"name\": \"all\", \"tg\": \"91,3100\"}], "
+                             "\"frequencies\": [{\"name\": \"in\", \"freq\": 438.75}, {\"name\": \"out\", \"freq\": 438.25}], "
+                             "\"apps\": [{\"name\": \"R1\", \"type\": \"repeater\", \"in\": \"in\", \"out\": \"out\", "
+                             "\"slots\": {\"1\": \"all\", \"2\": \"all\"}}], "
+                             "\"networks\": [{\"type\": \"brandmeister\", \"host\": \"bm.example.net\", \"password\": \"x\", "
+                             "\"peer_ids\": {\"R1\": 310012}}]}";
+    {
+        char e[160];
+        CHECK(rdof_site_parse(bm, sizeof bm - 1, &S, e, sizeof e), "%s", e);
+        static rdof_repeater_t r;
+        rdof_repeater_init(&r, NULL, S.id, 438750000, 438250000, 1);
+        rdof_siteroute_init(&sr, &S);
+        CHECK(rdof_siteroute_add_repeater(&sr, rdof_site_app(&S, "R1"), &r), "BM repeater");
+        const uint32_t peer = path("R1/1")->peer_id;
+        rdof_net_burst_t b = net_burst(0x91, 3198815, 91, true, 1, false, false);
+        CHECK(rdof_siteroute_burst(&sr, 0, peer, &b, 1) == 1ull << rdof_site_path(&S, "R1/1") && r.net_count == 1 &&
+                  r.net_in[0].slot == 1, "BM TG 91 on TS1: TS1 only (%u)", r.net_count);
+        b = net_burst(0x92, 3197206, 3100, true, 2, false, false);
+        CHECK(rdof_siteroute_burst(&sr, 0, peer, &b, 1.1) == 1ull << rdof_site_path(&S, "R1/2") && r.net_count == 2 &&
+                  r.net_in[1].slot == 2, "BM TG 3100 on TS2: TS2 only");
+    }
     /* identity per_path: a stream goes only to the paths of the peer it came to */
     static const char pp[] = "{\"version\": 3, \"id\": 9800700, \"defaults\": {\"cc\": 1, \"tg\": 3100}, "
                              "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"sim\"}], "

@@ -157,6 +157,13 @@ uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, cons
             if (s->path[k].peer_id == peer)
                 only |= 1ull << k;
     }
+    /* A login (BrandMeister, a Homebrew master) routes each call to a slot of the repeater's itself: the call goes
+       out on the slot it came down on, never on both because both slots carry its talkgroup. A simplex path (slot
+       0) takes either. HBlink leaves the slot to the paths' policies. */
+    if (net >= 0 && net < s->nnet && s->net[net].login && (b->slot == 1 || b->slot == 2))
+        for (int k = 0; k < s->npath; k++)
+            if (s->path[k].slot && s->path[k].slot != b->slot)
+                only &= ~(1ull << k);
     return rdof_siteroute_burst_on(sr, net, only, false, b, now);
 }
 
