@@ -27,4 +27,23 @@ release, and publishes the repository (this release and the two before it) to th
 | `CLOUDFLARE_API_TOKEN` | A token with Cloudflare Pages: Edit on the account |
 | `CLOUDFLARE_ACCOUNT_ID` | The account that holds the project |
 
-A new key: users then fetch `radiofoundry.gpg` again (README, "Install with apt").
+Without them a release still gets its packages on GitHub, and the workflow warns that the repository wasn't
+published. A pull request that changes the packaging builds and tests the packages only.
+
+The token can't be narrower than an account (a Pages permission covers every project in it), so the project goes in
+a Cloudflare account of its own that holds nothing else; `apt.radiofoundry.org` is a CNAME to
+`radiofoundry-apt.pages.dev` in the zone's account, and a custom domain on the project. The other way needs no
+token: the workflow pushes the site to a branch and a Pages project with Git integration deploys it.
+
+A new key: users then fetch `radiofoundry.gpg` again (the lines below).
+
+## When the repository is live
+
+The main README's "Install the package" becomes these lines, which also bring updates with `apt upgrade`:
+
+```sh
+sudo apt install -y curl ca-certificates
+sudo curl -fsSL https://apt.radiofoundry.org/radiofoundry.gpg -o /usr/share/keyrings/radiofoundry.gpg
+echo "deb [signed-by=/usr/share/keyrings/radiofoundry.gpg] https://apt.radiofoundry.org stable main" | sudo tee /etc/apt/sources.list.d/radiofoundry.list
+sudo apt update && sudo apt install -y rdofradio
+```

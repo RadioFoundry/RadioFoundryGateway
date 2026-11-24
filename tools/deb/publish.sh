@@ -41,7 +41,7 @@ gpg --batch --yes --local-user "$KEY" --digest-algo SHA512 --clearsign -o dists/
 gpg --batch --yes --local-user "$KEY" --digest-algo SHA512 -abs -o dists/stable/Release.gpg dists/stable/Release
 gpg --batch --export "$KEY" > radiofoundry.gpg
 gpg --batch --armor --export "$KEY" > radiofoundry.asc
-# a page for a browser: how to add the repository (README.md, "Install with apt")
+# a page for a browser: how to add the repository (tools/deb/README.md, "When the repository is live")
 {
     echo '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>RadioFoundry apt repository</title>'
     echo '<style>body{font:16px/1.5 system-ui,sans-serif;max-width:52rem;margin:2rem auto;padding:0 1rem}pre{background:#f2f2f2;padding:1rem;overflow-x:auto}</style>'

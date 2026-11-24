@@ -1496,7 +1496,7 @@ build/linux/rdofradio --soapy driver=rtlsdr -r 2.4e6 --gain 30 --ppm PPM --allow
 ### apt packages
 
 `tools/deb/` builds one `rdofradio` package per architecture (amd64, arm64, armhf) that installs on Debian 10 to 13,
-Raspberry Pi OS and Pi-Star 4.x, and Ubuntu 20.04 to 26.04 ([README](../README.md#install-with-apt) has the lines to
+Raspberry Pi OS and Pi-Star 4.x, and Ubuntu 20.04 to 26.04 ([README](../README.md#install-the-package) has the lines to
 paste; [tools/deb/README.md](../tools/deb/README.md) how they're built and published).
 
 | Part | How it runs on all of them |
