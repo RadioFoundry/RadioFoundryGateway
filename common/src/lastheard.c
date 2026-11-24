@@ -13,7 +13,7 @@
 
 static void copy(char *dst, size_t cap, const char *src)
 {
-    snprintf(dst, cap, "%s", src ? src : "");
+    snprintf(dst, cap, "%.*s", cap ? (int)(cap - 1) : 0, src ? src : ""); /* cut to the field */
 }
 
 void rdof_lh_init(rdof_lh_t *lh, rdof_lh_entry_t *buf, int cap)

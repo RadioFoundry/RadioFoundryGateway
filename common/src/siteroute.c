@@ -184,6 +184,7 @@ uint64_t rdof_siteroute_burst_on(rdof_siteroute_t *sr, int net, uint64_t only, b
         const rdof_path_t *p = &s->path[k];
         rdof_net_burst_t o = *b;
         o.slot = p->tx_slot ? p->tx_slot : b->slot;
+        (void)o; /* unused in a build with neither the repeater nor TX */
         const bool by_freq = p->app < 0 && s->freq[p->tx_freq].mode != RDOF_FMODE_SIMPLEX;
         if (p->app >= 0 || by_freq) {
 #if RDOF_FEATURE_REPEATER

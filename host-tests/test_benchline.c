@@ -2022,7 +2022,7 @@ static void test_raw(void)
         char *p = list + strlen(list);
         *p++ = i ? ',' : '"';
         for (int k = 0; k < 33; k++)
-            p += sprintf(p, "%02X", ref[i].burst[k]);
+            p += snprintf(p, 3, "%02X", ref[i].burst[k]);
     }
     strcat(list, "\"");
     /* one string with commas */
@@ -2036,9 +2036,9 @@ static void test_raw(void)
     char arr[2048] = "[";
     for (int i = 0; i < nref; i++) {
         char *p = arr + strlen(arr);
-        p += sprintf(p, "%s\"", i ? "," : "");
+        p += snprintf(p, 3, "%s\"", i ? "," : "");
         for (int k = 0; k < 33; k++)
-            p += sprintf(p, "%02x", ref[i].burst[k]);
+            p += snprintf(p, 3, "%02x", ref[i].burst[k]);
         strcpy(p, "\"");
     }
     strcat(arr, "]");

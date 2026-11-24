@@ -1017,7 +1017,7 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
                                 bl->p.iq_read ? "wideband" : bl->p.ch_open ? "channels" : "none", dev);
     for (int i = 0; i < bl->nf && k < line_cap; i++) {
         const rdof_bl_freq_t *f = &bl->f[i];
-        char caps[96], held[96] = "null", qid[40];
+        char caps[96], held[128] = "null", qid[40];
         caps_json(f->caps, !st_mmdvm, caps, sizeof caps);
         const int s = claimed_by(bl, f->freq_hz / 1e6);
         if (s >= 0) {
@@ -4109,17 +4109,17 @@ static void tick_waits(rdof_bl_t *bl, double now)
     }
 }
 
-static const char *kind_name(int dt, int n, char tmp[12])
+static const char *kind_name(int dt, int n, char tmp[16])
 {
     static const char *const names[] = {"PI_HDR", "VLC_HDR", "TERM_LC", "CSBK", "MBC_HDR", "MBC_CONT",
                                         "DATA_HDR", "R1/2", "R3/4", "IDLE", "R1", "USBD"};
     if (dt == RDOF_BL_VOICE_SYNC || dt == RDOF_BL_VOICE) {
-        snprintf(tmp, 12, "VOICE_%c", 'A' + (n >= 0 && n < 6 ? n : 0));
+        snprintf(tmp, 16, "VOICE_%c", 'A' + (n >= 0 && n < 6 ? n : 0));
         return tmp;
     }
     if (dt >= 0 && dt < 12)
         return names[dt];
-    snprintf(tmp, 12, "dt%d", dt);
+    snprintf(tmp, 16, "dt%d", dt);
     return tmp;
 }
 
@@ -4588,7 +4588,7 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
     double gerr = rel - gn * SLOT_MS;
     if (fabs(gerr) < 0.0005)
         gerr = 0; /* not -0.000 */
-    char kt[12], prev[24] = "null", hex[67];
+    char kt[16], prev[24] = "null", hex[67];
     if (!isnan(c->prev_t))
         snprintf(prev, sizeof prev, "%.3f", 1e3 * (t - c->prev_t));
     for (int i = 0; i < 33; i++)
@@ -4659,7 +4659,7 @@ static void bursts_done(rdof_bl_t *bl, conn_t *c, const char *reason, double now
         c->state = C_DONE;
         return;
     }
-    char kinds[400] = "", syncs[200] = "", kt[12];
+    char kinds[400] = "", syncs[200] = "", kt[16];
     size_t k = 0, m = 0;
     for (int i = 0; i < 18; i++)
         if (c->kinds[i] && k < sizeof kinds)

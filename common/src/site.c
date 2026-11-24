@@ -186,7 +186,7 @@ static bool active_slots_ok(ctx_t *c, int node, const char *path)
         ok = num_of(c, at(c, node, k), &v) && (v == 1 || v == 2);
     }
     if (ok && count(c, node) == 2) {
-        double a, b;
+        double a = 0, b = 0;
         num_of(c, at(c, node, 0), &a);
         num_of(c, at(c, node, 1), &b);
         ok = a != b;

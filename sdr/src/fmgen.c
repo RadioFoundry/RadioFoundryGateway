@@ -341,7 +341,7 @@ static float seg_value(rdof_fmg_t *g, const rdof_fmg_seg_t *s, uint64_t k)
         const uint64_t d = per ? k / per : 0;
         if (d >= s->n || k % per >= on)
             return 0;
-        float lo, hi;
+        float lo = 0, hi = 0; /* the digits were checked when the job was set */
         rdof_dtmf_tones((char)g->c.data[s->off + d], &lo, &hi);
         const float v = rdof_fm_sin(g->ph[0]) + rdof_fm_sin(g->ph[1]);
         g->ph[0] += inc_of(lo, fs), g->ph[1] += inc_of(hi, fs);

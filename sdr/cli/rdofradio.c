@@ -2651,7 +2651,7 @@ static struct {
     pthread_mutex_t mu;     /* all of it: the main loop writes active, keyed and the clock, the bench's thread reads */
     int want;               /* 1 open, 2 unkey, 3 close */
     bool active, unkeyed, failed;
-    char why[120];
+    char why[160];
     rdof_bl_ob_cfg_t cfg;
     double asked;
     rdof_bl_ob_state_t s;   /* the slot clock, as the main loop last saw it */
@@ -4169,7 +4169,7 @@ static void chan_point(int c)
 static bool move_lo(double hz, char *why, size_t cap)
 {
     if (!dev || !dev->set_rx_freq || dev->set_rx_freq(dev, hz)) {
-        snprintf(why, cap, "the receiver's LO can't move to %.4f MHz%s%s", hz / 1e6, dev ? ": " : "",
+        snprintf(why, cap, "the receiver's LO can't move to %.4f MHz%s%.80s", hz / 1e6, dev ? ": " : "",
                  dev ? dev->error : "");
         return false;
     }
@@ -4291,7 +4291,7 @@ static bool tune_apply(const rdof_bl_tune_t *t, char *why, size_t cap)
     TU.moved = center != c0;
     if (isfinite(want_gain)) {
         if (dev->set_rx_gain(dev, want_gain)) {
-            snprintf(why, cap, "the receiver's gain: %s", dev->error);
+            snprintf(why, cap, "the receiver's gain: %.100s", dev->error);
             return false;
         }
         TU.gained = true, TU.gain_db = want_gain;
@@ -5503,7 +5503,7 @@ static void *raw_thread(void *arg)
     RAW.fs = fs;
     const bool gained = !rc && isfinite(RAW.gain);
     if (gained && dev->set_rx_gain(dev, RAW.gain)) {
-        snprintf(err, sizeof err, "the gain %.1f dB: %s", RAW.gain, dev->error);
+        snprintf(err, sizeof err, "the gain %.1f dB: %.100s", RAW.gain, dev->error);
         rc = -1;
     }
     long after = 0;

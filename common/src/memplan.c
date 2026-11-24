@@ -119,7 +119,7 @@ static int first_where(const rdof_mem_claim_t *c, bool psram)
 static void refuse(rdof_memplan_t *p, int r, const char *why)
 {
     p->role[r].state = RDOF_ROLE_REFUSED;
-    snprintf(p->role[r].why, sizeof p->role[r].why, "%s", why);
+    snprintf(p->role[r].why, sizeof p->role[r].why, "%.*s", (int)sizeof p->role[r].why - 1, why);
     for (int i = 0; i < p->n; i++)
         if (p->c[i].role == r) {
             p->c[i].where = RDOF_MEM_NOWHERE;

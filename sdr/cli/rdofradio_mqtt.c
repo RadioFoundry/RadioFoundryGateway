@@ -139,7 +139,7 @@ const char *rdofmq_hwid(void)
     struct dirent **list = NULL;
     const int n = scandir("/sys/class/net", &list, NULL, alphasort);
     for (int i = 0; i < n; i++) {
-        char path[300], mac[32] = "";
+        char path[sizeof list[i]->d_name + 32], mac[32] = "";
         if (!id[0] && list[i]->d_name[0] != '.' && strcmp(list[i]->d_name, "lo")) {
             snprintf(path, sizeof path, "/sys/class/net/%s/address", list[i]->d_name);
             FILE *f = fopen(path, "r");

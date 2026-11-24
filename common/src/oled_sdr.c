@@ -131,7 +131,7 @@ static int badge(rdof_frame_buf_t *f, int x, int y, const char *label, bool on, 
 static void line(rdof_frame_buf_t *f, int y, const char *s)
 {
     char b[COLS + 1];
-    snprintf(b, sizeof b, "%s", s);
+    snprintf(b, sizeof b, "%.*s", COLS, s);
     rdof_oled_text(f, 0, y, b, false, false);
 }
 

@@ -67,7 +67,7 @@ int nc_parse_servers(const char *list, nc_src_t *out, int max)
             memset(&out[k], 0, sizeof(out[k]));
             out[k].mark = '-';
             if (pool) {
-                snprintf(out[k].name, sizeof(out[k].name), "%d.%.36s", i, tok);
+                snprintf(out[k].name, sizeof(out[k].name), "%c.%.36s", '0' + i, tok);
             } else {
                 snprintf(out[k].name, sizeof(out[k].name), "%s", tok);
             }

@@ -885,7 +885,8 @@ static bool make_extras(plan_t *p)
             x->hz = f[i];
             x->cc = cc[i] >= 0 ? cc[i] : 1;
             x->dev = u->rx;
-            snprintf(x->id, sizeof x->id, "%s-%d", u->name, i + 1);
+            /* i < RDOF_SITE_MAX_CARRIERS: the number fits in the 4 bytes past the longest name */
+            snprintf(x->id, sizeof x->id, "%s-%u", u->name, (unsigned)(uint8_t)(i + 1));
         }
     }
     return true;
@@ -1265,7 +1266,9 @@ bool rdof_plan_roles_on(const rdof_plan_t *p, const rdof_plan_platform_t *plat, 
                              max, u->name);
                 return false;
             }
-            snprintf(roles->radios[roles->nradios++], sizeof roles->radios[0], "%s", u->name);
+            /* cut to the field's 23 characters, as rdof_config_t's name is (rdof_plan_radio finds it by that) */
+            snprintf(roles->radios[roles->nradios++], sizeof roles->radios[0], "%.*s", (int)sizeof roles->radios[0] - 1,
+                     u->name);
         }
         for (int d = 0; d < p->site.ndev; d++) {
             if (!rdof_plan_unit_uses(p, k, d) || p->site.dev[d].kind != RDOF_DEV_SDR || d == sdr)

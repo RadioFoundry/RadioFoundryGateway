@@ -119,6 +119,9 @@ const char *rdofradio_fpga_board(char *err, size_t cap)
     return b;
 }
 
+/* A path or name snprintf wrote whole: a cut path would name another file. */
+static bool fits(int n, size_t cap) { return n >= 0 && (size_t)n < cap; }
+
 /* rdof/<file> on the partition dev (its /dev name): where it's mounted, else mounted read-only for the look */
 static uint8_t *from_partition(const char *dev, const char *file, size_t *n, char *where, size_t cap)
 {
@@ -128,7 +131,8 @@ static uint8_t *from_partition(const char *dev, const char *file, size_t *n, cha
         char d[128], mp[256];
         if (sscanf(line, "%127s %255s", d, mp) == 2 && !strncmp(d, "/dev/", 5) && !strcmp(d + 5, dev)) {
             fclose(m);
-            snprintf(path, sizeof path, "%s/rdof/%s", mp, file);
+            if (!fits(snprintf(path, sizeof path, "%s/rdof/%s", mp, file), sizeof path))
+                return NULL;
             uint8_t *b = read_file(path, n);
             if (b)
                 snprintf(where, cap, "%s", path);
@@ -138,17 +142,17 @@ static uint8_t *from_partition(const char *dev, const char *file, size_t *n, cha
     if (m)
         fclose(m);
     static const char *fs[] = {"vfat", "ext4", "ext2"};
-    snprintf(path, sizeof path, "/dev/%s", dev);
+    if (!fits(snprintf(path, sizeof path, "/dev/%s", dev), sizeof path))
+        return NULL;
     mkdir(MNT, 0700);
     for (size_t i = 0; i < sizeof fs / sizeof fs[0]; i++)
         if (!mount(path, MNT, fs[i], MS_RDONLY | MS_NOATIME, NULL)) {
             char p[300];
-            snprintf(p, sizeof p, MNT "/rdof/%s", file);
-            uint8_t *b = read_file(p, n);
+            uint8_t *b = fits(snprintf(p, sizeof p, MNT "/rdof/%s", file), sizeof p) ? read_file(p, n) : NULL;
             umount2(MNT, 0);
             rmdir(MNT);
             if (b)
-                snprintf(where, cap, "rdof/%s on %s", file, path);
+                snprintf(where, cap, "rdof/%.63s on %.200s", file, path);
             return b;
         }
     rmdir(MNT);
@@ -207,7 +211,8 @@ static int bound(bound_t *t)
         if (e->d_name[0] == '.')
             continue;
         char dir[160];
-        snprintf(dir, sizeof dir, "/sys/bus/platform/drivers/%s", e->d_name);
+        if (!fits(snprintf(dir, sizeof dir, "/sys/bus/platform/drivers/%s", e->d_name), sizeof dir))
+            continue;
         DIR *dd = opendir(dir);
         struct dirent *x;
         while (dd && (x = readdir(dd)) && n < MAX_BOUND) {
@@ -215,8 +220,9 @@ static int bound(bound_t *t)
             const unsigned long a = strtoul(x->d_name, &dot, 16);
             if (*dot != '.' || dot == x->d_name || a < 0x40000000ul || a >= 0xC0000000ul)
                 continue;
+            if (!fits(snprintf(t[n].dev, sizeof t[n].dev, "%s", x->d_name), sizeof t[n].dev))
+                continue;
             snprintf(t[n].drv, sizeof t[n].drv, "%s", dir);
-            snprintf(t[n].dev, sizeof t[n].dev, "%s", x->d_name);
             t[n].order = !strcmp(e->d_name, "cf_axi_adc") ? 0 : !strcmp(e->d_name, "cf_axi_dds") ? 1 : 3;
             n++;
         }
@@ -236,11 +242,12 @@ static int bound(bound_t *t)
         for (size_t c = 0; c < sizeof core / sizeof core[0]; c++) {
             const size_t l = strlen(e->d_name), k = strlen(core[c].suffix);
             char link[200];
-            snprintf(link, sizeof link, "/sys/bus/platform/devices/%s/driver", e->d_name);
-            if (l <= k || strcmp(e->d_name + l - k, core[c].suffix) || !access(link, F_OK))
+            if (!fits(snprintf(link, sizeof link, "/sys/bus/platform/devices/%s/driver", e->d_name), sizeof link) ||
+                l <= k || strcmp(e->d_name + l - k, core[c].suffix) || !access(link, F_OK))
+                continue;
+            if (!fits(snprintf(t[n].dev, sizeof t[n].dev, "%s", e->d_name), sizeof t[n].dev))
                 continue;
             snprintf(t[n].drv, sizeof t[n].drv, "/sys/bus/platform/drivers/%s", core[c].drv);
-            snprintf(t[n].dev, sizeof t[n].dev, "%s", e->d_name);
             t[n++].order = (int)c;
         }
     if (d)
@@ -248,8 +255,9 @@ static int bound(bound_t *t)
     d = opendir("/sys/bus/spi/drivers/ad9361");
     while (d && (e = readdir(d)) && n < MAX_BOUND)
         if (!strncmp(e->d_name, "spi", 3)) {
+            if (!fits(snprintf(t[n].dev, sizeof t[n].dev, "%s", e->d_name), sizeof t[n].dev))
+                continue;
             snprintf(t[n].drv, sizeof t[n].drv, "/sys/bus/spi/drivers/ad9361");
-            snprintf(t[n].dev, sizeof t[n].dev, "%s", e->d_name);
             t[n++].order = 2;
         }
     if (d)

@@ -168,7 +168,7 @@ static void parse_rec(const char *s, rxres_t *o, long at)
         o->syncs++;
     } else if ((p = strstr(s, "{\"keying\":"))) {
         if (o->keyings++ == 0) {
-            snprintf(o->keying, sizeof o->keying, "%s", s);
+            snprintf(o->keying, sizeof o->keying, "%.*s", (int)sizeof o->keying - 1, s); /* the start is enough */
             o->rec_at = at;
             const char *q;
             if ((q = strstr(s, "\"cfo_hz\":")))

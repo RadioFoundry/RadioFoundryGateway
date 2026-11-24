@@ -949,7 +949,8 @@ static void test_fixtures(const char *dir)
     while (d && (e = readdir(d))) {
         if (!strstr(e->d_name, ".json"))
             continue;
-        snprintf(p, sizeof p, "%s/v3/%s", dir, e->d_name);
+        const int pn = snprintf(p, sizeof p, "%s/v3/%s", dir, e->d_name);
+        CHECK(pn > 0 && (size_t)pn < sizeof p, "%s: path too long", e->d_name);
         size_t len;
         char *t = slurp(p, &len);
         bool good = !strncmp(e->d_name, "good-", 5);

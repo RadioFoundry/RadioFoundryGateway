@@ -136,8 +136,8 @@ static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char 
     if (!rdof_t3cfg_plan(p, unit, &t->cfg, &t->pol, err, cap))
         return false;
     o->tier3 = true;
-    snprintf(t->name, sizeof t->name, "%s", u->name);
-    snprintf(o->name, sizeof o->name, "%s", u->name);
+    snprintf(t->name, sizeof t->name, "%.*s", (int)sizeof t->name - 1, u->name); /* cut, as rdof_config_t's */
+    snprintf(o->name, sizeof o->name, "%.*s", (int)sizeof o->name - 1, u->name);
     t->path = s->app[u->app].path[0];
     t->ncar = t->cfg.ncarriers;
     for (int k = 0; k < t->ncar; k++) {

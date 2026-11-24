@@ -1793,23 +1793,22 @@ void rdof_bj_rpt_frame(rdof_bj_rpt_t *r, double t, int duid, int nac, int rssi, 
     rdof_bj_rpt_record(t, body, emit, ctx);
 }
 
-/* A P25 or NXDN job's summary: frames by kind and losses. */
+/* A P25 or NXDN job's summary: frames by kind and losses. Written as the record line itself (no copy into a
+   second buffer: these run on the bench task's small stack). */
 static void frame_summary(const rdof_bj_rpt_t *r, double t, rdof_bj_emit_fn emit, void *ctx)
 {
-    char body[600], name[16];
+    char line[640], name[16];
     const bool p25 = r->mode == RDOF_MODE_P25;
-    size_t k = (size_t)snprintf(body, sizeof body, ", \"summary\": {\"mode\": \"%s\"", p25 ? "p25" : "nxdn");
+    size_t k = cat(line, 0, sizeof line, "{\"t\": %.3f, \"summary\": {\"mode\": \"%s\"", t, p25 ? "p25" : "nxdn");
     if (p25) {
-        for (int d = 0; d < 16 && k < sizeof body; d++)
+        for (int d = 0; d < 16; d++)
             if (r->frames[d])
-                k += (size_t)snprintf(body + k, sizeof body - k, ", \"%s\": %ld", duid_name(d, name, sizeof name),
-                                      r->frames[d]);
+                k = cat(line, k, sizeof line, ", \"%s\": %ld", duid_name(d, name, sizeof name), r->frames[d]);
     } else {
-        k += (size_t)snprintf(body + k, sizeof body - k, ", \"frames\": %ld", r->frames[0]);
+        k = cat(line, k, sizeof line, ", \"frames\": %ld", r->frames[0]);
     }
-    if (k < sizeof body)
-        snprintf(body + k, sizeof body - k, ", \"lost\": %ld}", r->lost);
-    rdof_bj_rpt_record(t, body, emit, ctx);
+    cat(line, k, sizeof line, ", \"lost\": %ld}}", r->lost);
+    emit(ctx, line);
 }
 
 void rdof_bj_rpt_summary(const rdof_bj_rpt_t *r, double t, rdof_bj_emit_fn emit, void *ctx)
@@ -1818,27 +1817,27 @@ void rdof_bj_rpt_summary(const rdof_bj_rpt_t *r, double t, rdof_bj_emit_fn emit,
         frame_summary(r, t, emit, ctx);
         return;
     }
-    char body[1200];
-    size_t k = (size_t)snprintf(body, sizeof body, ", \"summary\": {");
+    char line[1240]; /* 2 slots x 16 data types, voice and wakeups: about 1000 bytes at most */
+    size_t k = cat(line, 0, sizeof line, "{\"t\": %.3f, \"summary\": {", t);
     for (int s = 1; s <= 2; s++) {
         const rdof_bj_rpt_slot_t *st = &r->s[s];
-        k += (size_t)snprintf(body + k, sizeof body - k, "%s\"%d\": {", s == 2 ? ", " : "", s);
+        k = cat(line, k, sizeof line, "%s\"%d\": {", s == 2 ? ", " : "", s);
         const char *sep = "";
         for (int dt = 0; dt < 16; dt++)
             if (st->dt[dt]) {
-                k += (size_t)snprintf(body + k, sizeof body - k, "%s\"dt%d\": %ld", sep, dt, st->dt[dt]);
+                k = cat(line, k, sizeof line, "%s\"dt%d\": %ld", sep, dt, st->dt[dt]);
                 sep = ", ";
             }
         if (st->voice) {
-            k += (size_t)snprintf(body + k, sizeof body - k, "%s\"voice\": %ld", sep, st->voice);
+            k = cat(line, k, sizeof line, "%s\"voice\": %ld", sep, st->voice);
             sep = ", ";
         }
         if (st->wakeups)
-            k += (size_t)snprintf(body + k, sizeof body - k, "%s\"wakeups\": %ld", sep, st->wakeups);
-        k += (size_t)snprintf(body + k, sizeof body - k, "}");
+            k = cat(line, k, sizeof line, "%s\"wakeups\": %ld", sep, st->wakeups);
+        k = cat(line, k, sizeof line, "}");
     }
-    snprintf(body + k, sizeof body - k, "}");
-    rdof_bj_rpt_record(t, body, emit, ctx);
+    cat(line, k, sizeof line, "}}");
+    emit(ctx, line);
 }
 
 uint8_t rdof_bj_rpt_wake_burst(int cc, uint8_t out[33])

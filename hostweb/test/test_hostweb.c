@@ -158,7 +158,8 @@ static void settings(bool writable)
 {
     rdof_hostweb_settings_t h = {0};
     h.writable = writable;
-    snprintf(h.source, sizeof h.source, "%s %s", writable ? "file" : "command line flags, as", cfg_path);
+    const int sn = snprintf(h.source, sizeof h.source, "%s %s", writable ? "file" : "command line flags, as", cfg_path);
+    CHECK(sn > 0 && (size_t)sn < sizeof h.source);
     h.get = cfg_get;
     h.save = cfg_save;
     h.resolved = cfg_resolved;
@@ -383,7 +384,8 @@ int main(int argc, char **argv)
 
     /* the program's update: refused (none, a wrong image, too big), then written whole and the tool asked to stop */
     rdof_hostweb_ota_t o = {.max = 64, .check = ota_check, .done = ota_finish};
-    snprintf(o.path, sizeof o.path, "%s.ota", cfg_path);
+    const int on = snprintf(o.path, sizeof o.path, "%s.ota", cfg_path);
+    CHECK(on > 0 && (size_t)on < sizeof o.path);
     rdof_hostweb_ota(&o);
     http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "\"ota\":true"));

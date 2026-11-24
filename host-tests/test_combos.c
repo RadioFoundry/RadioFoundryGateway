@@ -42,10 +42,12 @@ static void one(const char *dir, char *line)
         return;
     *units++ = *board++ = *host++ = 0;
     char path[512];
+    int pn;
     if (!strncmp(file, "examples/", 9)) /* config/examples, beside the fixtures */
-        snprintf(path, sizeof path, "%s/%s", examples_dir, file + 9);
+        pn = snprintf(path, sizeof path, "%s/%s", examples_dir, file + 9);
     else
-        snprintf(path, sizeof path, "%s/%s", dir, file);
+        pn = snprintf(path, sizeof path, "%s/%s", dir, file);
+    CHECK(pn > 0 && (size_t)pn < sizeof path, "%s: path too long", file);
     FILE *f = fopen(path, "rb");
     CHECK(f, "%s: can't read", path);
     if (!f)

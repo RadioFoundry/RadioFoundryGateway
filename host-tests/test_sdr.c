@@ -870,7 +870,7 @@ static void test_resample(void)
     }
     /* blocks of 331 give the same samples as blocks of 4096 */
     static rdof_cf_t a[24000], b[24000];
-    int na, nb;
+    int na = 0, nb = 0;
     tone_out(250000, 240000, 37e3, 4096, a, &na);
     tone_out(250000, 240000, 37e3, 331, b, &nb);
     CHECK(na == nb && !memcmp(a, b, sizeof(rdof_cf_t) * (size_t)na), "resample blocks: %d / %d", na, nb);

@@ -253,8 +253,7 @@ void dmr_emb_lc_encode(const uint8_t lc[DMR_LC_BYTES], uint8_t frag[4][4])
 	uint8_t bits[16];
 
 	dmr_emb_lc_encode_bits(lc, bits);
-	for (int i = 0; i < 4; i++)
-		memcpy(frag[i], &bits[4 * i], 4);
+	memcpy(&frag[0][0], bits, sizeof bits); /* the 4 fragments are the 16 bytes in order */
 }
 
 bool dmr_emb_lc_decode_bits(const uint8_t bits[16], uint8_t lc[DMR_LC_BYTES])

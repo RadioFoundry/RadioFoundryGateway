@@ -1142,8 +1142,8 @@ static void test_records(void)
                           .ntg = 2, .sub = 91, .area = 3};
     char j[512];
     const size_t n = rdof_mn_record_json(&r, j, sizeof j);
-    CHECK(n > 0 && !strcmp(j, "{\"id\":3100123,\"at\":\"2026-11-05T21:04:11.250Z\",\"exp\":\"2026-11-06T01:04:11.000Z\","
-                              "\"how\":\"register\",\"tg\":[91,3100],\"sub\":91,\"area\":3}") ||
+    CHECK((n > 0 && !strcmp(j, "{\"id\":3100123,\"at\":\"2026-11-05T21:04:11.250Z\",\"exp\":\"2026-11-06T01:04:11.000Z\","
+                               "\"how\":\"register\",\"tg\":[91,3100],\"sub\":91,\"area\":3}")) ||
           !printf("  %s\n", j));
     rdof_mn_record_t b;
     char err[96];
@@ -1195,8 +1195,8 @@ static void test_records(void)
     rdof_mn_trunk_status_t tc = ts;
     tc.composite = true, tc.lends = 3, tc.lent_s = 41.25, tc.lent_max_s = 20.5;
     const rdof_mn_status_t stc = {.node = "site-a", .trunk = &tc};
-    CHECK(rdof_mn_status_json(&stc, out, sizeof out) > 0 &&
-          strstr(out, "\"queued\":0},\"composite\":{\"lends\":3,\"lent_s\":41.25,\"lent_max_s\":20.5}}") ||
+    CHECK((rdof_mn_status_json(&stc, out, sizeof out) > 0 &&
+           strstr(out, "\"queued\":0},\"composite\":{\"lends\":3,\"lent_s\":41.25,\"lent_max_s\":20.5}}")) ||
           !printf("  %s\n", out));
     const rdof_mn_status_t plain = {.node = "box"};
     CHECK(rdof_mn_status_json(&plain, out, sizeof out) > 0 && !strstr(out, "trunk"));
