@@ -329,12 +329,18 @@ pub unsafe extern "C" fn rdof_t3unit_bm_dmrd(u: *mut Unit, d: *const u8, n: usiz
     let now = (*u).now_ms;
     let k = (x.slot - 1) as usize;
     let id = u32::from_be_bytes(x.stream_id);
+    if id != 0 && b.downs[1 - k].stream == id && now - b.downs[1 - k].last_ms < SLOT_QUIET_MS {
+        return; // the same stream on the other slot too (the talkgroup is on both there): played from that one
+    }
     let new = b.downs[k].stream != id;
     b.downs[k] = DownSlot { stream: if x.terminator { 0 } else { id }, last_ms: now };
     if x.group {
         let i = tg_entry(b, x.dst);
-        b.tgs[i].slot = x.slot as u8;
-        b.tgs[i].heard_ms = now;
+        // heard on the other slot just now: the master has it on both, and that slot stays the one it's keyed on
+        if b.tgs[i].slot == x.slot as u8 || now - b.tgs[i].heard_ms >= SLOT_QUIET_MS {
+            b.tgs[i].slot = x.slot as u8;
+            b.tgs[i].heard_ms = now;
+        }
         if !bm_wants(u, x.dst) {
             if new {
                 (*bm(u)).n.not_carried += 1;
@@ -698,6 +704,23 @@ pub unsafe fn bm_twin(u: *mut Unit, id: u32, x: &RdofNetBurst, from_bm: bool) {
         o.bytes(if x.group { b" -> TG " } else { b" -> " });
         o.int(i64::from(x.dst), 0);
         o.bytes(if from_bm { b": playing from the MQTT network" } else { b": playing from brandmeister" });
+    });
+    let b = &mut *bm(u);
+    b.n.duplicates += 1;
+    b.twins[b.ntwin % 4] = id;
+    b.ntwin += 1;
+}
+
+/// Stream id (b) is the master's second copy of a call already playing (the talkgroup is on both slots there).
+pub unsafe fn bm_slot_twin(u: *mut Unit, id: u32, x: &RdofNetBurst) {
+    log(u, |o| {
+        o.bytes(b"tier3: brandmeister: ");
+        o.int(i64::from(x.src), 0);
+        o.bytes(if x.group { b" -> TG " } else { b" -> " });
+        o.int(i64::from(x.dst), 0);
+        o.bytes(b": also down on slot ");
+        o.int(i64::from(x.slot), 0);
+        o.bytes(b", played once (the talkgroup is on both slots at the master)");
     });
     let b = &mut *bm(u);
     b.n.duplicates += 1;

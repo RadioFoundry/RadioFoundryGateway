@@ -210,7 +210,12 @@ Steps 1-7 and 10-11 are done (commits from 2026-11-06); 8 has one open item, 9 i
 5. **Peers on the board.** Done: `roam_hblink.c` and `sdr_hblink.c`.
 6. **rdofradio.** Done: `rdofradio_net.c`.
 7. **Slots.** Done: a simplex login (slots `'4'`) sends its `DMRD` up on slot 2 (`rdof_hb_peer_up`), as a simplex
-   hotspot does, and transmits what comes down on its own channel whatever the slot. A repeater maps slot to slot.
+   hotspot does, and transmits what comes down on its own channel whatever the slot. A repeater maps slot to slot:
+   a call from the master goes out only on the slot it came down on, whatever the repeater's slot policies carry
+   (`rdof_siteroute_burst`; until 2026-11-23 it went to every slot whose policy carried the talkgroup, so with `"*"`
+   on both, each call went out, and into last heard, twice). One the master sends down on both slots (a talkgroup on
+   both there) goes out on both, even when both copies have one stream ID. A Tier III site plays it once (tier3.md
+   §5.11).
    Check on the first real login that BrandMeister sends down on slot 2.
 8. **Data.** BrandMeister answers confirmed data itself (§7). The gaps found against the capture (2026-11-06), and
    where they stand:

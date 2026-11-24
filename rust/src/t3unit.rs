@@ -1196,6 +1196,15 @@ unsafe fn stream_twin(u: *const Unit, b: &RdofNetBurst, bm: bool) -> bool {
     })
 }
 
+/// A second stream of a call already coming from the login: the master sends a talkgroup down on each slot it's on
+/// there (a static on one, dynamic on the other), as two streams of the same call.
+unsafe fn bm_slot_twin(u: *const Unit, b: &RdofNetBurst) -> bool {
+    (0..STREAMS).any(|i| {
+        let s = &(*u).st[i];
+        s.used && !s.ended && s.bm && s.src == b.src && s.dst == b.dst && s.group == b.group
+    })
+}
+
 unsafe fn stream_feed(u: *mut Unit, i: usize, f: &RdofFrame) {
     let s = addr_of_mut!((*u).st[i]);
     if (*s).mapped {
@@ -2055,6 +2064,10 @@ unsafe fn net_burst_in(u: *mut Unit, b: &RdofNetBurst, flags: u8, bm: bool) {
     let i = match stream_find(u, id) {
         Some(i) => i,
         None if t3bm::bm_is_twin(u, id) => return,
+        None if bm && bm_slot_twin(u, b) => {
+            t3bm::bm_slot_twin(u, id, b);
+            return;
+        }
         None if stream_twin(u, b, bm) => {
             t3bm::bm_twin(u, id, b, bm);
             return;

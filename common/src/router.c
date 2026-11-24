@@ -167,9 +167,9 @@ uint64_t rdof_router_net(rdof_router_t *r, int net, uint64_t only, uint32_t stre
     if (preempt)
         *preempt = 0;
     expire(r, now);
-    /* a stream already placed */
+    /* a stream already placed (on a path this copy may reach: the same stream to another login or slot is its own) */
     for (int k = 0; k < s->npath; k++)
-        if (r->busy[k].stream == stream && stream) {
+        if (r->busy[k].stream == stream && stream && only >> k & 1) {
             mask |= 1ull << k;
             r->busy[k].last = now;
             if (end)

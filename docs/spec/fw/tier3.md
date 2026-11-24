@@ -1598,7 +1598,10 @@ is granted as a network call, as one from the MQTT network is; a private call to
 implicit setup. A stream from the master starts with its first voice burst: its headers wait for it, and one that
 ends with no voice (another site's key-up below) isn't played. Packet data from the master isn't carried. A call that
 comes both ways (the MQTT network and the master: sites on both key the talkgroup on each) plays once, from whichever
-came first; the other copy is dropped by its source, destination and kind.
+came first; the other copy is dropped by its source, destination and kind. So does one the master sends down on both
+slots of the login (the talkgroup is on both there, a static on each, say): a call takes one channel the TSCC grants,
+so the copy on the other slot, with the same stream ID or its own, is dropped, and the talkgroup stays keyed on the
+slot it came down on first.
 
 **Private calls out.** A setup request (`EV_NET_SETUP`) for an ID not at the site, but for packet data and ambient
 listening, is the master's to answer: with no MQTT network the unit accepts it at once and the call goes up; with one

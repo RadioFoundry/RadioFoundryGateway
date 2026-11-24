@@ -28,7 +28,9 @@
  *     response header (its ACK) excepted; that link ACK counts as not received when another transmission of the
  *     radio's (a preamble CSBK or a data header) starts within 1 s of it (brandmeister.md §7);
  *   - a group call goes to every other login that keyed the same TG in the last 15 minutes (BrandMeister's dynamic
- *     talkgroup and its default timer): a repeater's on the slot it keyed it on, a simplex hotspot's on slot 2;
+ *     talkgroup and its default timer) or has it static (--static PEER:SLOT:TG, as set in SelfCare): a repeater's
+ *     on each slot it's on there (both: two copies, with one stream ID, or each its own with --twin-sid), a simplex
+ *     hotspot's on slot 2;
  *   - a group call to TG 4000 drops every dynamic talkgroup of that login on its slot (and goes nowhere); one to
  *     TG 9 goes nowhere (the repeater's own);
  *   - a private call (but to 9990 and the SMS service) goes to the login that last heard the called ID, on the slot
@@ -94,6 +96,7 @@ typedef struct {
         double at;
     } heard[HEARD];     /* the sources heard here: where a private call to them goes */
     uint32_t relay_sid; /* the last stream relayed here, for its log line */
+    int relay_slots;    /* the slots it went down on (bits 1, 2) */
     uint32_t unlink_sid; /* the last TG 4000 stream taken */
     int preambles[3];   /* per slot: preamble CSBKs to the SMS service since its last data header */
     bool ignoring[3];   /* per slot: the packet under way came after too few: its blocks are dropped */
@@ -122,6 +125,12 @@ static struct {
     peer_t *parrot_peer;
     rdof_ipgw_t gw;
     uint32_t sid;
+    struct {
+        uint32_t peer, tg;
+        int slot;
+    } statics[8]; /* --static: talkgroups a login has on a slot for good */
+    int nstatic;
+    int twin_sid; /* a call down on both slots of a login: the second copy with a stream ID of its own */
     /* the answer due: to the flow, at a time */
     int ans_flow;
     double ans_at;
@@ -509,26 +518,37 @@ static void relay_group(peer_t *from, const uint8_t *d, size_t n, const rdof_net
         peer_t *p = &F.peers[i];
         if (p == from || p->state != ST_UP)
             continue;
-        int slot = 0;
+        int slots = 0; /* bit 1: slot 1, bit 2: slot 2 */
         for (int j = 0; j < DYN_TGS; j++)
             if (p->dyn[j].tg == b->dst && now - p->dyn[j].at < DYN_S)
-                slot = p->dyn[j].slot;
-        if (!slot)
+                slots |= 1 << p->dyn[j].slot;
+        for (int j = 0; j < F.nstatic; j++)
+            if (F.statics[j].peer == p->id && F.statics[j].tg == b->dst)
+                slots |= 1 << F.statics[j].slot;
+        if (!slots)
             continue;
         if (p->rptc[97] == '4')
-            slot = 2; /* a simplex hotspot: slot 2 */
-        uint8_t out[RDOF_DMRD_LEN + 2];
-        const size_t m = n < sizeof out ? n : sizeof out;
-        memcpy(out, d, m);
-        rdof_put_be32(out + 11, p->id);
-        out[15] = (uint8_t)((out[15] & 0x7F) | (slot == 2 ? 0x80 : 0));
-        send_to(p, out, m);
-        p->dmrd_out++;
+            slots = 1 << 2; /* a simplex hotspot: slot 2 */
         const uint32_t sid = rdof_be32(d + 16);
-        if (sid != p->relay_sid) {
-            p->relay_sid = sid;
-            say("relay TG %u from peer %u s%d to peer %u s%d", (unsigned)b->dst, (unsigned)from->id, b->slot,
-                (unsigned)p->id, slot);
+        for (int slot = 1; slot <= 2; slot++) {
+            if (!(slots >> slot & 1))
+                continue;
+            uint8_t out[RDOF_DMRD_LEN + 2];
+            const size_t m = n < sizeof out ? n : sizeof out;
+            memcpy(out, d, m);
+            rdof_put_be32(out + 11, p->id);
+            out[15] = (uint8_t)((out[15] & 0x7F) | (slot == 2 ? 0x80 : 0));
+            if (F.twin_sid && slot == 2 && (slots & 2))
+                rdof_put_be32(out + 16, sid ^ 0x5A5A0000u); /* the second copy's own stream ID */
+            send_to(p, out, m);
+            p->dmrd_out++;
+            if (sid != p->relay_sid)
+                p->relay_sid = sid, p->relay_slots = 0;
+            if (!(p->relay_slots >> slot & 1)) {
+                p->relay_slots |= 1 << slot;
+                say("relay TG %u from peer %u s%d to peer %u s%d", (unsigned)b->dst, (unsigned)from->id, b->slot,
+                    (unsigned)p->id, slot);
+            }
         }
     }
 }
@@ -747,7 +767,8 @@ static void usage(void)
 {
     fprintf(stderr, "usage: fakebm [--dialect dl5di|homebrew] [--port 62030] [--password P] [--ids ID,...]\n"
                     "              [--nak-step login|auth|config] [--no-pong] [--reply-s S] [--reply TEXT]\n"
-                    "              [--no-tms-ack] [--min-preambles 12] [--log FILE]\n");
+                    "              [--no-tms-ack] [--min-preambles 12] [--log FILE]\n"
+                    "              [--static PEER:SLOT:TG ...] [--twin-sid]\n");
     exit(2);
 }
 
@@ -790,6 +811,14 @@ int main(int argc, char **argv)
             F.reply = v, i++;
         else if (!strcmp(a, "--log") && v)
             F.log = fopen(v, "a"), i++;
+        else if (!strcmp(a, "--static") && v && F.nstatic < 8) {
+            unsigned long peer, slot, tg;
+            if (sscanf(argv[++i], "%lu:%lu:%lu", &peer, &slot, &tg) != 3 || (slot != 1 && slot != 2))
+                usage();
+            F.statics[F.nstatic].peer = (uint32_t)peer, F.statics[F.nstatic].slot = (int)slot;
+            F.statics[F.nstatic++].tg = (uint32_t)tg;
+        } else if (!strcmp(a, "--twin-sid"))
+            F.twin_sid = 1;
         else
             usage();
     }

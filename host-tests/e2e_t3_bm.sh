@@ -6,7 +6,8 @@
 # register to it, then: a group call from site A heard at site B, a private call to the parrot (9990) played back,
 # a call from B heard at A, a private call from an MS at A to one at B. Then A's MSs move to TG 92 (pinned to slot 2):
 # A keys it there and, unlink_s after the last call on 91, keys TG 4000 on slot 1; B's next call on 91 doesn't come
-# to A. A key-up is never played to the other site's MSs. A's rules keep TG 2 (MQTT only, and A has none) and TG 9
+# to A. B has TG 91 static on both slots at the master, which sends each call down twice: B plays it once.
+# A key-up is never played to the other site's MSs. A's rules keep TG 2 (MQTT only, and A has none) and TG 9
 # off the master: its calls on them stay on the site (A's announcements on TG 9 still go).
 #
 #   sh host-tests/e2e_t3_bm.sh <dir with rdofradio and fakebm> [fakebm's port]
@@ -32,7 +33,7 @@ site b 2 999012201 438.75 433.75 '' ''
 printf '8 1000001 group 91 2000\n14 1000001 private 9990 2000\n30 1000002 private 2000002 1500\n36 1000001 register 92\n37 1000002 register 92\n44 1000001 group 2 1500\n53 1000002 group 9 1000\n' \
     > "$D/script-a"
 printf '25 2000002 group 91 1000\n50 2000001 group 91 1000\n' > "$D/script-b"
-"$BIN/fakebm" --port $PORT --password passw0rd > "$D/fakebm" 2>&1 &
+"$BIN/fakebm" --port $PORT --password passw0rd --static 999012201:1:91 --static 999012201:2:91 > "$D/fakebm" 2>&1 &
 FB=$!
 sleep 0.3
 for s in a b; do
@@ -61,6 +62,8 @@ none b "heard 9990121 -> 91" "B's MSs don't play A's key-up"
 none a "heard 9990122 -> 91" "A's MSs don't play B's key-up"
 check b "air MS 2000001: payload, registered on ch 1; .* heard 1000001 -> 91$" "B's MS hears A's group call"
 check b "air MS 2000002: payload, registered on ch 1; .* heard 1000001 -> 91$" "B's other MS hears it"
+check fakebm "relay TG 91 from peer 999012101 s1 to peer 999012201 s2" "the master sends it down on both of B's slots"
+check b "brandmeister: 1000001 -> TG 91: also down on slot 2, played once" "B plays it once"
 check fakebm "parrot: back to peer 999012101: 9990 -> 1000001 PC" "the parrot plays A's call back"
 check a "air MS 1000001: payload, registered on ch 1; .* heard 9990 -> 1000001$" "A's MS hears the parrot"
 check a "air MS 1000001: payload, registered on ch 1; .* heard 2000002 -> 91$" "A's MS hears B's group call"

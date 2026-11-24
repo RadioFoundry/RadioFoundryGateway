@@ -547,6 +547,14 @@ static void test_siteroute(const char *dir)
         rdof_net_burst_t b = net_burst(0x99, 7, 3105, true, 1, false, false);
         CHECK(rdof_siteroute_burst(&sr, 0, path("dc/2")->peer_id, &b, 1) == 1ull << rdof_site_path(&S, "dc/2") &&
                   d.net_count == 1 && d.net_in[0].slot == 2, "TG 3105: slot 2");
+        /* the same as a login (BrandMeister): both slots are one peer, and the master's slot decides */
+        S.net[0].login = true;
+        b = net_burst(0x9a, 7, 3105, true, 1, false, false);
+        CHECK(rdof_siteroute_burst(&sr, 0, path("dc/2")->peer_id, &b, 2) == 0 && d.net_count == 1,
+              "a login: TG 3105 down on slot 1, which doesn't carry it: not sent");
+        b = net_burst(0x9b, 7, 3105, true, 2, false, false);
+        CHECK(rdof_siteroute_burst(&sr, 0, path("dc/2")->peer_id, &b, 3) == 1ull << rdof_site_path(&S, "dc/2") &&
+                  d.net_count == 2 && d.net_in[1].slot == 2, "a login: on slot 2, slot 2");
     }
     /* a login (BrandMeister): the master picks the slot; a TG both slots carry goes out on the one it came down on */
     static const char bm[] = "{\"version\": 3, \"id\": 9800100, \"callsign\": \"N0CALL\", \"defaults\": {\"cc\": 1}, "
@@ -571,6 +579,12 @@ static void test_siteroute(const char *dir)
         b = net_burst(0x92, 3197206, 3100, true, 2, false, false);
         CHECK(rdof_siteroute_burst(&sr, 0, peer, &b, 1.1) == 1ull << rdof_site_path(&S, "R1/2") && r.net_count == 2 &&
                   r.net_in[1].slot == 2, "BM TG 3100 on TS2: TS2 only");
+        /* the master sends a talkgroup down on both slots (on both there): it goes out on both, even as one stream */
+        b = net_burst(0x93, 3198815, 91, true, 1, false, false);
+        CHECK(rdof_siteroute_burst(&sr, 0, peer, &b, 5) == 1ull << rdof_site_path(&S, "R1/1"), "TS1 copy");
+        b = net_burst(0x93, 3198815, 91, true, 2, false, false);
+        CHECK(rdof_siteroute_burst(&sr, 0, peer, &b, 5.01) == 1ull << rdof_site_path(&S, "R1/2") && r.net_count == 4 &&
+                  r.net_in[3].slot == 2, "the TS2 copy of the same stream: TS2 too (%u)", r.net_count);
     }
     /* identity per_path: a stream goes only to the paths of the peer it came to */
     static const char pp[] = "{\"version\": 3, \"id\": 9800700, \"defaults\": {\"cc\": 1, \"tg\": 3100}, "
