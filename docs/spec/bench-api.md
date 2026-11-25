@@ -469,7 +469,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 
 | op | request | replies |
 |---|---|---|
-| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm` (section 14.7), `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx` (null, or the transmit limits as the WebSocket info's: `max_key_s`, the longest key-up; `max_dbm`, dBm at the antenna, null with none; `power`, the highest RF level 0-255, null when `max_dbm` caps it instead; an `outbound` whose `seconds` are longer is refused before `started`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own modem, `kind` `sdrmodem`, or `mmdvm` with the modem's description in `model` and `mmdvm_tx` in place of `sdr_tx` in the channels' caps; `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6), `repeater_modes` (`bench_repeater`'s `mode`s: `["dmr"]`, with `"p25"` and `"nxdn"` on a duplex MMDVM modem; `[]` with no repeater; `stations[0].modes` the same), `jobs` (`bench_tx`, `bench_repeater`, `outbound`, `mssim`, `signal_tx`: null when this bench can run it, else the reason it can't, section 14.9) |
+| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm` (section 14.7), `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx` (null, or the transmit limits as the WebSocket info's: `max_key_s`, the longest key-up; `max_dbm`, dBm at the antenna, null with none; `power`, the highest RF level 0-255, null when `max_dbm` caps it instead; an `outbound` whose `seconds` are longer is refused before `started`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own modem, `kind` `sdrmodem`, or `mmdvm` with the modem's description in `model` and `mmdvm_tx` in place of `sdr_tx` in the channels' caps; `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6), `repeater_modes` (`bench_repeater`'s `mode`s: `["dmr"]`, with `"p25"` and `"nxdn"` on a duplex MMDVM modem; `[]` with no repeater; `stations[0].modes` the same), `jobs` (`bench_tx`, `bench_repeater`, `outbound`, `mssim`, `signal_tx`, `ipgw`: null when this bench can run it, else the reason it can't, section 14.9) |
 | `status` | | `sdr`, `receiver` (`seconds`, `overflows`, `clip_pct`, `dsp_skipped`, `decode_dropped`, `captures`), `held`, `waiting`, `sessions`, `tx` (section 7's) |
 | `session` | `label`, `expect_s`, `max_s` | `{"session": ID, "label"}`, then nothing until the connection closes (the session ends with it) or the session's `max_s` runs out (`{"ended": "max_s"}`) |
 | `claim` | `session`, `freqs`, `caps`, `wait_max` | queued / granted, `{"claimed": [MHz], "window"}` |
@@ -485,6 +485,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `track` | `session`, `freq`, `mode` (`fm`, `4fsk`), `bw`, `interval_ms`, `line_ms`, `threshold_db`, `min_ms`, `timeout_s`, `max_s`, `post_s`, `drift_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"track": line}` an interval, `{"done": summary}`, or `no_signal` (section 14.8) |
 | `activity`, `burstlog`, `bridge` | | `unsupported` |
 | `mssim` | `session`, `action` (`arm`, `disarm`, `status`), arm: `freq`, `cc`, `power`, `seconds` (300, at most 1800) and the profile's fields; `since` | `{"mssim": {"armed", "arming", "answered", "ended", "log": [entry], "next"}}` (arm: `{"mssim": {"armed": true, "freq", "cc", "note"}}`) |
+| `ipgw` | `session`, `action` (`arm`, `disarm`, `status`: the default), arm: `freq`, `cc` (1), `power_dbm` or `power`, `seconds` (300, at most 1800), `id` (0), `listen` (0: any free port), `to` (`"a.b.c.d"` or `"a.b.c.d:port"`; the client's address) | arm: `{"ipgw": {"armed": true, "listen", "id", "freq", "cc", "to", "seconds"}}`; status and disarm: `{"ipgw": {"armed", "session", "freq", "cc", "id", "listen", "to", "left_s", "up_packets", "down_packets", "down_inbound", "flows", "heard", "tx", "counters"}}` (none armed: `{"ipgw": {"armed": false}}`); section 14.10 |
 
 - `mssim` is a timed confirmed-data responder (rdofradio and a board with an SDR modem; `rdof/mssim.h`): it plays a radio that answers
   confirmed data packets N slots after they end, for testing the far end's retries and turnaround. `arm` takes the
@@ -1358,6 +1359,7 @@ each job's reason when it can't run. A client skips on those; a refused job's er
 | `run` `bench_tx`: `outbound` | yes, the slot clock its own | yes, its own | duplex modem only: the modem's idle downlink and CACH; its slot times from a burst the SDR hears | no: the slot clock is counted in an SDR's samples |
 | `run` `bench_repeater` | no (`unsupported`) | yes | duplex modem only: the modem's own receiver hears the input; `mode` `p25` and `nxdn` too | duplex modem only, as beside an SDR |
 | `mssim` (confirmed-data responder) | yes | yes | yes: timing the serial port's and a key-up's, learned from what's heard back | no: it hears through an SDR's channel |
+| `ipgw` (IP gateway) | yes | yes | yes | no: it hears through an SDR's channel |
 | `tx`: FM, AM (signal modes) | yes | yes | no: the MMDVM serial protocol carries DMR bursts only, and an RTL-SDR doesn't transmit | no |
 
 What the last two columns can't do, and why:
@@ -1376,3 +1378,32 @@ in one window: the SDR keeps the modem's RX, and a request for the TX side tunes
 The third column needs only the modem and an RTL-SDR on a Linux host; [the reference](../reference.md) has the setup.
 The last needs only the modem: its jobs transmit, and nothing on the host hears them (another receiver does). A hotspot board tunes its own band only: a job outside
 it ends with the modem refusing `SET_FREQ`, whatever `tx_bands` allows.
+
+### 14.10 The IP gateway: ipgw
+
+`ipgw` runs an IP gateway ([fw/ipgw.md](fw/ipgw.md)) on the bench for a while: one `payload: "ip"` route with a
+`listen` port (§9.1 there), on one transmit frequency. A host on the network sends whole IPv4 datagrams to radios
+through it, and their answers come back; a client tests a radio's packet data from the network side without
+setting up the board's own `ipgw` app.
+
+- **arm** needs a session. `freq` is a transmit frequency of the bench with a receiver channel that decodes DMR on
+  it (or one a tune reaches, as `mssim`'s: held while armed). The bench opens a UDP socket on `listen` (0: any free
+  port; the reply says which). Only datagrams from `to` (default: the address the request came from) are taken; the
+  radios' go back to `to`'s port, or without one, to the port the last datagram came from. One gateway at a time:
+  a second `arm` is `busy` until `disarm`.
+- **Down:** each datagram, to a radio by its 12.x.y.z destination (`radio_net` 12.0.0.0/8), goes out as an
+  unconfirmed rate 1/2 packet (SAP 4, no preambles, MS data sync, TTL less one) from `id` (9999999 when 0), on
+  `freq` at `cc` and the arm's power, one key-up each (`tx_open` as built, as a `raw` job's), at most 2 a second
+  (`down_pps`). A radio heard on `freq` lately gets its packet with the color code it was heard with. A packet
+  waits for the modem behind any running or queued job (2 s at most: then dropped, `tx.waited_out`), and jobs wait
+  for its key-up. There is no listen-before-talk: the leases and the session are the bound.
+- **Up:** data packets heard on `freq`'s channel (any destination: the route is `all`) are put together, checked and
+  sent on from the socket as whole datagrams, TTL less one. Confirmed ones are acknowledged through the same
+  transmitter. The gateway's own packets heard back are dropped (`rx_dup`).
+- **status** (any session, or none): `left_s` until it disarms itself; `up_packets`, `down_packets` (handed to the
+  transmitter), `down_inbound`, `flows`, `heard` (the radios heard, by id); `tx`: `keyups` (sent), `failed`
+  (refused or no bursts taken: `why`), `waited_out`, `queued`; `counters`: all of the gateway's (the `ip_gateway`
+  object of `/api/status`).
+- **disarm** (the arming session only) gives the final status with `armed` false. The gateway also goes at
+  `seconds` and with its session.
+- `rfgbench.py ipgw arm|disarm|status --freq MHZ [--cc N] [--id ID] [--listen PORT] [--to IP[:PORT]]`.

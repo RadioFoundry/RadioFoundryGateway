@@ -25,6 +25,7 @@
 #include <sys/time.h>
 
 #define SEND_CHUNK 16384
+#define UBUF 2048 /* the IP gateway's datagrams are 1520 octets at most */
 
 /* A client gone without a word (its host off the network, a tunnel torn down) leaves the connection open here, and
  * its session with it: one waits for nothing but the close, so it was held until the program restarted. Probes on an
@@ -61,6 +62,8 @@ struct rdof_bnet {
     uint8_t buf[SEND_CHUNK];        /* what the engine gives, before the socket takes it */
     size_t pend[RDOF_BL_CONNS], off[RDOF_BL_CONNS];
     uint8_t *pbuf[RDOF_BL_CONNS];   /* a connection's bytes the socket didn't take yet */
+    int ufd;                        /* the engine's UDP socket (the ipgw op), -1 none */
+    uint8_t *ubuf;                  /* a datagram in, UBUF bytes, while the socket is open (PSRAM on a board) */
 };
 
 static void nonblock(int fd)
@@ -96,6 +99,63 @@ static bool flush(rdof_bnet_t *n, int c)
     }
 }
 
+/* The engine's UDP socket (rdof_bl_udp_t): called on this thread, from inside the engine. */
+static int udp_open(void *ctx, int port)
+{
+    rdof_bnet_t *n = ctx;
+    if (n->ufd >= 0)
+        return -1;
+    if (!n->ubuf && !(n->ubuf = RDOF_BL_CALLOC(1, UBUF)))
+        return -1;
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
+        return -1;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    struct sockaddr_in sa = {0};
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((uint16_t)port);
+    sa.sin_addr.s_addr = htonl(INADDR_ANY);
+    socklen_t sl = sizeof sa;
+    if (bind(fd, (struct sockaddr *)&sa, sizeof sa) || getsockname(fd, (struct sockaddr *)&sa, &sl)) {
+        close(fd);
+        return -1;
+    }
+    nonblock(fd);
+    n->ufd = fd;
+    return ntohs(sa.sin_port);
+}
+
+static bool udp_send(void *ctx, uint32_t ip, uint16_t port, const uint8_t *data, size_t len)
+{
+    rdof_bnet_t *n = ctx;
+    if (n->ufd < 0)
+        return false;
+    struct sockaddr_in sa = {0};
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(port);
+    sa.sin_addr.s_addr = htonl(ip);
+    return sendto(n->ufd, data, len, 0, (struct sockaddr *)&sa, sizeof sa) == (ssize_t)len;
+}
+
+static void udp_close(void *ctx)
+{
+    rdof_bnet_t *n = ctx;
+    if (n->ufd >= 0)
+        close(n->ufd);
+    n->ufd = -1; /* ubuf stays: the reading pass may still have it */
+}
+
+static uint32_t udp_peer(void *ctx, int c)
+{
+    rdof_bnet_t *n = ctx;
+    struct sockaddr_in sa = {0};
+    socklen_t sl = sizeof sa;
+    if (c < 0 || c >= RDOF_BL_CONNS || n->fd[c] < 0 || getpeername(n->fd[c], (struct sockaddr *)&sa, &sl) ||
+        sa.sin_family != AF_INET)
+        return 0;
+    return ntohl(sa.sin_addr.s_addr);
+}
+
 static void *serve(void *arg)
 {
     rdof_bnet_t *n = arg;
@@ -106,6 +166,11 @@ static void *serve(void *arg)
         FD_ZERO(&wr);
         FD_SET(n->lfd, &rd);
         int top = n->lfd;
+        const int ufd = n->ufd; /* the engine may close it below: this pass reads the one it selected */
+        if (ufd >= 0) {
+            FD_SET(ufd, &rd);
+            top = ufd > top ? ufd : top;
+        }
         for (int c = 0; c < RDOF_BL_CONNS; c++) {
             if (n->fd[c] < 0)
                 continue;
@@ -140,6 +205,16 @@ static void *serve(void *arg)
                     nonblock(fd);
                     n->fd[c] = fd;
                 }
+            }
+        }
+        if (r > 0 && ufd >= 0 && ufd == n->ufd && FD_ISSET(ufd, &rd)) {
+            struct sockaddr_in from;
+            socklen_t fl = sizeof from;
+            ssize_t k;
+            while (n->ufd == ufd &&
+                   (k = recvfrom(ufd, n->ubuf, UBUF, 0, (struct sockaddr *)&from, &fl)) >= 0) {
+                rdof_bl_udp_input(n->bl, ntohl(from.sin_addr.s_addr), ntohs(from.sin_port), n->ubuf, (size_t)k, now);
+                fl = sizeof from;
             }
         }
         for (int c = 0; r > 0 && c < RDOF_BL_CONNS; c++) {
@@ -186,6 +261,7 @@ rdof_bnet_t *rdof_bnet_start(rdof_bl_t *bl, const char *addr, int port, double (
     }
     n->bl = bl, n->now = now;
     n->lfd = -1;
+    n->ufd = -1;
     for (int c = 0; c < RDOF_BL_CONNS; c++) {
         n->fd[c] = -1;
         n->pbuf[c] = malloc(SEND_CHUNK);
@@ -220,6 +296,8 @@ rdof_bnet_t *rdof_bnet_start(rdof_bl_t *bl, const char *addr, int port, double (
     getsockname(n->lfd, (struct sockaddr *)&sa, &sl);
     n->port = ntohs(sa.sin_port);
     nonblock(n->lfd);
+    const rdof_bl_udp_t u = {.open = udp_open, .send = udp_send, .close = udp_close, .peer = udp_peer, .ctx = n};
+    rdof_bl_set_udp(bl, &u);
     pthread_attr_t at;
     pthread_attr_init(&at);
     if (stack)
@@ -248,7 +326,12 @@ void rdof_bnet_stop(rdof_bnet_t *n)
         return;
     n->stop = true;
     pthread_join(n->thread, NULL);
+    const rdof_bl_udp_t none = {0};
+    rdof_bl_set_udp(n->bl, &none);
     close(n->lfd);
+    if (n->ufd >= 0)
+        close(n->ufd);
+    free(n->ubuf);
     for (int c = 0; c < RDOF_BL_CONNS; c++)
         free(n->pbuf[c]);
     free(n);

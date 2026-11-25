@@ -482,8 +482,9 @@ It needs `routes` or `nat` ("nothing to do"). A route:
 | `all` | bool | false | every datagram; not with the three below |
 | `private`, `group` | ID or range | | datagrams to these IDs (one of the two) |
 | `from` | ID or range | | datagrams from these radios |
-| `to` | `"host:port"` or `"host"` | | required: where they go (`host` keeps each datagram's port) |
+| `to` | `"host:port"` or `"host"` | | required: where they go (`host` keeps each datagram's port; with `listen`, the port the host last sent from) |
 | `payload` | `udp` \| `ip` | `udp` | the UDP payload, or the whole IP packet |
+| `listen` | port 1-65535 | none | `payload` `ip` only: the host in `to` starts flows to radios here, and the radios' datagrams on the route go back from this port ([ipgw.md](ipgw.md) §9.1) |
 
 A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app. rdofradio runs it too ([ipgw.md](ipgw.md) §13.1).
 

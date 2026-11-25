@@ -239,7 +239,7 @@ static bool host_ok(const char *h)
 
 static bool route(ctx_t *c, int node, int i, rdof_ipgw_route_t *r)
 {
-    static const char *const keys[] = {"name", "all", "private", "group", "from", "to", "payload", NULL};
+    static const char *const keys[] = {"name", "all", "private", "group", "from", "to", "payload", "listen", NULL};
     char where[32];
     snprintf(where, sizeof where, "routes[%d]", i);
     if (N(c, node)->type != RDOF_JOBJ)
@@ -309,8 +309,17 @@ static bool route(ctx_t *c, int node, int i, rdof_ipgw_route_t *r)
     } else if (isdigit((unsigned char)host[strlen(host) - 1])) {
         return fail(c, "%s: to: %s isn't an IPv4 address", where, host);
     }
-    if (r->payload == RDOF_IPGW_PAYLOAD_IP && !r->port)
-        return fail(c, "%s: payload ip needs a port in to", where);
+    n = N(c, rdof_jget(c->doc, node, "listen"));
+    if (n && n->type != RDOF_JNULL) {
+        if (n->type != RDOF_JNUM || n->num != (int)n->num || n->num < 1 || n->num > 65535)
+            return fail(c, "%s: listen, a UDP port 1 to 65535", where);
+        if (r->payload != RDOF_IPGW_PAYLOAD_IP)
+            return fail(c, "%s: listen needs payload ip", where);
+        r->listen = (int)n->num;
+    }
+    if (r->payload == RDOF_IPGW_PAYLOAD_IP && !r->port && !r->listen)
+        return fail(c, "%s: payload ip needs a port in to (or listen)", where);
+    r->listen_learn = r->listen && !r->port;
     return true;
 }
 
@@ -374,6 +383,8 @@ static bool gateway(ctx_t *c, int o, rdof_ipgw_config_t *cfg)
             for (int k = 0; k < i; k++)
                 if (!strcmp(cfg->routes[k].name, cfg->routes[i].name))
                     return fail(c, "routes[%d]: name %s is taken", i, cfg->routes[i].name);
+                else if (cfg->routes[i].listen && cfg->routes[k].listen == cfg->routes[i].listen)
+                    return fail(c, "routes[%d]: listen %d is taken", i, cfg->routes[i].listen);
             cfg->nroutes++;
         }
     }
@@ -502,6 +513,8 @@ size_t rdof_ipgw_describe(const rdof_ipgw_config_t *c, char *out, size_t cap)
             add(out, cap, &len, " -> %s:%d %s", r->host, r->port, r->payload == RDOF_IPGW_PAYLOAD_IP ? "ip" : "udp");
         else
             add(out, cap, &len, " -> %s %s", r->host, r->payload == RDOF_IPGW_PAYLOAD_IP ? "ip" : "udp");
+        if (r->listen)
+            add(out, cap, &len, ", listen %d", r->listen);
     }
     add(out, cap, &len, "; nat %s", c->nat ? "on" : "off");
     if (c->nat) {

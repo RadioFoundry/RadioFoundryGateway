@@ -5941,6 +5941,7 @@ static void gw_start(void)
         fprintf(stderr, "ip gateway: no memory\n");
         return;
     }
+    rdofgw_home(R.rx_hz, R.cc); /* a radio not heard yet: on the unit's own channel */
     for (int i = R.mmdvm ? -1 : 0; i < nchn; i++) {
         rdof_sink_t sk = {.on_frame = gw_on_frame, .ctx = i >= 0 ? &CHN[i] : NULL};
         if (i >= 0)

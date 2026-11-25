@@ -244,7 +244,20 @@ typedef struct {
     uint32_t icmp_ip;
     uint8_t icmp[2048];
     size_t icmp_len;
+    int lsent, lroute; /* up a listen route */
 } fake_t;
+
+static bool f_listen(void *ctx, int route, uint32_t ip, uint16_t port, const uint8_t *data, size_t len)
+{
+    fake_t *f = ctx;
+    f->lsent++;
+    f->lroute = route;
+    f->last_ip = ip;
+    f->last_port = port;
+    memcpy(f->last, data, len);
+    f->last_len = len;
+    return true;
+}
 
 static bool f_icmp(void *ctx, uint32_t ip, const uint8_t *m, size_t len, int ttl)
 {
@@ -323,6 +336,7 @@ static rdof_ipgw_t *gw(fake_t *f, unsigned id, const char *keys)
     g->send_dmr = f_dmr;
     g->send_icmp = f_icmp;
     g->local_port = f_port;
+    g->send_listen = f_listen;
     g->ctx = f;
     return g;
 }
@@ -532,7 +546,7 @@ static void t_route(void)
     rdof_ipgw_status_json(g, &j);
     rdof_json_close(&j);
     CHECK(rdof_json_done(&j) && strstr(buf, "\"ip_gateway\":{\"routes\":2,\"nat\":false,\"flows\":0,\"max_flows\":8,") &&
-              strstr(buf, "\"up_packets\":2,") && strstr(buf, "\"flows_expired\":2,\"queue_full\":0,\"sap3\":0,\"ttl_expired\":0,\"down_ttl_expired\":0,\"icmp_up\":0,\"icmp_down\":0,\"icmp_errors\":0,\"icmp_unmatched\":0,\"down_own_source\":0,\"tx_busy\":0,\"rx_headers\":5,\"rx_header_crc\":0,\"rx_blocks\":17,\"rx_block_fec\":0,\"rx_block_crc\":0}"),
+              strstr(buf, "\"up_packets\":2,") && strstr(buf, "\"flows_expired\":2,\"queue_full\":0,\"sap3\":0,\"ttl_expired\":0,\"down_ttl_expired\":0,\"icmp_up\":0,\"icmp_down\":0,\"icmp_errors\":0,\"icmp_unmatched\":0,\"down_own_source\":0,\"tx_busy\":0,\"rx_headers\":5,\"rx_header_crc\":0,\"rx_blocks\":17,\"rx_block_fec\":0,\"rx_block_crc\":0,\"down_inbound\":0}"),
           "status: %s", buf);
     free(g);
 }
@@ -1306,6 +1320,67 @@ static void t_icmp(void)
 
 #endif /* RDOF_FEATURE_DATA_BLOCKS */
 
+#if RDOF_FEATURE_DATA_BLOCKS
+/* A listen route: the network starts the flow, to a radio heard or not. */
+static void t_listen(void)
+{
+    bad(app("\"routes\": [{\"all\": true, \"to\": \"192.0.2.9\", \"payload\": \"udp\", \"listen\": 7100}]"),
+        "listen needs payload ip");
+    bad(app("\"routes\": [{\"all\": true, \"to\": \"192.0.2.9\", \"payload\": \"ip\", \"listen\": 70000}]"),
+        "listen, a UDP port");
+    bad(app("\"routes\": [{\"name\": \"a\", \"all\": true, \"to\": \"192.0.2.9\", \"payload\": \"ip\", \"listen\": 7100}, "
+            "{\"name\": \"b\", \"from\": 5, \"to\": \"192.0.2.9\", \"payload\": \"ip\", \"listen\": 7100}]"),
+        "listen 7100 is taken");
+    fake_t f;
+    rdof_ipgw_t *g = gw(&f, 9990, "\"routes\": [{\"all\": true, \"to\": \"192.0.2.9\", \"payload\": \"ip\", "
+                            "\"listen\": 7100}]");
+    CHECK(g->cfg.routes[0].listen == 7100 && !g->cfg.routes[0].port && g->cfg.routes[0].listen_learn, "parsed");
+    g->home = (rdof_ipgw_where_t){.source = -1, .slot = 2, .freq = 461137500, .cc = 2};
+    uint8_t d[2048], got[2048];
+    rdof_data_header_t h;
+    /* the radio speaks first: no host port learned yet, nowhere to send */
+    size_t n = datagram(RADIO_IP, 4001, IP(192, 0, 2, 9), 4005, "early", d);
+    radio_sends(g, RADIO, 9990, false, d, n, 1.0);
+    CHECK(g->n.unresolved == 1 && f.lsent == 0 && f.sent == 0, "up before any datagram in: %u", g->n.unresolved);
+    /* a stranger can't start one */
+    size_t m = rdof_ipgw_udp_datagram(IP(192, 0, 2, 9), 5000, IP(12, 0, 0, 77), 4001, 3, (const uint8_t *)"hi", 2, d,
+                                      sizeof d);
+    rdof_ipgw_from_listen(g, 0, IP(192, 0, 2, 10), 41000, d, m, 2.0);
+    CHECK(g->n.down_stranger == 1 && f.dmr == 0 && rdof_ipgw_flows(g) == 0, "a stranger");
+    /* the host starts one to radio 77, never heard: the transmitter's channel, from the gateway's id */
+    rdof_ipgw_from_listen(g, 0, IP(192, 0, 2, 9), 41000, d, m, 3.0);
+    int len = unpack(&f.out, &h, got);
+    CHECK(g->n.down_inbound == 1 && f.dmr == 1 && len == (int)m && h.dst_id == 77 && h.src_id == 9990 &&
+              f.out.freq == 461137500 && got[8] == 63 && f.opens == 0 && rdof_ipgw_flows(g) == 1,
+          "inbound to a radio not heard: dmr %d len %d dst %u src %u freq %u", f.dmr, len, h.dst_id, h.src_id,
+          f.out.freq);
+    /* its reply goes up from the listen socket to where the host sent from, on the same flow */
+    n = datagram(IP(12, 0, 0, 77), 4001, IP(192, 0, 2, 9), 5000, "pong", d);
+    radio_sends(g, 77, 9990, false, d, n, 4.0);
+    CHECK(f.lsent == 1 && f.lroute == 0 && f.last_ip == IP(192, 0, 2, 9) && f.last_port == 41000 &&
+              f.last_len == n && f.last[8] == 63 && f.sent == 0 && rdof_ipgw_flows(g) == 1,
+          "the reply up the listen port: %d %u %u flows %d", f.lsent, f.last_ip, f.last_port, rdof_ipgw_flows(g));
+    /* now heard: the next datagram down goes where it was heard (W), and the host's new port is learned */
+    m = rdof_ipgw_udp_datagram(IP(192, 0, 2, 9), 5000, IP(12, 0, 0, 77), 4001, 4, (const uint8_t *)"again", 5, d,
+                               sizeof d);
+    rdof_ipgw_from_listen(g, 0, IP(192, 0, 2, 9), 41001, d, m, 5.0);
+    CHECK(f.dmr == 2 && f.out.freq == W.freq && f.out.slot == W.slot && rdof_ipgw_flows(g) == 1,
+          "a heard radio: where it was heard: freq %u slot %d", f.out.freq, f.out.slot);
+    n = datagram(IP(12, 0, 0, 77), 4001, IP(192, 0, 2, 9), 5000, "pong2", d);
+    radio_sends(g, 77, 9990, false, d, n, 6.0);
+    CHECK(f.lsent == 2 && f.last_port == 41001 && rdof_ipgw_flows(g) == 1, "the new port: %u", f.last_port);
+    /* not to a radio, and not IPv4 */
+    m = rdof_ipgw_udp_datagram(IP(192, 0, 2, 9), 5000, IP(10, 0, 0, 77), 4001, 5, (const uint8_t *)"x", 1, d, sizeof d);
+    rdof_ipgw_from_listen(g, 0, IP(192, 0, 2, 9), 41001, d, m, 7.0);
+    rdof_ipgw_from_listen(g, 0, IP(192, 0, 2, 9), 41001, (const uint8_t *)"not ip", 6, 7.5);
+    CHECK(g->n.down_bad_ip == 2 && f.dmr == 2, "not to a radio: %u", g->n.down_bad_ip);
+    /* idle: the flow closes with no socket to close */
+    rdof_ipgw_tick(g, 7.0 + g->cfg.idle_s + 1);
+    CHECK(rdof_ipgw_flows(g) == 0 && f.closes == 0, "idle, no socket closed");
+    free(g);
+}
+#endif
+
 void test_ipgw(void)
 {
     t_settings();
@@ -1319,6 +1394,7 @@ void test_ipgw(void)
     t_rate34_corrected();
     t_limits();
     t_ip_payload();
+    t_listen();
     t_radios();
     t_any_gateway();
     t_icmp();

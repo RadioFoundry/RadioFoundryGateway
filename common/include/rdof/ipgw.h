@@ -48,6 +48,7 @@ extern "C" {
  * only, so RDOF_IPGW_MAX_PACKET there). */
 #define RDOF_IPGW_MAX_UP 3044
 #define RDOF_IPGW_MAX_BURSTS 128 /* a header and up to 127 blocks */
+#define RDOF_IPGW_HEARD 16       /* radios remembered with where they were heard */
 
 #define RDOF_SAP_IP 4
 #define RDOF_SAP_UDP_COMPRESSED 3 /* UDP/IPv4 with the compressed header (ETSI TS 102 361-3 7.2.3, table 7.14) */
@@ -76,8 +77,12 @@ typedef struct {
     uint32_t from_lo, from_hi; /* the DMR source radio, inclusive */
     char host[64];             /* "to": an IPv4 address or a name the platform resolves */
     uint32_t ip;               /* host order; 0 until resolved */
-    int port;                  /* 0: the datagram's own destination port (payload udp only) */
+    int port;                  /* 0: the datagram's own destination port (payload udp); with listen, the port the
+                                * last datagram in came from */
     rdof_ipgw_payload_t payload;
+    int listen;                /* payload ip: a UDP port the network starts flows on (0: none); the flows' datagrams
+                                * up go out from it too */
+    bool listen_learn;         /* listen with no port in to: port is the one learned */
 } rdof_ipgw_route_t;
 
 typedef struct {
@@ -206,6 +211,7 @@ typedef struct {
     uint32_t rx_blocks;       /* data blocks taken into a message */
     uint32_t rx_block_fec;    /* of those, blocks whose FEC failed (rate 1/2, 3/4) */
     uint32_t rx_block_crc;    /* of those, confirmed blocks whose CRC-9 failed */
+    uint32_t down_inbound;    /* datagrams taken on a route's listen port (then counted as any reply) */
 } rdof_ipgw_counters_t;
 
 typedef struct {
@@ -235,7 +241,12 @@ typedef struct rdof_ipgw {
     bool (*send_icmp)(void *ctx, uint32_t ip, const uint8_t *icmp, size_t len, int ttl);
     /* the local port flow's socket is bound to, for matching ICMP errors to it (NULL: not checked) */
     uint16_t (*local_port)(void *ctx, int flow);
+    /* a datagram up a listen route: from that route's listen socket (a flow there has no socket of its own) */
+    bool (*send_listen)(void *ctx, int route, uint32_t ip, uint16_t port, const uint8_t *data, size_t len);
     void *ctx;
+    /* where a radio not heard yet is reached (a listen route's flow): the transmitter's channel now (freq 0, cc -1:
+     * not known; the platform keeps it current) */
+    rdof_ipgw_where_t home;
     uint64_t sync48; /* the sync on bursts sent: MS data for a simplex radio, BS data for a repeater */
     /* state */
     rdof_ipgw_asm_t asms[RDOF_IPGW_MAX_ASM];
@@ -245,6 +256,11 @@ typedef struct rdof_ipgw {
         double at, acked;
     } dedup[RDOF_IPGW_DEDUP];
     int dedup_next;
+    struct {
+        uint32_t id;
+        double at;
+        rdof_ipgw_where_t where;
+    } heard[RDOF_IPGW_HEARD]; /* radios heard lately, where: a listen route's flow reaches them there */
     double up_tokens, up_at, down_tokens, down_at;
     uint16_t ip_id;
     rdof_ipgw_dmr_t out; /* what send_dmr gets */
@@ -264,6 +280,10 @@ void rdof_ipgw_message(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, uint32_t src,
 /* A datagram that arrived on flow's socket from ip:port. */
 void rdof_ipgw_from_net(rdof_ipgw_t *g, int flow, uint32_t ip, uint16_t port, const uint8_t *data, size_t len,
                         double now);
+/* A datagram that arrived on route's listen port from ip:port: a whole IPv4 datagram to a radio in radio_net. It
+ * opens the route's flow for that radio when none is open, and goes down as a reply. */
+void rdof_ipgw_from_listen(rdof_ipgw_t *g, int route, uint32_t ip, uint16_t port, const uint8_t *data, size_t len,
+                           double now);
 /* An ICMP packet (its IPv4 header included) that arrived on the platform's ICMP socket: echo replies to NAT'd
  * echo requests, and errors quoting a flow's datagram, go down to the radio rewritten to its addresses. */
 void rdof_ipgw_icmp_from_net(rdof_ipgw_t *g, const uint8_t *packet, size_t len, double now);

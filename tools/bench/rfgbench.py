@@ -1311,6 +1311,24 @@ def cmd_mssim(a) -> int:
         time.sleep(a.interval)
 
 
+def cmd_ipgw(a) -> int:
+    """The IP gateway: arm it (a UDP port on the bench whose datagrams go down to radios, their answers up), disarm it,
+    or read its counters."""
+    req = {"op": "ipgw", "action": a.action, "session": a.session}
+    if a.action == "arm":
+        if a.freq is None:
+            print(f"{NOTE} arm needs --freq", file=sys.stderr)
+            return 2
+        req.update({"freq": a.freq, "cc": a.cc, "seconds": a.seconds, "id": a.id, "listen": a.listen})
+        if a.to:
+            req["to"] = a.to
+        if a.power_dbm is not None:
+            req["power_dbm"] = a.power_dbm
+        elif a.power is not None:
+            req["power"] = a.power
+    return stream(a.where, req, printer)
+
+
 def cmd_unsupported(a) -> int:
     return stream(a.where, {"op": a.cmd_name}, printer)
 
@@ -1632,6 +1650,17 @@ def main(argv=None) -> int:
                    '"from":ID,"count":N}')
     s.add_argument("--since", type=int, default=0, help="log entries after this seq")
     s.add_argument("--interval", type=float, default=1.0, help="watch: seconds between reads")
+    s = p("ipgw", cmd_ipgw)
+    s.add_argument("action", choices=("arm", "disarm", "status"))
+    s.add_argument("--freq", type=float, default=None, help="MHz, a transmit frequency of the bench (arm)")
+    s.add_argument("--cc", type=int, default=1)
+    s.add_argument("--id", type=int, default=0, help="the DMR id packets to radios come from (0: 9999999)")
+    s.add_argument("--listen", type=int, default=0, help="the bench's UDP port (0: any free one)")
+    s.add_argument("--to", default=None, help="the host, IPv4[:port] (default: this client's address; the port the "
+                   "first datagram came from)")
+    s.add_argument("--power", type=int, default=None, help="0-255 on the transmitter's range")
+    s.add_argument("--power-dbm", type=float, default=None)
+    s.add_argument("--seconds", type=float, default=300.0, help="disarmed after this long (at most 1800)")
     for op, fn in (("tx", cmd_tx_sig), ("rx", cmd_rx_sig)):
         s = sub.add_parser(op, help=f"{'send' if op == 'tx' else 'receive'} a signal mode")
         modes = s.add_subparsers(dest="mode_name", required=True)

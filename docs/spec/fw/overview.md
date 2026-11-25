@@ -456,4 +456,4 @@ Each has its own README.
 | Web page, OTA, setup AP, log ring | yes |
 | Bench API | yes (`/api/bench/v1`), and the line protocol on TCP 7373 |
 | Trunked site (`tier3`) | refused: host only ([tier3.md](tier3.md)) |
-| IP gateway (DMR packet data <-> UDP: routes, NAT, ping) | yes, off by default; IPv4 (SAP 4 and SAP 3) / UDP and ICMP echo, no fragments, no inbound mappings ([ipgw.md](ipgw.md)) |
+| IP gateway (DMR packet data <-> UDP: routes, NAT, ping) | yes, off by default; IPv4 (SAP 4 and SAP 3) / UDP and ICMP echo, no fragments, inbound only as whole datagrams on a route's `listen` port ([ipgw.md](ipgw.md)) |

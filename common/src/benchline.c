@@ -19,6 +19,7 @@
 #include "rdof/benchenv.h"
 #include "rdof/benchramp.h"
 #include "rdof/benchjob.h"
+#include "rdof/ipgw.h"
 #include "rdof/jsonp.h"
 #include "rdof/layer2.h"
 #include "rdof/mmdvm.h"
@@ -40,6 +41,10 @@
 #define SLOT_MS 30.0
 #define SYNC_CENTER_48 655     /* a burst's sync center past its start, 48 kS/s samples (symbol 65.5) */
 
+#define IG_QUEUE 3             /* the ipgw op's packets waiting for the transmitter */
+#define IG_WAIT_S 2.0          /* ... this long at most */
+#define IG_KEY_MAX_S 15.0      /* a key-up of its that hasn't gone out by then failed */
+#define IG_MAX_S 1800.0        /* armed this long at most */
 #define RETUNE_MAX_S 15.0      /* a tune or untune that hasn't applied by then failed */
 
 enum { C_FREE = 0, C_LINE, C_ACTIVE, C_DONE };
@@ -285,6 +290,8 @@ struct rdof_bl {
     char env_rec[2600], env_scs[600], env_ts[900], env_steps[400], env_sum[1400];
     char info_line[RDOF_BL_OUT / 2]; /* info and status replies */
     double burst_tol_ppm; /* the window's ppm_tol as tick_bursts last saw it (0: not known) */
+    struct ig *ig;        /* the ipgw op's gateway, NULL: none armed */
+    rdof_bl_udp_t udp;    /* its socket (the server's) */
 };
 
 static void lock(rdof_bl_t *bl) { pthread_mutex_lock(&bl->mu); }
@@ -459,6 +466,7 @@ static int session_find(const rdof_bl_t *bl, const char *id)
 }
 
 static void tune_end(rdof_bl_t *bl, double now);
+static void op_ipgw(rdof_bl_t *bl, conn_t *c, int ci, int root, double now);
 
 static void session_end(rdof_bl_t *bl, int s, const char *why, double now)
 {
@@ -651,6 +659,7 @@ void rdof_bl_free(rdof_bl_t *bl)
         free(bl->c[i].ex);
     }
     free(bl->strbuf);
+    free(bl->ig);
     pthread_mutex_destroy(&bl->mu);
     free(bl);
 }
@@ -979,10 +988,17 @@ static void jobs_json(rdof_bl_t *bl, const char *notx, char *out, size_t cap)
                          : cannot(bl, "mssim") ? cannot(bl, "mssim") : can_tx;
     const char *const sig = !bl->p.sig_open ? (cannot(bl, "signal_tx") ? cannot(bl, "signal_tx") : "this bench transmits no signal modes")
                           : can_tx;
-    const char *const v[] = {notx, rpt, ob, ms, sig};
-    static const char *const names[] = {"bench_tx", "bench_repeater", "outbound", "mssim", "signal_tx"};
+#if RDOF_FEATURE_DATA_BLOCKS
+    const char *const ig = !bl->p.tx_open ? "this bench doesn't transmit"
+                         : cannot(bl, "ipgw") ? cannot(bl, "ipgw")
+                         : !bl->udp.open ? "this bench has no UDP socket for it" : can_tx;
+#else
+    const char *const ig = "this build has no IP gateway";
+#endif
+    const char *const v[] = {notx, rpt, ob, ms, sig, ig};
+    static const char *const names[] = {"bench_tx", "bench_repeater", "outbound", "mssim", "signal_tx", "ipgw"};
     size_t k = (size_t)snprintf(out, cap, "{");
-    for (int i = 0; i < 5 && k < cap; i++) {
+    for (int i = 0; i < 6 && k < cap; i++) {
         char q[280] = "null";
         if (v[i])
             jstr(v[i], q, sizeof q);
@@ -4055,6 +4071,8 @@ static void request(rdof_bl_t *bl, int ci, double now)
         op_tune(bl, c, root, now);
     else if (!strcmp(op, "mssim"))
         op_mssim(bl, c, root, now);
+    else if (!strcmp(op, "ipgw"))
+        op_ipgw(bl, c, ci, root, now);
     else if (!strcmp(op, "stop"))
         op_stop(bl, c, root, now);
     else if (!strcmp(op, "activity") || !strcmp(op, "burstlog") || !strcmp(op, "bridge"))
@@ -4076,6 +4094,387 @@ static int modem_next(const rdof_bl_t *bl)
     }
     return best;
 }
+
+/* ── the IP gateway (the ipgw op) ─────────────────────────────────────────── */
+
+#if RDOF_FEATURE_DATA_BLOCKS
+
+/* An armed gateway: one listen route, its datagrams down as packets through the bench's transmitter, one key-up
+ * each, and the packets heard on its frequency up. */
+struct ig {
+    rdof_ipgw_t g;
+    int sess;                 /* the arming session */
+    char sess_id[12];
+    double mhz;
+    uint32_t freq_hz;
+    int cc, ch;
+    rdof_bench_power_t power;
+    double until, next_tick, now;
+    bool tuned;               /* its own tune holds the receiver (tune_ms_until) */
+    int port;                 /* the socket's */
+    rdof_ipgw_dmr_t q[IG_QUEUE];
+    double q_at[IG_QUEUE];
+    int qh, qn;
+    int state;                /* 0 idle, 1 keyed and pushing, 2 unkeyed, draining */
+    int next;                 /* bursts of the head packet pushed */
+    double key_at;
+    uint32_t keyups, tx_failed, tx_waited; /* key-ups that went out; refused or failed; waited too long */
+    char why[120];            /* the last refusal */
+};
+
+static bool ig_send_dmr(void *ctx, const rdof_ipgw_dmr_t *p)
+{
+    rdof_bl_t *bl = ctx;
+    struct ig *I = bl->ig;
+    if (!I || I->qn == IG_QUEUE || p->nbursts <= 0)
+        return false;
+    const int k = (I->qh + I->qn) % IG_QUEUE;
+    I->q[k] = *p;
+    I->q_at[k] = I->now;
+    I->qn++;
+    return true;
+}
+
+static bool ig_send_listen(void *ctx, int route, uint32_t ip, uint16_t port, const uint8_t *data, size_t len)
+{
+    rdof_bl_t *bl = ctx;
+    return bl->udp.send && bl->udp.send(bl->udp.ctx, ip, port, data, len);
+}
+
+static void ig_drop_head(struct ig *I)
+{
+    I->qh = (I->qh + 1) % IG_QUEUE;
+    I->qn--;
+}
+
+/* The gateway transmits now: other jobs wait for the modem until it's done. */
+static bool ig_keyed(const rdof_bl_t *bl) { return bl->ig && bl->ig->state != 0; }
+
+static void ig_why(struct ig *I, const char *why)
+{
+    snprintf(I->why, sizeof I->why, "%s", why);
+    for (char *s = I->why; *s; s++)
+        if (*s == '"' || *s == '\\' || (unsigned char)*s < 0x20)
+            *s = '\'';
+}
+
+static void ig_disarm(rdof_bl_t *bl, const char *why, double now)
+{
+    struct ig *I = bl->ig;
+    if (!I)
+        return;
+    if (I->state != 0 && bl->p.tx_close)
+        bl->p.tx_close(bl->p.ctx);
+    if (bl->udp.close)
+        bl->udp.close(bl->udp.ctx);
+    const bool tuned = I->tuned;
+    bl->ig = NULL;
+    bl->n_bursts--;
+    free(I);
+    if (tuned && bl->tune_ms_until > 0)
+        tune_end(bl, now);
+    (void)why;
+}
+
+/* The status members (no braces) into out. */
+static void ig_json(rdof_bl_t *bl, char *out, size_t cap, bool armed)
+{
+    const struct ig *I = bl->ig;
+    if (!I) {
+        snprintf(out, cap, "\"armed\":false");
+        return;
+    }
+    const rdof_ipgw_route_t *r = &I->g.cfg.routes[0];
+    char to[32], heard[200] = "";
+    const char *all = "{}";
+    if (r->port)
+        snprintf(to, sizeof to, "%u.%u.%u.%u:%d", (unsigned)(r->ip >> 24), (unsigned)(r->ip >> 16 & 255),
+                 (unsigned)(r->ip >> 8 & 255), (unsigned)(r->ip & 255), r->port);
+    else
+        snprintf(to, sizeof to, "%u.%u.%u.%u", (unsigned)(r->ip >> 24), (unsigned)(r->ip >> 16 & 255),
+                 (unsigned)(r->ip >> 8 & 255), (unsigned)(r->ip & 255));
+    size_t k = 0;
+    for (int i = 0; i < RDOF_IPGW_HEARD && k + 12 < sizeof heard; i++)
+        if (I->g.heard[i].at > 0)
+            k += (size_t)snprintf(heard + k, sizeof heard - k, "%s%u", k ? "," : "", (unsigned)I->g.heard[i].id);
+    char *buf = bl->tmp; /* off the server thread's stack, and out of a board's internal RAM */
+    rdof_json_t j;
+    rdof_json_init(&j, buf, sizeof bl->tmp);
+    rdof_json_open(&j, NULL);
+    rdof_ipgw_status_json(&I->g, &j);
+    rdof_json_close(&j);
+    if (rdof_json_done(&j)) { /* {"ip_gateway":{...}}: the inner object */
+        char *a = strchr(buf + 1, '{'), *z = strrchr(buf, '}');
+        if (a && z && z > a) {
+            *z = 0;
+            all = a;
+        }
+    }
+    const rdof_ipgw_counters_t *n = &I->g.n;
+    snprintf(out, cap,
+             "\"armed\":%s,\"session\":\"%s\",\"freq\":%.6f,\"cc\":%d,\"id\":%u,\"listen\":%d,\"to\":\"%s\","
+             "\"left_s\":%.1f,\"up_packets\":%u,\"down_packets\":%u,\"down_inbound\":%u,\"flows\":%d,\"heard\":[%s],"
+             "\"tx\":{\"keyups\":%u,\"failed\":%u,\"waited_out\":%u,\"queued\":%d,\"why\":\"%s\"},\"counters\":%s",
+             armed ? "true" : "false", I->sess_id, I->mhz, I->cc, (unsigned)I->g.cfg.id, I->port, to, I->until - I->now,
+             (unsigned)n->up_packets, (unsigned)n->down_packets, (unsigned)n->down_inbound, rdof_ipgw_flows(&I->g), heard,
+             (unsigned)I->keyups, (unsigned)I->tx_failed, (unsigned)I->tx_waited, I->qn, I->why, all);
+}
+
+static void ig_arm(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
+{
+    if (c->sess < 0) {
+        fail(bl, c, "bad_request", "arm needs a session");
+        return;
+    }
+    const char *no = !bl->p.tx_open ? "this bench doesn't transmit"
+                   : cannot(bl, "ipgw") ? cannot(bl, "ipgw")
+                   : !bl->udp.open ? "this bench has no UDP socket for it"
+                   : bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
+    if (no) {
+        fail(bl, c, "unsupported", "%s", no);
+        return;
+    }
+    if (bl->ig) {
+        fail(bl, c, "busy", "a gateway is armed already (session %s): disarm it first", bl->ig->sess_id);
+        return;
+    }
+    const double mhz = jnum(bl, root, "freq", NAN);
+    if (!tx_ok(bl, mhz)) {
+        fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
+        return;
+    }
+    const double seconds = jnum(bl, root, "seconds", 300.0);
+    const int cc = (int)jnum(bl, root, "cc", 1);
+    const double id = jnum(bl, root, "id", 0);
+    const double listen = jnum(bl, root, "listen", 0);
+    if (!(seconds > 0 && seconds <= IG_MAX_S) || cc < 0 || cc > 15 || id < 0 || id > 16776415 ||
+        listen != (int)listen || listen < 0 || listen > 65535) {
+        fail(bl, c, "bad_request", "seconds 1 to %.0f, cc 0 to 15, id a DMR id, listen a port (0: any)", IG_MAX_S);
+        return;
+    }
+    uint32_t to_ip = 0;
+    int to_port = 0;
+    const char *to = jstrv(bl, root, "to");
+    if (to && to[0]) {
+        char host[40];
+        snprintf(host, sizeof host, "%s", to);
+        char *colon = strrchr(host, ':');
+        if (colon) {
+            *colon = 0;
+            to_port = atoi(colon + 1);
+        }
+        if (!rdof_ipgw_parse_ip(host, &to_ip) || !to_ip || to_ip >= 0xE0000000u || (colon && (to_port < 1 || to_port > 65535))) {
+            fail(bl, c, "bad_request", "to: an IPv4 address, :port optional");
+            return;
+        }
+    } else {
+        to_ip = bl->udp.peer ? bl->udp.peer(bl->udp.ctx, ci) : 0;
+        if (!to_ip) {
+            fail(bl, c, "bad_request", "to: this connection's address isn't known: give one");
+            return;
+        }
+    }
+    /* a frequency where no channel decodes DMR (or past the transmitter's reach): a tune there, held while armed */
+    if (reach_tune(bl, c, root, mhz, true, true, now))
+        return;
+    const int k = freq_index(bl, mhz);
+    if (k < 0 || bl->f[k].ch < 0 || !(bl->f[k].caps & RDOF_BL_CAP_DMR)) {
+        fail(bl, c, "refused", "no receive channel on %.4f MHz", mhz);
+        return;
+    }
+    struct ig *I = RDOF_BL_CALLOC(1, sizeof *I);
+    if (!I) {
+        fail(bl, c, "unavailable", "no memory for the gateway");
+        return;
+    }
+    const int port = bl->udp.open(bl->udp.ctx, (int)listen);
+    if (port <= 0) {
+        free(I);
+        fail(bl, c, "busy", "no UDP socket on port %d", (int)listen);
+        return;
+    }
+    rdof_ipgw_config_t cfg;
+    rdof_ipgw_config_default(&cfg);
+    cfg.on = true;
+    cfg.id = (uint32_t)id;
+    cfg.nroutes = 1;
+    rdof_ipgw_route_t *r = &cfg.routes[0];
+    snprintf(r->name, sizeof r->name, "bench");
+    r->all = true;
+    r->payload = RDOF_IPGW_PAYLOAD_IP;
+    r->ip = to_ip;
+    snprintf(r->host, sizeof r->host, "%u.%u.%u.%u", (unsigned)(to_ip >> 24), (unsigned)(to_ip >> 16 & 255),
+             (unsigned)(to_ip >> 8 & 255), (unsigned)(to_ip & 255));
+    r->port = to_port;
+    r->listen = port;
+    r->listen_learn = !to_port;
+    rdof_ipgw_init(&I->g, &cfg);
+    I->g.send_dmr = ig_send_dmr;
+    I->g.send_listen = ig_send_listen;
+    I->g.ctx = bl;
+    I->g.home = (rdof_ipgw_where_t){.source = -1, .slot = 2, .freq = (uint32_t)lround(mhz * 1e6), .cc = cc};
+    I->sess = c->sess;
+    snprintf(I->sess_id, sizeof I->sess_id, "%s", bl->s[c->sess].id);
+    I->mhz = mhz;
+    I->freq_hz = (uint32_t)lround(mhz * 1e6);
+    I->cc = cc;
+    I->ch = bl->f[k].ch;
+    I->power = (rdof_bench_power_t){jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0), 1.0};
+    I->until = now + seconds;
+    I->now = now;
+    I->port = port;
+    if (bl->tune_conn == ci) { /* its tune outlasts the request */
+        bl->tune_conn = -1;
+        bl->tune_ms_until = I->until;
+        I->tuned = true;
+    }
+    bl->ig = I;
+    bl->n_bursts++;
+    char out[200];
+    snprintf(out, sizeof out, "\"armed\":true,\"listen\":%d,\"id\":%u,\"freq\":%.6f,\"cc\":%d,\"to\":\"%s%s%.0d\",\"seconds\":%.1f",
+             port, (unsigned)cfg.id, mhz, cc, r->host, to_port ? ":" : "", to_port, seconds);
+    emit(bl, c, "{\"ipgw\":{%s}}", out);
+}
+
+/* The IP gateway: arm (a listen port, a transmit frequency of the bench), disarm, status. */
+static void op_ipgw(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
+{
+    if (!req_session(bl, c, root, false))
+        return;
+    const char *action = jstrv(bl, root, "action");
+    if (!action)
+        action = "status";
+    if (!strcmp(action, "arm")) {
+        ig_arm(bl, c, ci, root, now);
+        return;
+    }
+    if (strcmp(action, "disarm") && strcmp(action, "status")) {
+        fail(bl, c, "bad_request", "action is arm, disarm or status");
+        return;
+    }
+    if (bl->ig)
+        bl->ig->now = now;
+    if (!strcmp(action, "disarm") && bl->ig && c->sess != bl->ig->sess) {
+        fail(bl, c, "refused", "session %s armed it", bl->ig->sess_id);
+        return;
+    }
+    char *out = bl->ms_out;
+    const bool disarm = !strcmp(action, "disarm");
+    ig_json(bl, out, sizeof bl->ms_out, !disarm);
+    if (disarm)
+        ig_disarm(bl, "disarm", now);
+    emit(bl, c, "{\"ipgw\":{%s}}", out);
+}
+
+/* Bursts heard on its frequency go in; its packets go out, one key-up each, when the modem is free. */
+static void tick_ipgw(rdof_bl_t *bl, double now)
+{
+    struct ig *I = bl->ig;
+    if (!I)
+        return;
+    I->now = now;
+    if (now >= I->until || (I->sess >= 0 && !bl->s[I->sess].used)) {
+        ig_disarm(bl, now >= I->until ? "seconds" : "session", now);
+        return;
+    }
+    if (now >= I->next_tick) {
+        rdof_ipgw_tick(&I->g, now);
+        I->next_tick = now + 0.25;
+    }
+    char why[160] = "";
+    if (I->state == 0) {
+        while (I->qn && now - I->q_at[I->qh] > IG_WAIT_S) {
+            ig_drop_head(I);
+            I->tx_waited++;
+            I->g.n.tx_busy++;
+        }
+        if (!I->qn || bl->tx_conn >= 0 || (bl->holder >= 0 && bl->holder != I->sess) || modem_next(bl) >= 0)
+            return; /* another job has the modem: the packet waits, IG_WAIT_S at most */
+        if (!bl->p.tx_open(bl->p.ctx, I->freq_hz, I->cc, I->power, true, why, sizeof why)) {
+            ig_why(I, why);
+            ig_drop_head(I);
+            I->tx_failed++;
+            I->g.n.no_tx++;
+            return;
+        }
+        I->state = 1;
+        I->next = 0;
+        I->key_at = now;
+    }
+    const rdof_ipgw_dmr_t *p = &I->q[I->qh];
+    if (I->state == 1) {
+        int space = bl->p.tx_space(bl->p.ctx, why, sizeof why);
+        if (space < 0 || now - I->key_at > IG_KEY_MAX_S) {
+            ig_why(I, space < 0 ? why : "the transmitter took no bursts");
+            bl->p.tx_close(bl->p.ctx);
+            ig_drop_head(I);
+            I->tx_failed++;
+            I->g.n.no_tx++;
+            I->state = 0;
+            return;
+        }
+        while (space-- > 0 && I->next < p->nbursts) {
+            bl->p.tx_push(bl->p.ctx, p->control[I->next], p->bursts[I->next]);
+            I->next++;
+        }
+        if (I->next >= p->nbursts) {
+            bl->p.tx_unkey(bl->p.ctx);
+            I->state = 2;
+        }
+    }
+    if (I->state == 2 && (bl->p.tx_idle(bl->p.ctx) || now - I->key_at > IG_KEY_MAX_S)) {
+        bl->p.tx_close(bl->p.ctx);
+        ig_drop_head(I);
+        I->keyups++;
+        I->state = 0;
+    }
+}
+
+/* A burst heard: a data burst on its frequency goes in. */
+static void ig_heard(rdof_bl_t *bl, const rdof_bl_burst_t *b, double now)
+{
+    struct ig *I = bl->ig;
+    if (!I || b->ch != I->ch || (b->dt != RDOF_DT_DATA_HEADER && b->dt != RDOF_DT_RATE_12 &&
+                                 b->dt != RDOF_DT_RATE_34 && b->dt != RDOF_DT_RATE_1))
+        return;
+    I->now = now;
+    const rdof_ipgw_where_t w = {.source = b->ch, .slot = b->slot, .freq = I->freq_hz,
+                                 .cc = b->cc >= 0 && b->cc <= 15 ? b->cc : I->cc};
+    rdof_ipgw_burst(&I->g, &w, b->dt, b->raw, now);
+}
+
+#else
+
+static bool ig_keyed(const rdof_bl_t *bl) { return false; }
+static void tick_ipgw(rdof_bl_t *bl, double now) {}
+static void ig_heard(rdof_bl_t *bl, const rdof_bl_burst_t *b, double now) {}
+
+static void op_ipgw(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
+{
+    fail(bl, c, "unsupported", "this build has no IP gateway");
+}
+
+#endif
+
+void rdof_bl_set_udp(rdof_bl_t *bl, const rdof_bl_udp_t *u)
+{
+    lock(bl);
+    bl->udp = *u;
+    unlock(bl);
+}
+
+void rdof_bl_udp_input(rdof_bl_t *bl, uint32_t ip, uint16_t port, const uint8_t *data, size_t len, double now)
+{
+    lock(bl);
+#if RDOF_FEATURE_DATA_BLOCKS
+    if (bl->ig) {
+        bl->ig->now = now;
+        rdof_ipgw_from_listen(&bl->ig->g, 0, ip, port, data, len, now);
+    }
+#endif
+    unlock(bl);
+}
+
 
 static void tell_queued(rdof_bl_t *bl, conn_t *c, double now, const char *kind, int blocker, int ahead)
 {
@@ -4185,7 +4584,7 @@ static void tick_waits(rdof_bl_t *bl, double now)
                 if (s >= 0 && s != c->sess)
                     blocker = s;
             }
-            if (((bl->holder < 0 && modem_next(bl) == i) || mine) && bl->tx_conn < 0 && blocker < 0) {
+            if (((bl->holder < 0 && modem_next(bl) == i) || mine) && bl->tx_conn < 0 && !ig_keyed(bl) && blocker < 0) {
                 granted(bl, c, now, "modem");
                 if (c->op == OP_RUN)
                     run_granted(bl, c, i, now);
@@ -4819,6 +5218,7 @@ static void tick_bursts(rdof_bl_t *bl, double now)
                      b->dt != 9)
                 run_heard(bl, c, b);
         }
+        ig_heard(bl, b, now);
         bl->qh = (bl->qh + 1) % RDOF_BL_BURSTQ;
         bl->qn--;
     }
@@ -5707,6 +6107,7 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
     tick_tune(bl, now);
     tick_waits(bl, now);
     tick_bursts(bl, now);
+    tick_ipgw(bl, now);
     for (int i = 0; i < RDOF_BL_CONNS; i++) {
         conn_t *c = &bl->c[i];
         if (c->state == C_ACTIVE && c->op == OP_CAPTURE)

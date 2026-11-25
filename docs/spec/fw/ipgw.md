@@ -36,7 +36,8 @@ Two ways to send a datagram on, tried in this order:
 1. **Routes.** The first route that matches the DMR addressing takes it. A route matches on the destination (a
    private call to an id or range, `private`; a talkgroup or range, `group`), the source radio (`from`, an id or
    range), both, or `all`. It sends the UDP payload (`payload: "udp"`, the default) or the whole IPv4 datagram
-   (`payload: "ip"`) to its `to` address. `to` without a port keeps each datagram's own destination port.
+   (`payload: "ip"`) to its `to` address. `to` without a port keeps each datagram's own destination port. A
+   `payload: "ip"` route with `listen` takes datagrams from its host as well (§9.1).
 2. **NAT.** With `nat` on, any UDP datagram (and ICMP echo request, §7) no route took goes to the address in its
    own IPv4 header, from the board's address (source NAT), if the destination is allowed (§4). The DMR
    destination doesn't matter: a radio that sends off-net traffic to the gateway's id (§6) and one that sends it
@@ -104,8 +105,8 @@ Nothing matched and NAT off: dropped (`no_route`).
   Blocks to Follow is 7 bits) and 1520 down (127 rate 1/2 blocks: the gateway sends rate 1/2).
 - **Flows:** `max_flows` (default 8, at most `CONFIG_RDOF_IPGW_MAX_SOCKETS`); one closes after `idle_s` (default
   120 s) with nothing either way. A full table drops new flows (`flows_full`); nothing is evicted.
-- **Replies:** only from the exact address and port a flow sent to (`down_stranger` otherwise; ICMP: §7). There is
-  no inbound mapping: the network can't start a conversation with a radio.
+- **Replies:** only from the exact address and port a flow sent to (`down_stranger` otherwise; ICMP: §7). The
+  network starts a conversation with a radio only through a route's `listen` port, from that route's host (§9.1).
 - **Never from the radio's own address:** a radio drops a packet whose source is its own or its host's address.
   A down datagram whose source is its destination, the radio's address from its datagram, or the radio's
   `radio_net` address is not sent (`down_own_source`). NAT's replies are from the peer, as it restores them.
@@ -193,6 +194,27 @@ The DMR packet: unconfirmed, SAP 4, rate 1/2, F set, FSN 8 (the whole message), 
 radio's id, from the id the radio sent to (talkgroup data: from `id`, or the talkgroup when `id` is 0); no CSBK
 preambles (a radio doesn't need them). Counted `down_packets`, `down_bytes`; `down_rate`, `down_too_big`,
 `down_own_source`, `no_tx` when not sent. Each reply is a transmission of its own (§12).
+
+### 9.1 Listen routes: the host starts the flow
+
+A `payload: "ip"` route with `listen: PORT` has a UDP socket of its own on that port. Each datagram that arrives on
+it from the route's `to` address (any port) is a whole IPv4 datagram; its destination, in `radio_net`, names the
+radio. Datagrams from any other address are counted `down_stranger`; ones that aren't IPv4, or aren't to a radio,
+`down_bad_ip`. The rest are counted `down_inbound`. Each one:
+
+- opens the route's flow for that radio when none is open (no socket of its own: the route's is the flow's), from
+  the gateway's `id` (9999999 when 0), and goes down as a reply (§9: TTL less one, the checks, `down_pps`);
+- goes where the radio was last heard (the last `RDOF_IPGW_HEARD` 16 radios are remembered, whatever route they
+  used); a radio not heard yet is reached on the transmitter's channel now, with its color code (the roamer's
+  channel on a board; the unit's frequency on rdofradio);
+- sets where the radios' datagrams go back to: `to`'s port when it has one, else the port this datagram came from
+  (the last one wins).
+
+The radio's datagrams on the route (any it sends that the route matches) go up from the listen socket, on the
+same flow (one per radio: `payload: "ip"` flows key on the radio, its address and the route). Before any datagram
+has come in, a route without a port in `to` has nowhere to send them: `unresolved`. Each listen socket counts
+against `LWIP_MAX_SOCKETS` as a flow's does. The bench's `ipgw` op ([bench-api.md](../bench-api.md) §14.10) is one
+such route.
 
 ## 10. Confirmed data
 
@@ -285,7 +307,8 @@ chain's end.
 
 - IPv6, IPv4 fragments, TCP/IP header compression, other SAPs (short data, UDT); SAP 3 with a SAID other than 0,
   a DAID other than 0 or 2, an opcode other than UDP, or port IDs other than 1, 2 and 98.
-- Inbound port forwarding (the network starting a flow to a radio).
+- Inbound port forwarding (the network starting a flow to a radio) other than a `payload: "ip"` route's `listen`
+  (§9.1): no UDP payload mapped to a radio's address and port.
 - ICMP from a radio other than echo requests.
 - Selective retry (NACKs, resending only the failed blocks).
 - Confirmed data sent down (replies are unconfirmed), rate 3/4 or rate 1 sent down; replies chained (§12).
