@@ -161,6 +161,7 @@
 #include "rdofradio_dev.h"
 #include "rdofradio_fpga.h"
 #include "rdofradio_ipgw.h"
+#include "rdofradio_tun.h"
 #include "rdofradio_utc.h"
 #include "rdofradio_dnssd.h"
 #include "rdofradio_net.h"
@@ -3974,6 +3975,24 @@ static void bl_raw_close(void *ctx);
 static int bl_raw_demod(void *ctx, bool reset, int cc, const float *iq, int n, rdof_bl_burst_t *out, int cap);
 static long long stream_samples(void);
 
+/* The ipgw op's mode routed: rdofradio_tun.c, the host's one route of radio_net */
+static bool bl_route_open(void *ctx, uint32_t net, uint32_t mask, char *why, size_t cap)
+{
+    const rdof_ipgw_net_t n = {net, mask};
+    return rtun_open(&n, "bench", false, why, cap);
+}
+static size_t bl_route_recv(void *ctx, uint8_t *buf, size_t cap) { return rtun_recv(buf, cap); }
+static bool bl_route_send(void *ctx, const uint8_t *data, size_t len) { return rtun_send(data, len); }
+static void bl_route_close(void *ctx) { rtun_close(); }
+static bool bl_route_lan(void *ctx, uint32_t *net, uint32_t *mask)
+{
+    rdof_ipgw_net_t n;
+    if (!rtun_lan(&n))
+        return false;
+    *net = n.net, *mask = n.mask;
+    return true;
+}
+
 static void bench_start(void)
 {
     if (bench_port < 0)
@@ -4027,6 +4046,11 @@ static void bench_start(void)
         p.ch_close = bl_ch_close, p.raw_start = bl_raw_start, p.raw_state = bl_raw_state, p.raw_read = bl_raw_read,
         p.raw_close = bl_raw_close, p.raw_demod = bl_raw_demod;
     BL.bl = rdof_bl_new(&p);
+    if (BL.bl) { /* the ipgw op's mode routed: the TUN device, when this host can make one */
+        static const rdof_bl_route_t rt = {.open = bl_route_open, .recv = bl_route_recv, .send = bl_route_send,
+                                           .close = bl_route_close, .lan = bl_route_lan};
+        rdof_bl_set_route(BL.bl, &rt);
+    }
     char err[160];
     BL.net = BL.bl ? rdof_bnet_start(BL.bl, bench_addr, bench_port, now_s, 0, err, sizeof err) : NULL;
     if (!BL.net) {

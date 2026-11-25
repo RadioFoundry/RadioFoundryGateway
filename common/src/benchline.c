@@ -292,6 +292,7 @@ struct rdof_bl {
     double burst_tol_ppm; /* the window's ppm_tol as tick_bursts last saw it (0: not known) */
     struct ig *ig;        /* the ipgw op's gateway, NULL: none armed */
     rdof_bl_udp_t udp;    /* its socket (the server's) */
+    rdof_bl_route_t route; /* the platform's route of radio_net (the ipgw op, mode routed) */
 };
 
 static void lock(rdof_bl_t *bl) { pthread_mutex_lock(&bl->mu); }
@@ -4111,7 +4112,10 @@ struct ig {
     rdof_bench_power_t power;
     double until, next_tick, now;
     bool tuned;               /* its own tune holds the receiver (tune_ms_until) */
-    int port;                 /* the socket's */
+    int port;                 /* the socket's (mode listen) */
+    bool routed;              /* mode routed: the platform's route, no socket */
+    char hosts[80];           /* routed: the hosts, as text */
+    uint8_t lan_buf[RDOF_IPGW_MAX_PACKET + 64];
     rdof_ipgw_dmr_t q[IG_QUEUE];
     double q_at[IG_QUEUE];
     int qh, qn;
@@ -4141,6 +4145,12 @@ static bool ig_send_listen(void *ctx, int route, uint32_t ip, uint16_t port, con
     return bl->udp.send && bl->udp.send(bl->udp.ctx, ip, port, data, len);
 }
 
+static bool ig_send_routed(void *ctx, const uint8_t *data, size_t len)
+{
+    rdof_bl_t *bl = ctx;
+    return bl->route.send && bl->route.send(bl->route.ctx, data, len);
+}
+
 static void ig_drop_head(struct ig *I)
 {
     I->qh = (I->qh + 1) % IG_QUEUE;
@@ -4165,8 +4175,12 @@ static void ig_disarm(rdof_bl_t *bl, const char *why, double now)
         return;
     if (I->state != 0 && bl->p.tx_close)
         bl->p.tx_close(bl->p.ctx);
-    if (bl->udp.close)
+    if (I->routed) {
+        if (bl->route.close)
+            bl->route.close(bl->route.ctx);
+    } else if (bl->udp.close) {
         bl->udp.close(bl->udp.ctx);
+    }
     const bool tuned = I->tuned;
     bl->ig = NULL;
     bl->n_bursts--;
@@ -4185,8 +4199,11 @@ static void ig_json(rdof_bl_t *bl, char *out, size_t cap, bool armed)
         return;
     }
     const rdof_ipgw_route_t *r = &I->g.cfg.routes[0];
-    char to[32], heard[200] = "";
+    char to[32], heard[200] = "", lan[24];
     const char *all = "{}";
+    snprintf(lan, sizeof lan, "%u.%u.%u.%u/%d", (unsigned)(I->g.lan.net >> 24), (unsigned)(I->g.lan.net >> 16 & 255),
+             (unsigned)(I->g.lan.net >> 8 & 255), (unsigned)(I->g.lan.net & 255),
+             I->g.lan.mask ? 32 - __builtin_ctz(I->g.lan.mask) : 0);
     if (r->port)
         snprintf(to, sizeof to, "%u.%u.%u.%u:%d", (unsigned)(r->ip >> 24), (unsigned)(r->ip >> 16 & 255),
                  (unsigned)(r->ip >> 8 & 255), (unsigned)(r->ip & 255), r->port);
@@ -4212,11 +4229,15 @@ static void ig_json(rdof_bl_t *bl, char *out, size_t cap, bool armed)
     }
     const rdof_ipgw_counters_t *n = &I->g.n;
     snprintf(out, cap,
-             "\"armed\":%s,\"session\":\"%s\",\"freq\":%.6f,\"cc\":%d,\"id\":%u,\"listen\":%d,\"to\":\"%s\","
-             "\"left_s\":%.1f,\"up_packets\":%u,\"down_packets\":%u,\"down_inbound\":%u,\"flows\":%d,\"heard\":[%s],"
+             "\"armed\":%s,\"session\":\"%s\",\"mode\":\"%s\",\"freq\":%.6f,\"cc\":%d,\"id\":%u,%s%s%s%d,\"%s\":\"%s\","
+             "\"left_s\":%.1f,\"up_packets\":%u,\"down_packets\":%u,\"down_inbound\":%u,\"routed_down\":%u,\"flows\":%d,"
+             "\"heard\":[%s],"
              "\"tx\":{\"keyups\":%u,\"failed\":%u,\"waited_out\":%u,\"queued\":%d,\"why\":\"%s\"},\"counters\":%s",
-             armed ? "true" : "false", I->sess_id, I->mhz, I->cc, (unsigned)I->g.cfg.id, I->port, to, I->until - I->now,
-             (unsigned)n->up_packets, (unsigned)n->down_packets, (unsigned)n->down_inbound, rdof_ipgw_flows(&I->g), heard,
+             armed ? "true" : "false", I->sess_id, I->routed ? "routed" : "listen", I->mhz, I->cc, (unsigned)I->g.cfg.id,
+             I->routed ? "\"lan\":\"" : "", I->routed ? lan : "", I->routed ? "\",\"listen\":" : "\"listen\":", I->port,
+             I->routed ? "hosts" : "to", I->routed ? I->hosts : to, I->until - I->now,
+             (unsigned)n->up_packets, (unsigned)n->down_packets, (unsigned)n->down_inbound, (unsigned)n->routed_down,
+             rdof_ipgw_flows(&I->g), heard,
              (unsigned)I->keyups, (unsigned)I->tx_failed, (unsigned)I->tx_waited, I->qn, I->why, all);
 }
 
@@ -4226,9 +4247,16 @@ static void ig_arm(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
         fail(bl, c, "bad_request", "arm needs a session");
         return;
     }
+    const char *mode = jstrv(bl, root, "mode");
+    const bool routed = mode && !strcmp(mode, "routed");
+    if (mode && !routed && strcmp(mode, "listen")) {
+        fail(bl, c, "bad_request", "mode is listen or routed");
+        return;
+    }
     const char *no = !bl->p.tx_open ? "this bench doesn't transmit"
                    : cannot(bl, "ipgw") ? cannot(bl, "ipgw")
-                   : !bl->udp.open ? "this bench has no UDP socket for it"
+                   : !routed && !bl->udp.open ? "this bench has no UDP socket for it"
+                   : routed && !bl->route.open ? "this bench can't route radio_net (rdofradio: Linux only)"
                    : bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
     if (no) {
         fail(bl, c, "unsupported", "%s", no);
@@ -4252,10 +4280,33 @@ static void ig_arm(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
         fail(bl, c, "bad_request", "seconds 1 to %.0f, cc 0 to 15, id a DMR id, listen a port (0: any)", IG_MAX_S);
         return;
     }
+    rdof_ipgw_config_t cfg;
+    rdof_ipgw_config_default(&cfg);
+    if (routed) { /* the hosts let in: a list of networks, or the board's subnet */
+        const int hs = jget(bl, root, "hosts");
+        const rdof_jnode_t *ha = hs >= 0 ? rdof_jnode(&bl->doc, hs) : NULL;
+        if (ha && ha->type != RDOF_JNULL) {
+            bool ok = ha->type == RDOF_JARR && ha->count >= 1 && ha->count <= RDOF_IPGW_MAX_NETS;
+            for (int i = 0; ok && i < ha->count; i++) {
+                const rdof_jnode_t *e = rdof_jnode(&bl->doc, rdof_jat(&bl->doc, hs, i));
+                rdof_ipgw_net_t *h = &cfg.hosts[cfg.nhosts];
+                ok = e->type == RDOF_JSTR && rdof_ipgw_parse_cidr(e->str, h) && !rdof_ipgw_reserved(&cfg, h->net) &&
+                     (cfg.radio_net.net & h->mask) != h->net;
+                cfg.nhosts += ok;
+            }
+            if (!ok) {
+                fail(bl, c, "bad_request", "hosts: 1 to %d networks \"a.b.c.d/n\", not radio_net's",
+                     RDOF_IPGW_MAX_NETS);
+                return;
+            }
+        }
+    }
     uint32_t to_ip = 0;
     int to_port = 0;
     const char *to = jstrv(bl, root, "to");
-    if (to && to[0]) {
+    if (routed) {
+        /* no to: the hosts send to radio_net themselves */
+    } else if (to && to[0]) {
         char host[40];
         snprintf(host, sizeof host, "%s", to);
         char *colon = strrchr(host, ':');
@@ -4287,17 +4338,20 @@ static void ig_arm(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
         fail(bl, c, "unavailable", "no memory for the gateway");
         return;
     }
-    const int port = bl->udp.open(bl->udp.ctx, (int)listen);
-    if (port <= 0) {
+    char why[96] = "";
+    const int port = routed ? 0 : bl->udp.open(bl->udp.ctx, (int)listen);
+    if (routed ? !bl->route.open(bl->route.ctx, cfg.radio_net.net, cfg.radio_net.mask, why, sizeof why) : port <= 0) {
         free(I);
-        fail(bl, c, "busy", "no UDP socket on port %d", (int)listen);
+        if (routed)
+            fail(bl, c, "busy", "radio_net isn't free: %s", why);
+        else
+            fail(bl, c, "busy", "no UDP socket on port %d", (int)listen);
         return;
     }
-    rdof_ipgw_config_t cfg;
-    rdof_ipgw_config_default(&cfg);
     cfg.on = true;
     cfg.id = (uint32_t)id;
-    cfg.nroutes = 1;
+    cfg.routed = routed;
+    cfg.nroutes = !routed;
     rdof_ipgw_route_t *r = &cfg.routes[0];
     snprintf(r->name, sizeof r->name, "bench");
     r->all = true;
@@ -4311,7 +4365,25 @@ static void ig_arm(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
     rdof_ipgw_init(&I->g, &cfg);
     I->g.send_dmr = ig_send_dmr;
     I->g.send_listen = ig_send_listen;
+    I->g.send_routed = ig_send_routed;
     I->g.ctx = bl;
+    I->routed = routed;
+    if (routed) {
+        size_t hk = 0;
+        I->hosts[0] = 0;
+        for (int i = 0; i < cfg.nhosts && hk + 20 < sizeof I->hosts; i++) {
+            const rdof_ipgw_net_t *h = &cfg.hosts[i];
+            hk += (size_t)snprintf(I->hosts + hk, sizeof I->hosts - hk, "%s%u.%u.%u.%u/%d", i ? " " : "",
+                                   (unsigned)(h->net >> 24), (unsigned)(h->net >> 16 & 255),
+                                   (unsigned)(h->net >> 8 & 255), (unsigned)(h->net & 255),
+                                   h->mask ? 32 - __builtin_ctz(h->mask) : 0);
+        }
+        if (!cfg.nhosts)
+            snprintf(I->hosts, sizeof I->hosts, "the board's subnet");
+        uint32_t ln = 0, lm = 0;
+        if (bl->route.lan && bl->route.lan(bl->route.ctx, &ln, &lm))
+            I->g.lan = (rdof_ipgw_net_t){ln & lm, lm};
+    }
     I->g.home = (rdof_ipgw_where_t){.source = -1, .slot = 2, .freq = (uint32_t)lround(mhz * 1e6), .cc = cc};
     I->sess = c->sess;
     snprintf(I->sess_id, sizeof I->sess_id, "%s", bl->s[c->sess].id);
@@ -4330,7 +4402,14 @@ static void ig_arm(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
     }
     bl->ig = I;
     bl->n_bursts++;
-    char out[200];
+    char out[240];
+    if (routed)
+        snprintf(out, sizeof out, "\"armed\":true,\"mode\":\"routed\",\"radio_net\":\"%u.%u.%u.%u/%d\",\"hosts\":\"%s\","
+                                  "\"id\":%u,\"freq\":%.6f,\"cc\":%d,\"seconds\":%.1f",
+                 (unsigned)(cfg.radio_net.net >> 24), (unsigned)(cfg.radio_net.net >> 16 & 255),
+                 (unsigned)(cfg.radio_net.net >> 8 & 255), (unsigned)(cfg.radio_net.net & 255),
+                 32 - __builtin_ctz(cfg.radio_net.mask), I->hosts, (unsigned)cfg.id, mhz, cc, seconds);
+    else
     snprintf(out, sizeof out, "\"armed\":true,\"listen\":%d,\"id\":%u,\"freq\":%.6f,\"cc\":%d,\"to\":\"%s%s%.0d\",\"seconds\":%.1f",
              port, (unsigned)cfg.id, mhz, cc, r->host, to_port ? ":" : "", to_port, seconds);
     emit(bl, c, "{\"ipgw\":{%s}}", out);
@@ -4377,7 +4456,15 @@ static void tick_ipgw(rdof_bl_t *bl, double now)
         ig_disarm(bl, now >= I->until ? "seconds" : "session", now);
         return;
     }
+    if (I->routed) {
+        size_t n;
+        while ((n = bl->route.recv(bl->route.ctx, I->lan_buf, sizeof I->lan_buf)) > 0)
+            rdof_ipgw_from_lan(&I->g, I->lan_buf, n, now);
+    }
     if (now >= I->next_tick) {
+        uint32_t ln = 0, lm = 0;
+        if (I->routed && bl->route.lan && bl->route.lan(bl->route.ctx, &ln, &lm))
+            I->g.lan = (rdof_ipgw_net_t){ln & lm, lm};
         rdof_ipgw_tick(&I->g, now);
         I->next_tick = now + 0.25;
     }
@@ -4460,6 +4547,13 @@ void rdof_bl_set_udp(rdof_bl_t *bl, const rdof_bl_udp_t *u)
 {
     lock(bl);
     bl->udp = *u;
+    unlock(bl);
+}
+
+void rdof_bl_set_route(rdof_bl_t *bl, const rdof_bl_route_t *r)
+{
+    lock(bl);
+    bl->route = r ? *r : (rdof_bl_route_t){0};
     unlock(bl);
 }
 

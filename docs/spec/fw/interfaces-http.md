@@ -224,6 +224,7 @@ Present when the IP gateway runs ([ipgw.md](ipgw.md)). Counters since boot, all 
 | `down_packets`, `down_bytes` | datagrams (whole IPv4 octets) sent down to radios |
 | `down_rate`, `down_too_big`, `down_stranger`, `down_bad_ip` | over `down_pps`; past `max_bytes` or 1520; from an address the flow didn't send to (a listen port: not the route's host); payload `ip` not IPv4 or its checksum wrong (a listen port: or not to a radio) |
 | `down_inbound` | datagrams taken on a route's `listen` port ([ipgw.md](ipgw.md) §9.1) |
+| `routed_up`, `routed_down` | routed: radios' datagrams sent on to a LAN host; LAN hosts' datagrams taken for a radio ([ipgw.md](ipgw.md) §9.2) |
 | `no_tx` | replies or ACKs with nothing to transmit them (or it refused) |
 | `acks` | confirmed data answered |
 | `flows_opened`, `flows_expired` | flows opened; closed idle |

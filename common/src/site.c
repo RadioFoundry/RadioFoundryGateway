@@ -137,7 +137,7 @@ static const char *const TIER3_KEYS[] = {"name", "type", "carriers", "system", "
                                          "standby", NULL};
 static const char *const CARRIER_KEYS[] = {"out", "in", "chan", "tscc", NULL};
 static const char *const IPGW_KEYS[] = {"name", "type", "tg", "pc", "radio_net", "tx", "ack", "max_bytes",
-                                        "up_pps", "down_pps", "idle_s", "max_flows", "routes", "nat", NULL};
+                                        "up_pps", "down_pps", "idle_s", "max_flows", "routes", "nat", "routed", NULL};
 static const char *const HBLINK_KEYS[] = {"name", "type", "host", "port", "transport", "sctp_encap_port",
                                           "sctp_heartbeat_ms", "sctp_max_retransmit", "sctp_ttl_ms", "identity",
                                           "peer_ids", "roaming", NULL};

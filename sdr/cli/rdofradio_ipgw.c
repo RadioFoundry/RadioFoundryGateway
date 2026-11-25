@@ -16,6 +16,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "rdofradio_tun.h"
+
 #define RESOLVE_EVERY_S 30.0
 #define TICK_EVERY_S 0.25
 
@@ -25,7 +27,8 @@ static int g_ttl[RDOF_IPGW_MAX_FLOWS];       /* the IP_TTL each socket has */
 static uint16_t g_port[RDOF_IPGW_MAX_FLOWS]; /* the local port each is bound to */
 static int g_icmp = -1, g_icmp_ttl;          /* NAT's ICMP: one raw socket (it hands over the IPv4 header too) */
 static int g_listen[RDOF_IPGW_MAX_ROUTES];   /* a listen route's socket on its port, -1 none */
-static double g_next_tick;
+static double g_next_tick, g_next_lan;
+static bool g_routed; /* the app owns rdofradio_tun.c */
 
 static void nonblock(int s) { fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK); }
 
@@ -101,6 +104,8 @@ static bool send_icmp(void *ctx, uint32_t ip, const uint8_t *m, size_t len, int 
     return sendto(g_icmp, m, len, 0, (struct sockaddr *)&a, sizeof a) == (ssize_t)len;
 }
 
+static bool send_routed(void *ctx, const uint8_t *data, size_t len) { return rtun_send(data, len); }
+
 /* The routes' host names, on a thread of its own (a lookup can take seconds, and the main loop has the radio): each
    route's address is one word, written once here and read by the main loop. */
 static void *resolver(void *arg)
@@ -148,6 +153,14 @@ bool rdofgw_start(const rdof_ipgw_config_t *cfg, bool (*send)(void *ctx, const r
         g_listen[i] = i < cfg->nroutes && r->listen ? open_listen(r->listen) : -1;
         if (i < cfg->nroutes && r->listen && g_listen[i] < 0)
             fprintf(stderr, "ip gateway: route %s: no socket on port %d\n", r->name, r->listen);
+    }
+    if (cfg->routed) {
+        char why[96];
+        g_routed = rtun_open(&cfg->radio_net, "ipgw app", cfg->rip, why, sizeof why);
+        if (g_routed)
+            g->send_routed = send_routed;
+        else
+            fprintf(stderr, "ip gateway: routed: %s: not routed\n", why);
     }
     if (cfg->nat) {
         g_icmp = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP); /* root or CAP_NET_RAW */
@@ -209,6 +222,16 @@ void rdofgw_poll(double now, uint64_t sync48)
             rdof_ipgw_from_listen(G, i, ntohl(from.sin_addr.s_addr), ntohs(from.sin_port), buf, (size_t)n, now);
             fl = sizeof from;
         }
+    }
+    if (g_routed) {
+        if (now >= g_next_lan) {
+            if (!rtun_lan(&G->lan))
+                G->lan.net = G->lan.mask = 0;
+            g_next_lan = now + RESOLVE_EVERY_S;
+        }
+        size_t n;
+        while ((n = rtun_recv(buf, sizeof buf)) > 0)
+            rdof_ipgw_from_lan(G, buf, n, now);
     }
     for (int i = 0; i < RDOF_IPGW_MAX_FLOWS; i++) {
         struct sockaddr_in from;

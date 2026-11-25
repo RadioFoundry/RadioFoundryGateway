@@ -485,7 +485,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `track` | `session`, `freq`, `mode` (`fm`, `4fsk`), `bw`, `interval_ms`, `line_ms`, `threshold_db`, `min_ms`, `timeout_s`, `max_s`, `post_s`, `drift_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"track": line}` an interval, `{"done": summary}`, or `no_signal` (section 14.8) |
 | `activity`, `burstlog`, `bridge` | | `unsupported` |
 | `mssim` | `session`, `action` (`arm`, `disarm`, `status`), arm: `freq`, `cc`, `power`, `seconds` (300, at most 1800) and the profile's fields; `since` | `{"mssim": {"armed", "arming", "answered", "ended", "log": [entry], "next"}}` (arm: `{"mssim": {"armed": true, "freq", "cc", "note"}}`) |
-| `ipgw` | `session`, `action` (`arm`, `disarm`, `status`: the default), arm: `freq`, `cc` (1), `power_dbm` or `power`, `seconds` (300, at most 1800), `id` (0), `listen` (0: any free port), `to` (`"a.b.c.d"` or `"a.b.c.d:port"`; the client's address) | arm: `{"ipgw": {"armed": true, "listen", "id", "freq", "cc", "to", "seconds"}}`; status and disarm: `{"ipgw": {"armed", "session", "freq", "cc", "id", "listen", "to", "left_s", "up_packets", "down_packets", "down_inbound", "flows", "heard", "tx", "counters"}}` (none armed: `{"ipgw": {"armed": false}}`); section 14.10 |
+| `ipgw` | `session`, `action` (`arm`, `disarm`, `status`: the default), arm: `freq`, `cc` (1), `power_dbm` or `power`, `seconds` (300, at most 1800), `id` (0), `mode` (`listen`, `routed`); listen: `listen` (0: any free port), `to` (`"a.b.c.d"` or `"a.b.c.d:port"`; the client's address); routed: `hosts` (`["a.b.c.d/n"]`; the bench's subnet) | arm: `{"ipgw": {"armed": true, "listen", "id", "freq", "cc", "to", "seconds"}}` (routed: `"mode": "routed"`, `radio_net`, `hosts` in place of `listen`, `to`); status and disarm: `{"ipgw": {"armed", "session", "mode", "freq", "cc", "id", "listen", "to" (routed: "lan", "listen" 0, "hosts"), "left_s", "up_packets", "down_packets", "down_inbound", "routed_down", "flows", "heard", "tx", "counters"}}` (none armed: `{"ipgw": {"armed": false}}`); section 14.10 |
 
 - `mssim` is a timed confirmed-data responder (rdofradio and a board with an SDR modem; `rdof/mssim.h`): it plays a radio that answers
   confirmed data packets N slots after they end, for testing the far end's retries and turnaround. `arm` takes the
@@ -1381,29 +1381,39 @@ it ends with the modem refusing `SET_FREQ`, whatever `tx_bands` allows.
 
 ### 14.10 The IP gateway: ipgw
 
-`ipgw` runs an IP gateway ([fw/ipgw.md](fw/ipgw.md)) on the bench for a while: one `payload: "ip"` route with a
-`listen` port (§9.1 there), on one transmit frequency. A host on the network sends whole IPv4 datagrams to radios
-through it, and their answers come back; a client tests a radio's packet data from the network side without
-setting up the board's own `ipgw` app.
+`ipgw` runs an IP gateway ([fw/ipgw.md](fw/ipgw.md)) on the bench for a while, on one transmit frequency, in one of
+two modes (`mode`):
+
+- `routed` (fw/ipgw.md §9.2): `radio_net` is routed to the bench. A LAN host with the route `12.0.0.0/8 via <the
+  bench>` (`tools/rfg_route.py`) sends to a radio's address with plain sockets and gets the answer from it. `hosts`
+  (a list of `a.b.c.d/n`, default the bench's own subnet) are who may send in and where the radios' datagrams go.
+  The bench needs the platform's route: a board, or rdofradio on Linux with CAP_NET_ADMIN; `unsupported` without,
+  `busy` while the board's own ipgw app routes `radio_net`.
+- `listen` (the default; fw/ipgw.md §9.1): one `payload: "ip"` route with a UDP port on the bench. A host sends whole
+  IPv4 datagrams to that port, and the radios' come back from it: for a host that can't add a route (off the LAN,
+  no root).
 
 - **arm** needs a session. `freq` is a transmit frequency of the bench with a receiver channel that decodes DMR on
-  it (or one a tune reaches, as `mssim`'s: held while armed). The bench opens a UDP socket on `listen` (0: any free
-  port; the reply says which). Only datagrams from `to` (default: the address the request came from) are taken; the
-  radios' go back to `to`'s port, or without one, to the port the last datagram came from. One gateway at a time:
-  a second `arm` is `busy` until `disarm`.
+  it (or one a tune reaches, as `mssim`'s: held while armed). Mode `listen`: the bench opens a UDP socket on
+  `listen` (0: any free port; the reply says which). Only datagrams from `to` (default: the address the request came
+  from) are taken; the radios' go back to `to`'s port, or without one, to the port the last datagram came from.
+  Mode `routed`: the reply has `radio_net` and `hosts` in place of `listen` and `to`. One gateway at a time: a second
+  `arm` is `busy` until `disarm`.
 - **Down:** each datagram, to a radio by its 12.x.y.z destination (`radio_net` 12.0.0.0/8), goes out as an
   unconfirmed rate 1/2 packet (SAP 4, no preambles, MS data sync, TTL less one) from `id` (9999999 when 0), on
   `freq` at `cc` and the arm's power, one key-up each (`tx_open` as built, as a `raw` job's), at most 2 a second
   (`down_pps`). A radio heard on `freq` lately gets its packet with the color code it was heard with. A packet
   waits for the modem behind any running or queued job (2 s at most: then dropped, `tx.waited_out`), and jobs wait
   for its key-up. There is no listen-before-talk: the leases and the session are the bound.
-- **Up:** data packets heard on `freq`'s channel (any destination: the route is `all`) are put together, checked and
-  sent on from the socket as whole datagrams, TTL less one. Confirmed ones are acknowledged through the same
+- **Up:** data packets heard on `freq`'s channel (any destination) are put together, checked and sent on as whole
+  datagrams, TTL less one: from the socket (`listen`), or as they are to a host in `hosts` (`routed`; to any other
+  address: dropped, `no_route`). Confirmed ones are acknowledged through the same
   transmitter. The gateway's own packets heard back are dropped (`rx_dup`).
-- **status** (any session, or none): `left_s` until it disarms itself; `up_packets`, `down_packets` (handed to the
-  transmitter), `down_inbound`, `flows`, `heard` (the radios heard, by id); `tx`: `keyups` (sent), `failed`
+- **status** (any session, or none): `mode`; `lan` (routed: the bench's subnet now); `left_s` until it disarms
+  itself; `up_packets`, `down_packets` (handed to the transmitter), `down_inbound` (listen), `routed_down`, `flows`, `heard` (the radios heard, by id); `tx`: `keyups` (sent), `failed`
   (refused or no bursts taken: `why`), `waited_out`, `queued`; `counters`: all of the gateway's (the `ip_gateway`
   object of `/api/status`).
 - **disarm** (the arming session only) gives the final status with `armed` false. The gateway also goes at
   `seconds` and with its session.
-- `rfgbench.py ipgw arm|disarm|status --freq MHZ [--cc N] [--id ID] [--listen PORT] [--to IP[:PORT]]`.
+- `rfgbench.py ipgw arm|disarm|status --freq MHZ [--cc N] [--id ID] [--mode routed [--hosts NET..]]
+  [--listen PORT] [--to IP[:PORT]]`.

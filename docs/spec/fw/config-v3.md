@@ -473,8 +473,9 @@ The IP gateway: IP packets as DMR data between radios and the network ([ipgw.md]
 | `max_flows` | int, 1..16 | 8 | NAT flows; cut to the build's `CONFIG_RDOF_IPGW_MAX_SOCKETS` |
 | `routes` | list, up to 8 | `[]` | below |
 | `nat` | bool or `{enabled, allow, deny}` | off | radios reach the internet through the gateway. `enabled` (default true), `allow` (empty: any) and `deny` are CIDR lists, up to 8; a `deny` replaces the default 10/8, 172.16/12, 192.168/16, 100.64/10 and 13/8 ([ipgw.md](ipgw.md) §4) |
+| `routed` | bool or `{enabled, hosts, rip}` | off | LAN hosts reach the radios at their `radio_net` addresses through a route to the board, and the radios reach them back ([ipgw.md](ipgw.md) §9.2). `enabled` (default true); `hosts`, a CIDR list up to 8 (empty: the board's subnet), who may send in and where datagrams go up; `rip` (false): announce `radio_net` by RIPv2 |
 
-It needs `routes` or `nat` ("nothing to do"). A route:
+It needs `routes`, `nat` or `routed` ("nothing to do"). A route:
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|

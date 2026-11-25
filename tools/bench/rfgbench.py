@@ -1312,14 +1312,18 @@ def cmd_mssim(a) -> int:
 
 
 def cmd_ipgw(a) -> int:
-    """The IP gateway: arm it (a UDP port on the bench whose datagrams go down to radios, their answers up), disarm it,
-    or read its counters."""
+    """The IP gateway: arm it (mode listen: a UDP port on the bench whose datagrams go down to radios, their answers
+    up; mode routed: radio_net routed to the bench, e.g. with tools/rfg_route.py), disarm it, or read its counters."""
     req = {"op": "ipgw", "action": a.action, "session": a.session}
     if a.action == "arm":
         if a.freq is None:
             print(f"{NOTE} arm needs --freq", file=sys.stderr)
             return 2
-        req.update({"freq": a.freq, "cc": a.cc, "seconds": a.seconds, "id": a.id, "listen": a.listen})
+        req.update({"freq": a.freq, "cc": a.cc, "seconds": a.seconds, "id": a.id, "mode": a.mode})
+        if a.mode == "listen":
+            req["listen"] = a.listen
+        if a.hosts:
+            req["hosts"] = a.hosts
         if a.to:
             req["to"] = a.to
         if a.power_dbm is not None:
@@ -1655,6 +1659,10 @@ def main(argv=None) -> int:
     s.add_argument("--freq", type=float, default=None, help="MHz, a transmit frequency of the bench (arm)")
     s.add_argument("--cc", type=int, default=1)
     s.add_argument("--id", type=int, default=0, help="the DMR id packets to radios come from (0: 9999999)")
+    s.add_argument("--mode", choices=("listen", "routed"), default="listen",
+                   help="listen: whole datagrams in UDP to --listen; routed: route radio_net to the bench")
+    s.add_argument("--hosts", nargs="+", default=None, metavar="NET",
+                   help="routed: the LAN hosts let in, a.b.c.d/n (default: the bench's own subnet)")
     s.add_argument("--listen", type=int, default=0, help="the bench's UDP port (0: any free one)")
     s.add_argument("--to", default=None, help="the host, IPv4[:port] (default: this client's address; the port the "
                    "first datagram came from)")

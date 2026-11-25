@@ -214,7 +214,39 @@ The radio's datagrams on the route (any it sends that the route matches) go up f
 same flow (one per radio: `payload: "ip"` flows key on the radio, its address and the route). Before any datagram
 has come in, a route without a port in `to` has nowhere to send them: `unresolved`. Each listen socket counts
 against `LWIP_MAX_SOCKETS` as a flow's does. The bench's `ipgw` op ([bench-api.md](../bench-api.md) §14.10) is one
-such route.
+such route, in its `listen` mode.
+
+### 9.2 Routed: radio_net through the board
+
+With `routed` on, the board is a router for `radio_net`: a LAN host with the route `12.0.0.0/8 via <board>` sends
+to a radio's address as to any host (`ping 12.0.0.77`, UDP to `12.0.0.77:3335`), and gets the radio's answer from
+that address. No tunnel and no NAT: the datagrams cross as they are, TTL less one.
+
+- **Down.** A datagram to `radio_net` from one of `hosts` (the settings' list, else the board's own subnet) goes to
+  the radio its destination names, as a reply does (§9, §11: the checks, `down_pps`, unconfirmed rate 1/2, SAP 4),
+  from the gateway's id, where the radio was last heard (else the transmitter's channel, as §9.1). Any protocol:
+  UDP, ICMP, TCP. Counted `routed_down`; from anyone else, `down_stranger`; to `radio_net`'s own address, a
+  fragment, or not IPv4, `down_bad_ip`. No flow is opened.
+- **Up.** A radio's datagram that no route takes, to an address in `hosts`, goes out as it is (its source the
+  radio's own address), any protocol: `routed_up`. The rest goes to NAT as before (with the default `deny`, NAT
+  doesn't take the LAN's private ranges, so the two don't overlap), else `no_route`.
+- **The route on the LAN.** Each host, or the LAN's router, needs `radio_net via <the board's address>`. The board
+  gets its address by DHCP; `tools/rfg_route.py BOARD.local [--watch S]` resolves its name and sets or updates the
+  route on a Linux or macOS host. With `rip: true` the board also sends a RIPv2 response for `radio_net` (metric 1,
+  next hop itself) to 224.0.0.9:520 every 30 s, from port 520, TTL 1, for a router that learns RIP (OpenWrt,
+  pfSense, MikroTik; most home routers don't). It answers no RIP requests and learns no routes.
+- **Who owns it.** One route of `radio_net` per board: the ipgw app with `routed`, or the bench's `ipgw` op in mode
+  `routed` while armed ([bench-api.md](../bench-api.md) §14.10). The second to ask is refused (the app logs it and
+  runs without routing).
+- **On the board** (`esp_idf/main/routed.c`): lwIP's `LWIP_HOOK_IP4_INPUT` (`rdof_lwip_hooks.h`, set on lwIP as
+  `ESP_IDF_LWIP_HOOK_FILENAME`) takes each IPv4 datagram to `radio_net` before lwIP drops it as not its own, copies
+  it to PSRAM and queues it (8 deep: `queue_full` past that); no `IP_FORWARD`, no second netif. Datagrams go out
+  through a raw PCB with `RAW_FLAGS_HDRINCL` on lwIP's thread (`tcpip_callback`), so lwIP routes them and adds only
+  the link header. The RIP socket counts against `LWIP_MAX_SOCKETS`.
+- **On rdofradio** (`rdofradio_tun.c`, Linux): a TUN device `rdofN` with `radio_net` routed to it (root or
+  CAP_NET_ADMIN; port 520 for RIP needs CAP_NET_BIND_SERVICE). The host's kernel forwards between the LAN and the
+  device, so `net.ipv4.ip_forward` must be 1 for other hosts (rdofradio warns when it isn't); processes on the host
+  itself reach the radios either way. On macOS there is no routed mode.
 
 ## 10. Confirmed data
 

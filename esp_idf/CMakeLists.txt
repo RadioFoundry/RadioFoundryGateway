@@ -23,6 +23,13 @@ if(CONFIG_RDOF_SDR AND CONFIG_RDOF_SDR_FAST)
     endif()
 endif()
 
+# The IP gateway's routed mode: lwIP hands it IPv4 datagrams to radio_net (main/rdof_lwip_hooks.h).
+if(CONFIG_RDOF_IPGW)
+    idf_component_get_property(lwip_lib lwip COMPONENT_LIB)
+    target_compile_options(${lwip_lib} PRIVATE "-I${CMAKE_CURRENT_LIST_DIR}/main")
+    target_compile_definitions(${lwip_lib} PRIVATE "ESP_IDF_LWIP_HOOK_FILENAME=\"rdof_lwip_hooks.h\"")
+endif()
+
 # Internal RAM against its budget after each link (tools/ram_budget.py): a build that takes more fails. The budget's
 # name is the build dir's (build/w12: w12) unless RDOF_RAM_BUDGET names it; a name with no budget passes.
 if(NOT RDOF_RAM_BUDGET)
