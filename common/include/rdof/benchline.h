@@ -419,6 +419,32 @@ void rdof_bl_tick(rdof_bl_t *bl, double now);
 
 /* The receiver's side: a burst heard (from any thread; it's queued). */
 void rdof_bl_burst(rdof_bl_t *bl, const rdof_bl_burst_t *b);
+/* The bench's UDP socket, for the ipgw op (rdof_bl_set_udp; the server, rdof/benchnet.h, sets it): open binds port
+ * (0: any free one) and returns the port it bound, -1 when it can't; send; close. peer: the address (host order)
+ * connection c came from, 0 not known. Called on the server's thread with the engine's lock held. */
+typedef struct {
+    int (*open)(void *ctx, int port);
+    bool (*send)(void *ctx, uint32_t ip, uint16_t port, const uint8_t *data, size_t len);
+    void (*close)(void *ctx);
+    uint32_t (*peer)(void *ctx, int c);
+    void *ctx;
+} rdof_bl_udp_t;
+void rdof_bl_set_udp(rdof_bl_t *bl, const rdof_bl_udp_t *u);
+/* Routed IP for the ipgw op in mode routed (docs/spec/fw/ipgw.md 9.2): the platform's route of radio_net to the
+ * board (a TUN device, the board's IPv4 input), one owner at a time. open: false with why when another has it. recv:
+ * the next datagram from the LAN to radio_net (0: none), polled from the engine's tick. send: a whole datagram out.
+ * lan: the board's subnet now (net, mask; false with no address). */
+typedef struct {
+    bool (*open)(void *ctx, uint32_t net, uint32_t mask, char *why, size_t cap);
+    size_t (*recv)(void *ctx, uint8_t *buf, size_t cap);
+    bool (*send)(void *ctx, const uint8_t *data, size_t len);
+    void (*close)(void *ctx);
+    bool (*lan)(void *ctx, uint32_t *net, uint32_t *mask);
+    void *ctx;
+} rdof_bl_route_t;
+void rdof_bl_set_route(rdof_bl_t *bl, const rdof_bl_route_t *r);
+/* A datagram that came on the bench's UDP socket from ip:port. */
+void rdof_bl_udp_input(rdof_bl_t *bl, uint32_t ip, uint16_t port, const uint8_t *data, size_t len, double now);
 /* Whether anyone wants bursts now (the receiver may skip the copy when not). */
 bool rdof_bl_wants_bursts(const rdof_bl_t *bl);
 /* Whether a capture is open (the receiver keeps the history then). */

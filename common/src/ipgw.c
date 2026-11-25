@@ -103,6 +103,9 @@ void rdof_ipgw_init(rdof_ipgw_t *g, const rdof_ipgw_config_t *cfg)
     g->sync48 = rdof_data_sync(RDOF_MS_VOICE);
     g->up_tokens = cfg->up_pps * 2 < 1 ? 1 : cfg->up_pps * 2;
     g->down_tokens = cfg->down_pps * 2 < 1 ? 1 : cfg->down_pps * 2;
+    g->home.source = -1;
+    g->home.slot = 2;
+    g->home.cc = -1;
 }
 
 /* ── building packets ──────────────────────────────────────────────────────── */
@@ -207,10 +210,16 @@ int rdof_ipgw_flows(const rdof_ipgw_t *g)
     return n;
 }
 
+/* A listen route's flows have no socket of their own: their datagrams go up from the route's listen socket. */
+static bool via_listen(const rdof_ipgw_t *g, int route)
+{
+    return route >= 0 && route < g->cfg.nroutes && g->cfg.routes[route].listen > 0;
+}
+
 static void close_flow(rdof_ipgw_t *g, int i)
 {
     g->flows[i].used = false;
-    if (g->flows[i].proto != IP_ICMP && g->close)
+    if (g->flows[i].proto != IP_ICMP && !via_listen(g, g->flows[i].route) && g->close)
         g->close(g->ctx, i);
 }
 
@@ -233,7 +242,7 @@ static int flow_for(rdof_ipgw_t *g, const rdof_ipgw_flow_t *key, double now)
     }
     if (free_i < 0)
         return -1;
-    if (key->proto != IP_ICMP && g->open && !g->open(g->ctx, free_i))
+    if (key->proto != IP_ICMP && !via_listen(g, key->route) && g->open && !g->open(g->ctx, free_i))
         return -1; /* an echo flow needs no socket of its own: the platform's one ICMP socket */
     g->flows[free_i] = *key;
     g->flows[free_i].used = true;
@@ -309,6 +318,29 @@ static size_t expand_sap3(rdof_ipgw_t *g, uint32_t src, uint32_t dst, bool group
 }
 
 /* One datagram from a radio. Returns whether it's the gateway's to answer for (a route took it, or NAT did). */
+/* Routed: ip is a LAN host's (the settings' hosts, else the board's subnet). */
+static bool routed_host(const rdof_ipgw_t *g, uint32_t ip)
+{
+    if (!g->cfg.routed || rdof_ipgw_in_net(&g->cfg.radio_net, ip) || rdof_ipgw_reserved(&g->cfg, ip))
+        return false;
+    if (!g->cfg.nhosts)
+        return g->lan.mask && rdof_ipgw_in_net(&g->lan, ip);
+    for (int i = 0; i < g->cfg.nhosts; i++)
+        if (rdof_ipgw_in_net(&g->cfg.hosts[i], ip))
+            return true;
+    return false;
+}
+
+/* Where to reach radio: where it was last heard, else the transmitter's channel now. */
+static rdof_ipgw_where_t where_for(const rdof_ipgw_t *g, uint32_t radio)
+{
+    rdof_ipgw_where_t w = g->home;
+    for (int i = 0; i < RDOF_IPGW_HEARD; i++)
+        if (g->heard[i].id == radio && g->heard[i].at > 0)
+            w = g->heard[i].where;
+    return w;
+}
+
 static bool relay_up(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, uint32_t src, uint32_t dst, bool group, int sap,
                      const uint8_t *d, size_t len, double now)
 {
@@ -363,6 +395,29 @@ static bool relay_up(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, uint32_t src, u
     key.where = *w;
     int r = match_route(g, src, dst, group);
     key.route = r;
+    if (r < 0 && routed_host(g, dip)) { /* to a LAN host: on as it is, one hop on */
+        if (d[8] <= 1) {
+            g->n.ttl_expired++;
+            return true;
+        }
+        if (!take(&g->up_tokens, &g->up_at, g->cfg.up_pps, now)) {
+            g->n.up_rate++;
+            return true;
+        }
+        if (d != g->up)
+            memcpy(g->up, d, len);
+        g->up[8]--;
+        g->up[10] = g->up[11] = 0;
+        put16(g->up + 10, fold(sum16(0, g->up, ihl)));
+        if (g->send_routed && g->send_routed(g->ctx, g->up, len)) {
+            g->n.routed_up++;
+            g->n.up_packets++;
+            g->n.up_bytes += (uint32_t)len;
+        } else {
+            g->n.send_failed++;
+        }
+        return true;
+    }
     if (r >= 0) {
         const rdof_ipgw_route_t *rt = &g->cfg.routes[r];
         key.payload = rt->payload;
@@ -377,6 +432,14 @@ static bool relay_up(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, uint32_t src, u
             key.peer_port = (uint16_t)(rt->port ? rt->port : key.orig_port);
         } else {
             key.peer_port = (uint16_t)rt->port;
+            if (rt->listen) { /* one flow a radio, whoever it sends to (the one an inbound datagram opens) */
+                key.inner_ip = rdof_ipgw_radio_ip(&g->cfg.radio_net, src);
+                key.orig_ip = 0;
+                if (!key.peer_port) { /* no datagram in yet: nowhere to send it */
+                    g->n.unresolved++;
+                    return true;
+                }
+            }
         }
         key.peer_ip = rt->ip;
         if (!key.peer_ip) {
@@ -458,7 +521,9 @@ static bool relay_up(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, uint32_t src, u
     /* NAT: the payload goes from our socket with the datagram's TTL less one; a route's is a datagram of the
      * gateway's own (0: the platform's default), or the whole datagram as it is */
     int ttl = r < 0 ? d[8] - 1 : 0;
-    if (g->send_udp && g->send_udp(g->ctx, fi, f->peer_ip, f->peer_port, out, n, ttl)) {
+    bool sent = via_listen(g, r) ? g->send_listen && g->send_listen(g->ctx, r, f->peer_ip, f->peer_port, out, n)
+                                 : g->send_udp && g->send_udp(g->ctx, fi, f->peer_ip, f->peer_port, out, n, ttl);
+    if (sent) {
         f->up++;
         g->n.up_packets++;
         g->n.up_bytes += (uint32_t)n;
@@ -480,6 +545,23 @@ typedef struct {
     bool confirmed, wants_ack;
     int ns;
 } ack_t;
+
+/* Radio src was heard at w: a listen route's flow opened for it later goes there. */
+static void heard(rdof_ipgw_t *g, uint32_t src, const rdof_ipgw_where_t *w, double now)
+{
+    int k = 0;
+    for (int i = 0; i < RDOF_IPGW_HEARD; i++) {
+        if (g->heard[i].id == src) {
+            k = i;
+            break;
+        }
+        if (g->heard[i].at < g->heard[k].at)
+            k = i; /* else the oldest */
+    }
+    g->heard[k].id = src;
+    g->heard[k].at = now > 0 ? now : 1e-9;
+    g->heard[k].where = *w;
+}
 
 static void deliver(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, uint32_t src, uint32_t dst, bool group, int sap,
                     const uint8_t *data, size_t len, const ack_t *ack, double now)
@@ -505,6 +587,7 @@ static void deliver(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, uint32_t src, ui
     g->dedup[k].at = now > 0 ? now : 1e-9;
     g->dedup[k].acked = 0;
     g->n.rx_messages++;
+    heard(g, src, w, now);
     const uint32_t passing = g->n.unresolved + g->n.up_rate + g->n.flows_full + g->n.send_failed;
     bool ours = relay_up(g, w, src, dst, group, sap, data, len, now);
     if (g->n.unresolved + g->n.up_rate + g->n.flows_full + g->n.send_failed != passing) {
@@ -758,6 +841,107 @@ void rdof_ipgw_from_net(rdof_ipgw_t *g, int fi, uint32_t ip, uint16_t port, cons
     send_down(g, f, radio, d, n, now);
 }
 
+void rdof_ipgw_from_listen(rdof_ipgw_t *g, int r, uint32_t ip, uint16_t port, const uint8_t *data, size_t len,
+                           double now)
+{
+    if (!g->cfg.on || !via_listen(g, r))
+        return;
+    rdof_ipgw_route_t *rt = &g->cfg.routes[r];
+    if (!rt->ip || ip != rt->ip) { /* only from the route's host (not resolved yet: from no one) */
+        g->n.down_stranger++;
+        return;
+    }
+    if (len < 20 || data[0] >> 4 != 4 || (data[0] & 0x0F) < 5 || be16(data + 2) < 20 || be16(data + 2) > len) {
+        g->n.down_bad_ip++;
+        return;
+    }
+    uint32_t radio;
+    if (!rdof_ipgw_ip_radio(&g->cfg.radio_net, be32(data + 16), &radio)) { /* not to a radio */
+        g->n.down_bad_ip++;
+        return;
+    }
+    g->n.down_inbound++;
+    if (!rt->port || rt->listen_learn) { /* the radios' datagrams go back where the host sends from */
+        rt->port = port;
+        rt->listen_learn = true;
+        for (int i = 0; i < RDOF_IPGW_MAX_FLOWS; i++)
+            if (g->flows[i].used && g->flows[i].route == r)
+                g->flows[i].peer_port = port;
+    }
+    int fi = -1;
+    for (int i = 0; i < RDOF_IPGW_MAX_FLOWS && fi < 0; i++)
+        if (g->flows[i].used && g->flows[i].route == r && g->flows[i].radio == radio)
+            fi = i;
+    if (fi < 0) {
+        rdof_ipgw_flow_t key = {0};
+        key.route = r;
+        key.payload = RDOF_IPGW_PAYLOAD_IP;
+        key.radio = radio;
+        key.dmr_dst = g->cfg.id ? g->cfg.id : RDOF_IPGW_ANY_GATEWAY; /* replies come from the gateway's id */
+        key.inner_ip = rdof_ipgw_radio_ip(&g->cfg.radio_net, radio);
+        key.peer_ip = rt->ip;
+        key.peer_port = (uint16_t)rt->port;
+        key.where = where_for(g, radio);
+        fi = flow_for(g, &key, now);
+        if (fi < 0) {
+            g->n.flows_full++;
+            return;
+        }
+        g->flows[fi].last = now;
+    }
+    rdof_ipgw_from_net(g, fi, ip, (uint16_t)rt->port, data, len, now);
+}
+
+bool rdof_ipgw_routed_to(const rdof_ipgw_t *g, uint32_t dst)
+{
+    return g->cfg.on && g->cfg.routed && rdof_ipgw_in_net(&g->cfg.radio_net, dst);
+}
+
+void rdof_ipgw_from_lan(rdof_ipgw_t *g, const uint8_t *data, size_t len, double now)
+{
+    if (!g->cfg.on || !g->cfg.routed)
+        return;
+    if (len < 20 || data[0] >> 4 != 4 || (data[0] & 0x0F) < 5 || be16(data + 2) < 20 || be16(data + 2) > len) {
+        g->n.down_bad_ip++;
+        return;
+    }
+    if (!routed_host(g, be32(data + 12))) { /* not from a host the settings let in */
+        g->n.down_stranger++;
+        return;
+    }
+    uint32_t radio;
+    if (!rdof_ipgw_ip_radio(&g->cfg.radio_net, be32(data + 16), &radio)) { /* radio_net's own, or not in it */
+        g->n.down_bad_ip++;
+        return;
+    }
+    size_t n = be16(data + 2);
+    if ((be16(data + 6) & 0x3FFF) != 0) { /* a radio takes no fragments */
+        g->n.down_bad_ip++;
+        return;
+    }
+    if (n > down_max(g)) {
+        g->n.down_too_big++;
+        return;
+    }
+    uint8_t *d = g->scratch;
+    memcpy(d, data, n);
+    size_t ihl = (size_t)(d[0] & 0x0F) * 4;
+    if (ihl > n || fold(sum16(0, d, ihl)) != 0) {
+        g->n.down_bad_ip++;
+        return;
+    }
+    g->n.routed_down++;
+    if (!hop(g, d, ihl))
+        return;
+    /* no flow: a reply's rules, from the gateway's id, where the radio was heard */
+    rdof_ipgw_flow_t f = {0};
+    f.radio = radio;
+    f.dmr_dst = g->cfg.id ? g->cfg.id : RDOF_IPGW_ANY_GATEWAY;
+    f.inner_ip = rdof_ipgw_radio_ip(&g->cfg.radio_net, radio);
+    f.where = where_for(g, radio);
+    send_down(g, &f, radio, d, n, now);
+}
+
 /* RFC 1624: a checksum field after a 16-bit word under it changed from old to now. */
 static void adjust(uint8_t *sum, uint16_t old, uint16_t now)
 {
@@ -922,6 +1106,9 @@ void rdof_ipgw_status_json(const rdof_ipgw_t *g, rdof_json_t *j)
         {"down_own_source", n->down_own_source}, {"tx_busy", n->tx_busy},
         {"rx_headers", n->rx_headers},   {"rx_header_crc", n->rx_header_crc}, {"rx_blocks", n->rx_blocks},
         {"rx_block_fec", n->rx_block_fec}, {"rx_block_crc", n->rx_block_crc},
+        {"down_inbound", n->down_inbound},
+        {"routed_up", n->routed_up},
+        {"routed_down", n->routed_down},
     };
     for (size_t i = 0; i < sizeof c / sizeof c[0]; i++)
         rdof_json_int(j, c[i].key, c[i].v);

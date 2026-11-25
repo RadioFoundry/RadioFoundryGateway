@@ -22,6 +22,7 @@
 #include "rdof/benchline.h"
 #include "fake_chs.h"
 #include "rdof/benchnet.h"
+#include "rdof/ipgw.h"
 #include "rdof/jsonp.h"
 #include "rdof/layer2.h"
 #include "rdof/mmdvm.h"
@@ -3742,6 +3743,234 @@ static void test_unread_field(void)
     }
 }
 
+#if RDOF_FEATURE_DATA_BLOCKS
+/* The ipgw op: a fake UDP socket for the engine. */
+static struct {
+    int opens, closes, port, sent;
+    uint32_t ip;
+    uint16_t dport;
+    uint8_t last[2048];
+    size_t len;
+} fu;
+static int fu_open(void *ctx, int port)
+{
+    fu.opens++;
+    fu.port = port ? port : 47000;
+    return fu.port;
+}
+static bool fu_send(void *ctx, uint32_t ip, uint16_t port, const uint8_t *d, size_t len)
+{
+    fu.sent++, fu.ip = ip, fu.dport = port, fu.len = len;
+    memcpy(fu.last, d, len);
+    return true;
+}
+static void fu_close(void *ctx) { fu.closes++; }
+static uint32_t fu_peer(void *ctx, int c) { return 0xC0000205u; } /* 192.0.2.5 */
+
+/* The platform's route of radio_net, faked: one datagram waiting at a time. */
+static struct {
+    int opens, closes, sent;
+    bool taken;
+    uint8_t in[256], out[2048];
+    size_t in_len, out_len;
+} fr;
+static bool fr_open(void *ctx, uint32_t net, uint32_t mask, char *why, size_t cap)
+{
+    if (fr.taken) {
+        snprintf(why, cap, "the ipgw app routes radio_net");
+        return false;
+    }
+    fr.opens++;
+    return net == 0x0C000000u && mask == 0xFF000000u;
+}
+static size_t fr_recv(void *ctx, uint8_t *buf, size_t cap)
+{
+    size_t n = fr.in_len;
+    fr.in_len = 0;
+    memcpy(buf, fr.in, n);
+    return n;
+}
+static bool fr_send(void *ctx, const uint8_t *d, size_t len)
+{
+    fr.sent++, fr.out_len = len;
+    memcpy(fr.out, d, len);
+    return true;
+}
+static void fr_close(void *ctx) { fr.closes++; }
+static bool fr_lan(void *ctx, uint32_t *net, uint32_t *mask)
+{
+    *net = 0xC0A80114u; /* 192.168.1.20/24 */
+    *mask = 0xFFFFFF00u;
+    return true;
+}
+
+#define IG_HOST 0xC0000205u
+#define IG_R77 ((12u << 24) | 77u)
+
+static void test_ipgw_op(void)
+{
+    memset(&tx, 0, sizeof tx);
+    memset(&fu, 0, sizeof fu);
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    static char out[16384];
+    char id[16] = "", req[400];
+    double now = 100;
+    int c = ask(bl, "{\"op\":\"ipgw\",\"action\":\"arm\",\"freq\":438.1125}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "arm needs a session"), "ipgw: arm needs a session: %s", out);
+    const int s = ask(bl, "{\"op\":\"session\",\"label\":\"ipgw\"}", now);
+    drain(bl, s, out, sizeof out);
+    CHECK(field(out, "session", id, sizeof id), "ipgw: session: %s", out);
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"arm\",\"session\":\"%s\",\"freq\":438.1125,\"cc\":2,"
+                              "\"id\":9990,\"seconds\":60}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "no UDP socket"), "ipgw: no socket: %s", out);
+    const rdof_bl_udp_t u = {.open = fu_open, .send = fu_send, .close = fu_close, .peer = fu_peer};
+    rdof_bl_set_udp(bl, &u);
+    c = ask(bl, "{\"op\":\"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"ipgw\":null"), "ipgw: info's jobs: %s", out);
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"arm\",\"session\":\"%s\",\"freq\":438.0625}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\""), "ipgw: not a transmit frequency: %s", out);
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"arm\",\"session\":\"%s\",\"freq\":438.1125,\"cc\":2,"
+                              "\"id\":9990,\"seconds\":60}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "{\"ipgw\":{\"armed\":true,\"listen\":47000,\"id\":9990,\"freq\":438.112500,\"cc\":2,"
+                      "\"to\":\"192.0.2.5\"") && fu.opens == 1,
+          "ipgw: armed: %s", out);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\""), "ipgw: armed already: %s", out);
+    /* the host starts a flow to radio 77, never heard: a key-up on the armed frequency, as built */
+    uint8_t d[256];
+    size_t m = rdof_ipgw_udp_datagram(IG_HOST, 5000, IG_R77, 4001, 1, (const uint8_t *)"ping", 4, d, sizeof d);
+    rdof_bl_udp_input(bl, IG_HOST, 41000, d, m, now);
+    for (int i = 0; i < 100; i++) {
+        now += 0.02;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, 1); /* heard back on its own channel: not relayed again */
+    }
+    CHECK(tx.naired == 4 && tx.freq == 438112500 && tx.cc == 2 && tx.as_built && !tx.open &&
+              (tx.aired[0][0] & 0x0F) == RDOF_DT_DATA_HEADER && (tx.aired[3][0] & 0x0F) == RDOF_DT_RATE_12,
+          "ipgw: one key-up of 4 bursts: %d aired, %u Hz, cc %d, open %d", tx.naired, tx.freq, tx.cc, tx.open);
+    /* the radio answers; its packet goes up from the socket to where the host sent from */
+    uint8_t r[256];
+    const size_t rn = rdof_ipgw_udp_datagram(IG_R77, 4001, IG_HOST, 5000, 2, (const uint8_t *)"pong", 4, r, sizeof r);
+    static rdof_ipgw_dmr_t p;
+    CHECK(rdof_ipgw_build_dmr(77, 9990, RDOF_SAP_IP, r, rn, 2, rdof_data_sync(RDOF_MS_VOICE), &p), "ipgw: build");
+    for (int i = 0; i < p.nbursts; i++) {
+        rdof_bl_burst_t b = {.t = 1.8e9 + now, .ch = 1, .cc = 2, .slot = 2, .dt = (uint8_t)(p.control[i] & 0x0F)};
+        memcpy(b.raw, p.bursts[i], 33);
+        rdof_bl_burst(bl, &b);
+    }
+    now += 0.1;
+    rdof_bl_tick(bl, now);
+    CHECK(fu.sent == 1 && fu.ip == IG_HOST && fu.dport == 41000 && fu.len == rn && fu.last[8] == 63 &&
+              !memcmp(fu.last + 20, r + 20, rn - 20),
+          "ipgw: the reply up: sent %d to %08x:%u, %zu octets", fu.sent, fu.ip, fu.dport, fu.len);
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"status\"}");
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"armed\":true") && strstr(out, "\"up_packets\":1,\"down_packets\":1,\"down_inbound\":1,"
+                                                       "\"routed_down\":0,\"flows\":1,\"heard\":[77]") &&
+              strstr(out, "\"keyups\":1,\"failed\":0") && strstr(out, "\"rx_dup\":1"),
+          "ipgw: status: %s", out);
+    /* another session's disarm is refused; its own goes */
+    const int s2 = ask(bl, "{\"op\":\"session\",\"label\":\"other\"}", now);
+    char id2[16] = "";
+    drain(bl, s2, out, sizeof out);
+    field(out, "session", id2, sizeof id2);
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"disarm\",\"session\":\"%s\"}", id2);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\""), "ipgw: another session's disarm: %s", out);
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"disarm\",\"session\":\"%s\"}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "{\"ipgw\":{\"armed\":false,") && strstr(out, "\"up_packets\":1") && fu.closes == 1,
+          "ipgw: disarmed: %s", out);
+    c = ask(bl, "{\"op\":\"ipgw\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "{\"ipgw\":{\"armed\":false}}"), "ipgw: status, none: %s", out);
+    /* armed again with a set port, for a short time: it disarms itself */
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"arm\",\"session\":\"%s\",\"freq\":438.1125,\"listen\":7400,"
+                              "\"to\":\"198.51.100.4:9000\",\"seconds\":2}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"listen\":7400") && strstr(out, "\"to\":\"198.51.100.4:9000\""), "ipgw: a set port: %s", out);
+    now += 2.5;
+    rdof_bl_tick(bl, now);
+    c = ask(bl, "{\"op\":\"ipgw\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"armed\":false") && fu.closes == 2, "ipgw: its time ran out: %s", out);
+    /* mode routed: the platform's route, no socket */
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"arm\",\"session\":\"%s\",\"freq\":438.1125,\"cc\":2,"
+                              "\"id\":9990,\"mode\":\"routed\"}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "can't route"), "ipgw routed: no route: %s", out);
+    memset(&fr, 0, sizeof fr);
+    const rdof_bl_route_t rt = {.open = fr_open, .recv = fr_recv, .send = fr_send, .close = fr_close, .lan = fr_lan};
+    rdof_bl_set_route(bl, &rt);
+    fr.taken = true;
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "the ipgw app routes"), "ipgw routed: taken: %s", out);
+    fr.taken = false;
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"arm\",\"session\":\"%s\",\"freq\":438.1125,\"mode\":\"routed\","
+                              "\"hosts\":[\"12.5.0.0/16\"]}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"bad_request\"") && strstr(out, "hosts"), "ipgw routed: hosts in radio_net: %s", out);
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"arm\",\"session\":\"%s\",\"freq\":438.1125,\"cc\":2,"
+                              "\"id\":9990,\"mode\":\"routed\"}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "{\"ipgw\":{\"armed\":true,\"mode\":\"routed\",\"radio_net\":\"12.0.0.0/8\","
+                      "\"hosts\":\"the board's subnet\",\"id\":9990") && fr.opens == 1,
+          "ipgw routed: armed: %s", out);
+    /* a LAN host sends to radio 77: keyed out */
+    const int aired = tx.naired;
+    fr.in_len = rdof_ipgw_udp_datagram(0xC0A80105u, 5000, IG_R77, 3335, 9, (const uint8_t *)"cal", 3, fr.in,
+                                       sizeof fr.in);
+    for (int i = 0; i < 100; i++) {
+        now += 0.02;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, 1);
+    }
+    CHECK(tx.naired == aired + 4 && fr.sent == 0, "ipgw routed: keyed: %d aired", tx.naired - aired);
+    /* the radio answers the host: out by the route, as it is */
+    const size_t rn2 = rdof_ipgw_udp_datagram(IG_R77, 3335, 0xC0A80105u, 5000, 10, (const uint8_t *)"ok", 2, r,
+                                              sizeof r);
+    CHECK(rdof_ipgw_build_dmr(77, 9990, RDOF_SAP_IP, r, rn2, 2, rdof_data_sync(RDOF_MS_VOICE), &p), "ipgw: build 2");
+    for (int i = 0; i < p.nbursts; i++) {
+        rdof_bl_burst_t b = {.t = 1.8e9 + now, .ch = 1, .cc = 2, .slot = 2, .dt = (uint8_t)(p.control[i] & 0x0F)};
+        memcpy(b.raw, p.bursts[i], 33);
+        rdof_bl_burst(bl, &b);
+    }
+    now += 0.1;
+    rdof_bl_tick(bl, now);
+    CHECK(fr.sent == 1 && fr.out_len == rn2 && fr.out[8] == 63 && !memcmp(fr.out + 12, r + 12, 8),
+          "ipgw routed: the reply out: %d %zu", fr.sent, fr.out_len);
+    c = ask(bl, "{\"op\":\"ipgw\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"mode\":\"routed\"") && strstr(out, "\"lan\":\"192.168.1.0/24\"") &&
+              strstr(out, "\"routed_down\":1") && strstr(out, "\"hosts\":\"the board's subnet\""),
+          "ipgw routed: status: %s", out);
+    snprintf(req, sizeof req, "{\"op\":\"ipgw\",\"action\":\"disarm\",\"session\":\"%s\"}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(fr.closes == 1 && fu.closes == 2, "ipgw routed: disarmed, the route closed");
+    rdof_bl_free(bl);
+}
+#else
+static void test_ipgw_op(void) {}
+#endif
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && !strcmp(argv[1], "serve"))
@@ -3768,6 +3997,7 @@ int main(int argc, char **argv)
     test_outbound();
     test_outbound_voice();
     test_tune();
+    test_ipgw_op();
     test_zero_floor();
     test_ring_scale();
     test_modem_station();

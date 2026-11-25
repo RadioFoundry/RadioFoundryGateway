@@ -519,7 +519,8 @@
         "idle_s": true,
         "max_flows": true,
         "routes": true,
-        "nat": true
+        "nat": true,
+        "routed": true
       }
     },
     "carrier3": {

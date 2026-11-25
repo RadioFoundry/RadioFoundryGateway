@@ -239,7 +239,7 @@ static bool host_ok(const char *h)
 
 static bool route(ctx_t *c, int node, int i, rdof_ipgw_route_t *r)
 {
-    static const char *const keys[] = {"name", "all", "private", "group", "from", "to", "payload", NULL};
+    static const char *const keys[] = {"name", "all", "private", "group", "from", "to", "payload", "listen", NULL};
     char where[32];
     snprintf(where, sizeof where, "routes[%d]", i);
     if (N(c, node)->type != RDOF_JOBJ)
@@ -309,23 +309,32 @@ static bool route(ctx_t *c, int node, int i, rdof_ipgw_route_t *r)
     } else if (isdigit((unsigned char)host[strlen(host) - 1])) {
         return fail(c, "%s: to: %s isn't an IPv4 address", where, host);
     }
-    if (r->payload == RDOF_IPGW_PAYLOAD_IP && !r->port)
-        return fail(c, "%s: payload ip needs a port in to", where);
+    n = N(c, rdof_jget(c->doc, node, "listen"));
+    if (n && n->type != RDOF_JNULL) {
+        if (n->type != RDOF_JNUM || n->num != (int)n->num || n->num < 1 || n->num > 65535)
+            return fail(c, "%s: listen, a UDP port 1 to 65535", where);
+        if (r->payload != RDOF_IPGW_PAYLOAD_IP)
+            return fail(c, "%s: listen needs payload ip", where);
+        r->listen = (int)n->num;
+    }
+    if (r->payload == RDOF_IPGW_PAYLOAD_IP && !r->port && !r->listen)
+        return fail(c, "%s: payload ip needs a port in to (or listen)", where);
+    r->listen_learn = r->listen && !r->port;
     return true;
 }
 
-static bool nets(ctx_t *c, int obj, const char *key, rdof_ipgw_net_t *out, int *n)
+static bool nets(ctx_t *c, int obj, const char *in, const char *key, rdof_ipgw_net_t *out, int *n)
 {
     int a = rdof_jget(c->doc, obj, key);
     if (a < 0 || N(c, a)->type == RDOF_JNULL)
         return true;
     if (N(c, a)->type != RDOF_JARR || N(c, a)->count > RDOF_IPGW_MAX_NETS)
-        return fail(c, "nat.%s: a list of up to %d networks (\"a.b.c.d/n\")", key, RDOF_IPGW_MAX_NETS);
+        return fail(c, "%s.%s: a list of up to %d networks (\"a.b.c.d/n\")", in, key, RDOF_IPGW_MAX_NETS);
     *n = 0;
     for (int i = 0; i < N(c, a)->count; i++) {
         const rdof_jnode_t *e = N(c, rdof_jat(c->doc, a, i));
         if (e->type != RDOF_JSTR || !rdof_ipgw_parse_cidr(e->str, &out[*n]))
-            return fail(c, "nat.%s[%d]: a network \"a.b.c.d/n\" (host bits zero) or an address", key, i);
+            return fail(c, "%s.%s[%d]: a network \"a.b.c.d/n\" (host bits zero) or an address", in, key, i);
         (*n)++;
     }
     return true;
@@ -374,6 +383,8 @@ static bool gateway(ctx_t *c, int o, rdof_ipgw_config_t *cfg)
             for (int k = 0; k < i; k++)
                 if (!strcmp(cfg->routes[k].name, cfg->routes[i].name))
                     return fail(c, "routes[%d]: name %s is taken", i, cfg->routes[i].name);
+                else if (cfg->routes[i].listen && cfg->routes[k].listen == cfg->routes[i].listen)
+                    return fail(c, "routes[%d]: listen %d is taken", i, cfg->routes[i].listen);
             cfg->nroutes++;
         }
     }
@@ -384,13 +395,31 @@ static bool gateway(ctx_t *c, int o, rdof_ipgw_config_t *cfg)
     } else if (nn && nn->type == RDOF_JOBJ) {
         static const char *const nat_keys[] = {"enabled", "allow", "deny", NULL};
         if (!only_keys(c, nat, "nat", nat_keys) || !boolean(c, nat, "enabled", "nat", true, &cfg->nat) ||
-            !nets(c, nat, "allow", cfg->allow, &cfg->nallow) || !nets(c, nat, "deny", cfg->deny, &cfg->ndeny))
+            !nets(c, nat, "nat", "allow", cfg->allow, &cfg->nallow) || !nets(c, nat, "nat", "deny", cfg->deny, &cfg->ndeny))
             return false;
     } else if (nn && nn->type != RDOF_JNULL) {
         return fail(c, "nat: true, false or {\"allow\": [...], \"deny\": [...]}");
     }
-    if (!cfg->nroutes && !cfg->nat)
-        return fail(c, "routes: none, and no nat: nothing to do");
+    int ro = rdof_jget(c->doc, o, "routed");
+    const rdof_jnode_t *rn = N(c, ro);
+    if (rn && rn->type == RDOF_JBOOL) {
+        cfg->routed = rn->b;
+    } else if (rn && rn->type == RDOF_JOBJ) {
+        static const char *const routed_keys[] = {"enabled", "hosts", "rip", NULL};
+        if (!only_keys(c, ro, "routed", routed_keys) || !boolean(c, ro, "enabled", "routed", true, &cfg->routed) ||
+            !nets(c, ro, "routed", "hosts", cfg->hosts, &cfg->nhosts) ||
+            !boolean(c, ro, "rip", "routed", false, &cfg->rip))
+            return false;
+        for (int i = 0; i < cfg->nhosts; i++)
+            if (rdof_ipgw_reserved(cfg, cfg->hosts[i].net) || (cfg->hosts[i].net & cfg->radio_net.mask) ==
+                                                                   cfg->radio_net.net ||
+                (cfg->radio_net.net & cfg->hosts[i].mask) == cfg->hosts[i].net)
+                return fail(c, "routed.hosts[%d]: reserved, or overlaps radio_net", i);
+    } else if (rn && rn->type != RDOF_JNULL) {
+        return fail(c, "routed: true, false or {\"hosts\": [...], \"rip\": false}");
+    }
+    if (!cfg->nroutes && !cfg->nat && !cfg->routed)
+        return fail(c, "routes: none, no nat and not routed: nothing to do");
     return true;
 }
 
@@ -502,6 +531,19 @@ size_t rdof_ipgw_describe(const rdof_ipgw_config_t *c, char *out, size_t cap)
             add(out, cap, &len, " -> %s:%d %s", r->host, r->port, r->payload == RDOF_IPGW_PAYLOAD_IP ? "ip" : "udp");
         else
             add(out, cap, &len, " -> %s %s", r->host, r->payload == RDOF_IPGW_PAYLOAD_IP ? "ip" : "udp");
+        if (r->listen)
+            add(out, cap, &len, ", listen %d", r->listen);
+    }
+    if (c->routed) {
+        add(out, cap, &len, "; routed, hosts");
+        if (!c->nhosts)
+            add(out, cap, &len, " the board's subnet");
+        for (int i = 0; i < c->nhosts; i++) {
+            ip_text(c->hosts[i].net, a);
+            add(out, cap, &len, " %s/%d", a, prefix(c->hosts[i].mask));
+        }
+        if (c->rip)
+            add(out, cap, &len, ", rip");
     }
     add(out, cap, &len, "; nat %s", c->nat ? "on" : "off");
     if (c->nat) {
@@ -521,4 +563,20 @@ size_t rdof_ipgw_describe(const rdof_ipgw_config_t *c, char *out, size_t cap)
         }
     }
     return len;
+}
+
+size_t rdof_ipgw_rip(const rdof_ipgw_config_t *cfg, uint8_t *out, size_t cap)
+{
+    if (cap < 24)
+        return 0;
+    memset(out, 0, 24);
+    out[0] = 2; /* response */
+    out[1] = 2; /* version 2 */
+    out[5] = 2; /* address family: IP */
+    const uint32_t v[3] = {cfg->radio_net.net, cfg->radio_net.mask, 0}; /* next hop 0: the sender */
+    for (int k = 0; k < 3; k++)
+        for (int b = 0; b < 4; b++)
+            out[8 + 4 * k + b] = (uint8_t)(v[k] >> (24 - 8 * b));
+    out[23] = 1; /* metric */
+    return 24;
 }

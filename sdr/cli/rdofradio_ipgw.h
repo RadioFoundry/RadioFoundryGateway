@@ -17,6 +17,8 @@
 /* Start it on cfg (copied). send: a packet to transmit (rdof_ipgw's send_dmr). False: no memory. */
 bool rdofgw_start(const rdof_ipgw_config_t *cfg, bool (*send)(void *ctx, const rdof_ipgw_dmr_t *p), void *ctx);
 bool rdofgw_on(void);
+/* Where a radio not heard yet is reached (a listen route's flow): the transmitter's channel. */
+void rdofgw_home(uint32_t freq, int cc);
 /* A data burst a tracker decoded (dt: a data header or a rate 1/2, 3/4 or 1 block; others are ignored). source: the
  * caller's number for the receiver; cc -1: from the bursts. */
 void rdofgw_heard(int source, int slot, uint32_t freq, int cc, int dt, const uint8_t *burst, double now);

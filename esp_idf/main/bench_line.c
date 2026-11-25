@@ -27,6 +27,9 @@
 #include "rdof/benchtx.h"
 #include "rdof/pdu.h"
 #include "rdof/sdr/modes.h"
+#if CONFIG_RDOF_IPGW
+#include "routed.h"
+#endif
 
 static const char *TAG = "bench";
 
@@ -275,6 +278,26 @@ void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t)
     rdof_bl_burst(bl, &o);
 }
 
+#if CONFIG_RDOF_IPGW
+/* The ipgw op's mode routed: routed.c, the board's one route of radio_net */
+static bool bl_route_open(void *ctx, uint32_t net, uint32_t mask, char *why, size_t cap)
+{
+    const rdof_ipgw_net_t n = {net, mask};
+    return routed_open(&n, "bench", false, why, cap);
+}
+static size_t bl_route_recv(void *ctx, uint8_t *buf, size_t cap) { return routed_recv(buf, cap); }
+static bool bl_route_send(void *ctx, const uint8_t *data, size_t len) { return routed_send(data, len); }
+static void bl_route_close(void *ctx) { routed_close(); }
+static bool bl_route_lan(void *ctx, uint32_t *net, uint32_t *mask)
+{
+    rdof_ipgw_net_t n;
+    if (!routed_lan(&n))
+        return false;
+    *net = n.net, *mask = n.mask;
+    return true;
+}
+#endif
+
 void bench_line_start(void)
 {
     if (bl)
@@ -302,6 +325,11 @@ void bench_line_start(void)
         ESP_LOGE(TAG, "line protocol: no memory");
         return;
     }
+#if CONFIG_RDOF_IPGW
+    static const rdof_bl_route_t rt = {.open = bl_route_open, .recv = bl_route_recv, .send = bl_route_send,
+                                       .close = bl_route_close, .lan = bl_route_lan};
+    rdof_bl_set_route(bl, &rt);
+#endif
     netclock_set_store_hold(bench_line_measuring);
     /* the server's thread: its stack in PSRAM, internal RAM being the scarce one */
     esp_pthread_cfg_t cfg = esp_pthread_get_default_config();

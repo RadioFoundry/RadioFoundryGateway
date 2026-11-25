@@ -16,6 +16,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "rdofradio_tun.h"
+
 #define RESOLVE_EVERY_S 30.0
 #define TICK_EVERY_S 0.25
 
@@ -24,7 +26,9 @@ static int g_sock[RDOF_IPGW_MAX_FLOWS];
 static int g_ttl[RDOF_IPGW_MAX_FLOWS];       /* the IP_TTL each socket has */
 static uint16_t g_port[RDOF_IPGW_MAX_FLOWS]; /* the local port each is bound to */
 static int g_icmp = -1, g_icmp_ttl;          /* NAT's ICMP: one raw socket (it hands over the IPv4 header too) */
-static double g_next_tick;
+static int g_listen[RDOF_IPGW_MAX_ROUTES];   /* a listen route's socket on its port, -1 none */
+static double g_next_tick, g_next_lan;
+static bool g_routed; /* the app owns rdofradio_tun.c */
 
 static void nonblock(int s) { fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK); }
 
@@ -67,6 +71,29 @@ static bool send_udp(void *ctx, int flow, uint32_t ip, uint16_t port, const uint
 
 static uint16_t local_port(void *ctx, int flow) { return g_port[flow]; }
 
+/* A listen route's socket: bound to its port, for the route's flows both ways. */
+static int open_listen(int port)
+{
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0)
+        return -1;
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port), .sin_addr.s_addr = htonl(INADDR_ANY)};
+    if (bind(s, (struct sockaddr *)&a, sizeof a) != 0) {
+        close(s);
+        return -1;
+    }
+    nonblock(s);
+    return s;
+}
+
+static bool send_listen(void *ctx, int route, uint32_t ip, uint16_t port, const uint8_t *data, size_t len)
+{
+    if (route < 0 || route >= RDOF_IPGW_MAX_ROUTES || g_listen[route] < 0)
+        return false;
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(ip)};
+    return sendto(g_listen[route], data, len, 0, (struct sockaddr *)&a, sizeof a) == (ssize_t)len;
+}
+
 static bool send_icmp(void *ctx, uint32_t ip, const uint8_t *m, size_t len, int ttl)
 {
     if (g_icmp < 0)
@@ -76,6 +103,8 @@ static bool send_icmp(void *ctx, uint32_t ip, const uint8_t *m, size_t len, int 
     struct sockaddr_in a = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(ip)};
     return sendto(g_icmp, m, len, 0, (struct sockaddr *)&a, sizeof a) == (ssize_t)len;
 }
+
+static bool send_routed(void *ctx, const uint8_t *data, size_t len) { return rtun_send(data, len); }
 
 /* The routes' host names, on a thread of its own (a lookup can take seconds, and the main loop has the radio): each
    route's address is one word, written once here and read by the main loop. */
@@ -117,7 +146,22 @@ bool rdofgw_start(const rdof_ipgw_config_t *cfg, bool (*send)(void *ctx, const r
     g->send_udp = send_udp;
     g->send_dmr = send;
     g->local_port = local_port;
+    g->send_listen = send_listen;
     g->ctx = ctx;
+    for (int i = 0; i < RDOF_IPGW_MAX_ROUTES; i++) {
+        const rdof_ipgw_route_t *r = &cfg->routes[i];
+        g_listen[i] = i < cfg->nroutes && r->listen ? open_listen(r->listen) : -1;
+        if (i < cfg->nroutes && r->listen && g_listen[i] < 0)
+            fprintf(stderr, "ip gateway: route %s: no socket on port %d\n", r->name, r->listen);
+    }
+    if (cfg->routed) {
+        char why[96];
+        g_routed = rtun_open(&cfg->radio_net, "ipgw app", cfg->rip, why, sizeof why);
+        if (g_routed)
+            g->send_routed = send_routed;
+        else
+            fprintf(stderr, "ip gateway: routed: %s: not routed\n", why);
+    }
     if (cfg->nat) {
         g_icmp = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP); /* root or CAP_NET_RAW */
         if (g_icmp >= 0) {
@@ -142,6 +186,14 @@ bool rdofgw_start(const rdof_ipgw_config_t *cfg, bool (*send)(void *ctx, const r
 
 bool rdofgw_on(void) { return G != NULL; }
 
+void rdofgw_home(uint32_t freq, int cc)
+{
+    if (!G)
+        return;
+    G->home.freq = freq;
+    G->home.cc = cc >= 0 && cc <= 15 ? cc : -1;
+}
+
 void rdofgw_heard(int source, int slot, uint32_t freq, int cc, int dt, const uint8_t *burst, double now)
 {
     if (!G)
@@ -160,6 +212,26 @@ void rdofgw_poll(double now, uint64_t sync48)
         ssize_t n;
         while ((n = recv(g_icmp, buf, sizeof buf, 0)) > 0)
             rdof_ipgw_icmp_from_net(G, buf, (size_t)n, now);
+    }
+    for (int i = 0; i < RDOF_IPGW_MAX_ROUTES; i++) {
+        struct sockaddr_in from;
+        socklen_t fl = sizeof from;
+        ssize_t n;
+        while (g_listen[i] >= 0 &&
+               (n = recvfrom(g_listen[i], buf, sizeof buf, 0, (struct sockaddr *)&from, &fl)) >= 0) {
+            rdof_ipgw_from_listen(G, i, ntohl(from.sin_addr.s_addr), ntohs(from.sin_port), buf, (size_t)n, now);
+            fl = sizeof from;
+        }
+    }
+    if (g_routed) {
+        if (now >= g_next_lan) {
+            if (!rtun_lan(&G->lan))
+                G->lan.net = G->lan.mask = 0;
+            g_next_lan = now + RESOLVE_EVERY_S;
+        }
+        size_t n;
+        while ((n = rtun_recv(buf, sizeof buf)) > 0)
+            rdof_ipgw_from_lan(G, buf, n, now);
     }
     for (int i = 0; i < RDOF_IPGW_MAX_FLOWS; i++) {
         struct sockaddr_in from;
