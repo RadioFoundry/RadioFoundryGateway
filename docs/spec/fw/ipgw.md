@@ -235,6 +235,10 @@ that address. No tunnel and no NAT: the datagrams cross as they are, TTL less on
   route on a Linux or macOS host. With `rip: true` the board also sends a RIPv2 response for `radio_net` (metric 1,
   next hop itself) to 224.0.0.9:520 every 30 s, from port 520, TTL 1, for a router that learns RIP (OpenWrt,
   pfSense, MikroTik; most home routers don't). It answers no RIP requests and learns no routes.
+- **The same link.** A host reaches the board only when its frames for the board carry the board's own MAC: on
+  the board's LAN, or through a router. A host behind a Wi-Fi relay or extender that does MAC NAT (its ARP shows
+  the relay's MAC for every LAN address) has its datagrams routed by the relay instead, which doesn't know
+  `radio_net`; route it on the relay, or use the bench's `listen` mode (§9.1).
 - **Who owns it.** One route of `radio_net` per board: the ipgw app with `routed`, or the bench's `ipgw` op in mode
   `routed` while armed ([bench-api.md](../bench-api.md) §14.10). The second to ask is refused (the app logs it and
   runs without routing).
