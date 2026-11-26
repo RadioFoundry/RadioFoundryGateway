@@ -25,8 +25,9 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
-# WebSocket streams for the bench API (bench_api.c)
+# WebSocket streams for the bench API (bench_api.c); the pre-handshake callback checks a handshake's Origin (web.c)
 CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT=y
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
 # Wi-Fi power save is turned off in code (WIFI_PS_NONE). Sockets: the SDR's peers (one a channel), the roamer's,

@@ -19,8 +19,8 @@ It's built for a trusted network. Know these before you deploy it:
 
 - **The settings page and JSON API have no login.** Anyone who can reach the board can change its settings,
   upload firmware (OTA) and read its core dumps. Keep it on a network you control.
-- **A POST from a web page of another origin is refused** (403): the board takes a change only from its own page,
-  or from a client that sends no `Origin` header (curl, scripts).
+- **A POST or a WebSocket from a web page of another origin is refused** (403): the board takes a change, or opens
+  a WebSocket, only for its own page or a client that sends no `Origin` header (curl, scripts).
 - **The setup access point has a published default password** (`radiofoundry`). It comes up whenever the board
   has had no Wi-Fi connection for 20 s.
 - **HBlink4 and MQTT passwords are stored on the board** in plain text (NVS), and the settings API returns them.

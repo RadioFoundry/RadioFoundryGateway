@@ -445,6 +445,9 @@ static void t_origin(void)
     CHECK(rdof_webapi_origin_ok("GET", "http://example.com", "w12.lan", NULL));
     CHECK(rdof_webapi_origin_ok("HEAD", "null", "w12.lan", NULL));
     CHECK(rdof_webapi_origin_ok("OPTIONS", "http://example.com", "w12.lan", NULL));
+    /* a WebSocket handshake, asked as a POST */
+    CHECK(!rdof_webapi_origin_ok("POST", "http://example.com", "w12.lan", NULL));
+    CHECK(rdof_webapi_origin_ok("POST", "http://w12.lan", "w12.lan", NULL));
 }
 
 int main(void)

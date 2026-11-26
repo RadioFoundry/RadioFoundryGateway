@@ -168,7 +168,7 @@ bool rdof_webapi_query(const char *query, const char *key, char *out, size_t cap
  * request without an Origin (origin NULL), always; any other method only when the Origin's host[:port] is the Host
  * header's, or one of X-Forwarded-Host's (fwd_host, comma separated; NULL none). Hosts compare without case; a
  * missing port is the scheme's (http 80, https 443). "null" and an Origin that isn't scheme://host[:port] are
- * refused. */
+ * refused. A WebSocket handshake is asked with method "POST": its Origin, when it has one, must be the server's. */
 bool rdof_webapi_origin_ok(const char *method, const char *origin, const char *host, const char *fwd_host);
 
 /* A byte ring (the log): put appends, dropping the oldest; read copies the newest bytes that fit in cap - 1 and

@@ -1092,7 +1092,8 @@ static esp_err_t post_ota(httpd_req_t *req)
 /* Every httpd_register_uri_handler call in the program, the components' too, comes here (CMakeLists.txt wraps it):
  * the handler is registered behind origin_gate, which answers 403 to a request that rdof_webapi_origin_ok refuses
  * (a method other than GET, HEAD or OPTIONS with an Origin that isn't the board's own) and hands the rest to the
- * handler with its own user_ctx. A WebSocket handler is registered as it is: its handshake is a GET. */
+ * handler with its own user_ctx. A WebSocket handler keeps its own handler, and gets ws_origin as its pre-handshake
+ * callback: the handshake is refused (403) unless its Origin, when it has one, is the board's own. */
 #define WEB_HANDLERS 64 /* httpd_config_t.max_uri_handlers */
 
 esp_err_t __real_httpd_register_uri_handler(httpd_handle_t handle, const httpd_uri_t *uri);
@@ -1128,9 +1129,31 @@ static esp_err_t origin_gate(httpd_req_t *req)
     return g->handler(req);
 }
 
+#if CONFIG_HTTPD_WS_SUPPORT && !CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+#error "web.c checks a WebSocket handshake's Origin: CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT=y"
+#endif
+
+/* A WebSocket handshake is a GET, but it opens a two-way link: it's asked as a POST is. */
+static esp_err_t ws_origin(httpd_req_t *req)
+{
+    char origin[128], host[128], fwd[128];
+    if (rdof_webapi_origin_ok("POST", req_header(req, "Origin", origin, sizeof origin),
+                              req_header(req, "Host", host, sizeof host),
+                              req_header(req, "X-Forwarded-Host", fwd, sizeof fwd)))
+        return ESP_OK;
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "a page of another origin can't open this here");
+    return ESP_FAIL;
+}
+
 esp_err_t __wrap_httpd_register_uri_handler(httpd_handle_t handle, const httpd_uri_t *uri)
 {
-    if (!uri || !uri->handler || uri->is_websocket)
+    if (uri && uri->is_websocket) {
+        httpd_uri_t u = *uri;
+        if (!u.ws_pre_handshake_cb)
+            u.ws_pre_handshake_cb = ws_origin;
+        return __real_httpd_register_uri_handler(handle, &u);
+    }
+    if (!uri || !uri->handler)
         return __real_httpd_register_uri_handler(handle, uri);
     if (ngated >= WEB_HANDLERS)
         return ESP_ERR_HTTPD_HANDLERS_FULL;

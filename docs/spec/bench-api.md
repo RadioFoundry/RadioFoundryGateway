@@ -23,6 +23,8 @@ Version 1. Section 11 says what works where; section 9 what the board has.
 
 ## 1. Conventions
 
+- A POST, DELETE or WebSocket handshake that carries an `Origin` header that isn't the board's own host is refused
+  with 403 (the board's server, [interfaces-http.md](fw/interfaces-http.md) §1); the tools send none.
 - Base path `/api/bench/v1`. Frequencies are in Hz (`freq_hz`, floats), rates in samples/s, levels in dBFS, times
   in UTC seconds (`t`) or microseconds (`t_us`).
 - Errors: HTTP status plus `{"error": "text", "code": "..."}`. On a WebSocket, a text frame
