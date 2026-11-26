@@ -18,7 +18,7 @@ pub const RDOF_JSTR: u32 = 3;
 pub const RDOF_JARR: u32 = 4;
 pub const RDOF_JOBJ: u32 = 5;
 
-const MAX_DEPTH: i32 = 32;
+const MAX_DEPTH: i32 = 16; // about 176 bytes of stack a level on the board: the settings parse on the web task
 
 /// rdof_jnode_t
 #[repr(C)]

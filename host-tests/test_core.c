@@ -279,7 +279,7 @@ static void t_json(void)
     memset(deep, '[', 40);
     memset(deep + 40, ']', 40);
     jdoc_t big;
-    CHECK(jparse(&big, deep, 80, 32, sizeof big.buf) < 0 && strstr(big.doc.error, "too many values"), "node limit");
+    CHECK(jparse(&big, deep, 80, 8, sizeof big.buf) < 0 && strstr(big.doc.error, "too many values"), "node limit");
     rdof_jnode_t many[64];
     char sbuf[16];
     rdof_jdoc_t d = {.nodes = many, .max = 64, .buf = sbuf, .cap = sizeof sbuf};
@@ -459,13 +459,13 @@ static void t_json_edges(void)
 
     /* depth: 32 containers is the most */
     char deep[66];
-    for (int d = 31; d <= 33; d++) {
+    for (int d = 15; d <= 17; d++) {
         memset(deep, '[', (size_t)d);
         memset(deep + d, ']', (size_t)d);
         rdof_jnode_t many[40];
         rdof_jdoc_t dd = {.nodes = many, .max = 40, .buf = j.buf, .cap = sizeof j.buf};
         int r = rdof_jparse(&dd, deep, (size_t)(2 * d));
-        CHECK(d <= 32 ? r == 0 && dd.n == d : r < 0 && !strcmp(dd.error, "nested too deep at offset 32"),
+        CHECK(d <= 16 ? r == 0 && dd.n == d : r < 0 && !strcmp(dd.error, "nested too deep at offset 16"),
               "depth %d: %s", d, dd.error);
     }
     /* nodes and buffer: exactly enough, and one short */

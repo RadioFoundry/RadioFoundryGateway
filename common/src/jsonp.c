@@ -136,7 +136,7 @@ static int container(parser_t *ps, bool object)
     int self = new_node(ps, object ? RDOF_JOBJ : RDOF_JARR);
     if (self < 0)
         return fail(ps, "too many values");
-    if (++ps->depth > 32)
+    if (++ps->depth > 16) /* about 176 bytes of stack a level on the board: the settings parse on the web task */
         return fail(ps, "nested too deep");
     ps->p++;
     ws(ps);

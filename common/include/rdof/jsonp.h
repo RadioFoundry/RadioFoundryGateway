@@ -38,7 +38,7 @@ typedef struct {
     char error[64];
 } rdof_jdoc_t;
 
-/* Returns the root node, or -1 (doc->error says why). */
+/* Returns the root node, or -1 (doc->error says why). Arrays and objects nest 16 deep at most. */
 int rdof_jparse(rdof_jdoc_t *doc, const char *text, size_t len);
 
 /* Nodes are the last parse's: one it didn't make (negative, or past doc->n) gives -1 or NULL. */
