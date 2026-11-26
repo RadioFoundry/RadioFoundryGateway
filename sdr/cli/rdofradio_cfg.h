@@ -30,6 +30,7 @@
 #include "rdof/config.h"
 #include "rdof/repeater.h"
 #include "rdof/site.h"
+#include "rdof/siteplan.h"
 #include "rdof/t3.h"
 #include "rdof/txvr.h"
 #include "rdof/sdr/config.h"
@@ -95,6 +96,7 @@ typedef struct {
     bool full;          /* a repeater (full duplex); false: a transceiver (half duplex) */
     bool on_modem;      /* the unit is on a modem device (rdofradio --mmdvm PORT), not on the SDR */
     char box[32];       /* the box's name */
+    char web_hosts[RDOF_WEB_HOSTS]; /* more names the web page answers to (rdof_hostweb_hosts), "" none */
     char name[24];      /* the unit's */
     uint32_t peer_id;
     uint32_t rx_hz, tx_hz;

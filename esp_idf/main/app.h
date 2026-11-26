@@ -42,6 +42,7 @@
 extern rdof_roles_t g_roles;     /* which radios run here */
 extern bool g_cfg_ok;          /* false: the stored settings didn't parse (g_cfg_error says why); defaults run */
 extern char g_cfg_error[160];
+extern char g_web_hosts[128]; /* web_hosts: more names the page answers to (web.c), "" none; PSRAM */
 #if CONFIG_RDOF_ROAMER
 extern rdof_config_t *g_rcfg[RDOF_MAX_RADIOS]; /* each roamer or repeater g_roles names (PSRAM), g_roles.nradios of them */
 #endif

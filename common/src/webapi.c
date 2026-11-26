@@ -221,6 +221,103 @@ bool rdof_webapi_origin_ok(const char *method, const char *origin, const char *h
     return false;
 }
 
+/* s (n bytes) as a name: the host without its :port and one trailing dot. False if the port isn't digits. */
+static bool host_name(const char *s, size_t n, const char **name, size_t *nn)
+{
+    const char *h;
+    size_t hn;
+    unsigned port;
+    if (!host_port(s, n, 0, &h, &hn, &port))
+        return false;
+    if (hn > 1 && h[hn - 1] == '.' && h[0] != '[')
+        hn--;
+    *name = h, *nn = hn;
+    return true;
+}
+
+static bool is_ipv4(const char *s, size_t n)
+{
+    int parts = 0;
+    for (size_t i = 0; i < n;) {
+        unsigned v = 0, d = 0;
+        for (; i < n && s[i] >= '0' && s[i] <= '9' && d < 4; i++, d++)
+            v = v * 10 + (unsigned)(s[i] - '0');
+        if (!d || d > 3 || v > 255 || ++parts > 4)
+            return false;
+        if (i < n && (s[i] != '.' || ++i == n))
+            return false;
+    }
+    return parts == 4;
+}
+
+static bool is_ipv6(const char *s, size_t n)
+{
+    if (n < 4 || s[0] != '[' || s[n - 1] != ']' || !memchr(s, ':', n))
+        return false;
+    for (size_t i = 1; i + 1 < n; i++)
+        if (!strchr("0123456789abcdefABCDEF:.", s[i]))
+            return false;
+    return true;
+}
+
+/* A name of labels (letters, digits, - and _), none empty. */
+static bool is_name(const char *s, size_t n)
+{
+    size_t label = 0;
+    for (size_t i = 0; i < n; i++) {
+        const char c = s[i];
+        if (c == '.') {
+            if (!label)
+                return false;
+            label = 0;
+        } else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' ||
+                   c == '_') {
+            label++;
+        } else {
+            return false;
+        }
+    }
+    return label > 0;
+}
+
+static bool same_name(const char *a, size_t an, const char *b) { return an == strlen(b) && !strncasecmp(a, b, an); }
+
+bool rdof_webapi_host_ok(const char *host, const char *extra)
+{
+    if (!host || !host[0])
+        return true;
+    const char *h;
+    size_t hn;
+    if (!host_name(host, strlen(host), &h, &hn))
+        return false;
+    if (is_ipv6(h, hn) || is_ipv4(h, hn))
+        return true;
+    if (!is_name(h, hn))
+        return false;
+    /* the local network's names: one label, or one of these suffixes after at least one label of its own; the
+       suffix alone isn't a name */
+    static const char *const local[] = {"local", "lan", "home", "internal", "home.arpa", "localdomain"};
+    bool bare = false;
+    for (size_t k = 0; k < sizeof local / sizeof local[0]; k++) {
+        const size_t sn = strlen(local[k]);
+        bare |= same_name(h, hn, local[k]);
+        if (hn > sn + 1 && h[hn - sn - 1] == '.' && !strncasecmp(h + hn - sn, local[k], sn))
+            return true;
+    }
+    if (!bare && !memchr(h, '.', hn))
+        return true;
+    for (const char *e = extra; e && *e;) {
+        e += strspn(e, ", \t");
+        const size_t en = strcspn(e, ", \t");
+        const char *x;
+        size_t xn;
+        if (en && host_name(e, en, &x, &xn) && xn == hn && !strncasecmp(x, h, hn))
+            return true;
+        e += en;
+    }
+    return false;
+}
+
 static void say(rdof_webapi_resp_t *r, int status, const char *text)
 {
     r->status = status;

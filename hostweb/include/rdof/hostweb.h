@@ -198,6 +198,9 @@ typedef struct {
 void rdof_hostweb_clock(const rdof_hostweb_clock_t *c);
 /* The version /api/status shows (default "host"). The string is kept, not copied. */
 void rdof_hostweb_version(const char *v);
+/* More names the server answers to (the settings' web_hosts: rdof_webapi_host_ok's extra; copied, cut to 127
+ * characters). Without them it answers only by address and local names. Call before start. */
+void rdof_hostweb_hosts(const char *names);
 
 /* The file where the tool's supervisor records how it last ended, when that wasn't a clean stop (the Pluto bundle's
  * run.sh): lines "rc=N" (the shell's exit status: 128 + the signal when a signal ended it) and "at=UNIX_S", a line

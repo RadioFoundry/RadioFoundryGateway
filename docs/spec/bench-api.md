@@ -23,6 +23,8 @@ Version 1. Section 11 says what works where; section 9 what the board has.
 
 ## 1. Conventions
 
+- Any request whose `Host` isn't the board's address, a local name or one in the settings' `web_hosts` is refused
+  with 403 ([interfaces-http.md](fw/interfaces-http.md) §1).
 - A POST, DELETE or WebSocket handshake that carries an `Origin` header that isn't the board's own host is refused
   with 403 (the board's server, [interfaces-http.md](fw/interfaces-http.md) §1); the tools send none.
 - Base path `/api/bench/v1`. Frequencies are in Hz (`freq_hz`, floats), rates in samples/s, levels in dBFS, times

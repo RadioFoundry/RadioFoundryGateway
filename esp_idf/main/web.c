@@ -1087,13 +1087,14 @@ static esp_err_t post_ota(httpd_req_t *req)
 }
 #endif
 
-/* ── a page of another origin: every handler behind the Origin check ──────── */
+/* ── the board's own names and pages: every handler behind the Host and Origin checks ── */
 
 /* Every httpd_register_uri_handler call in the program, the components' too, comes here (CMakeLists.txt wraps it):
- * the handler is registered behind origin_gate, which answers 403 to a request that rdof_webapi_origin_ok refuses
- * (a method other than GET, HEAD or OPTIONS with an Origin that isn't the board's own) and hands the rest to the
- * handler with its own user_ctx. A WebSocket handler keeps its own handler, and gets ws_origin as its pre-handshake
- * callback: the handshake is refused (403) unless its Origin, when it has one, is the board's own. */
+ * the handler is registered behind origin_gate, which answers 403 to a request whose Host rdof_webapi_host_ok
+ * refuses (not an address, a local name or one in web_hosts), or that rdof_webapi_origin_ok refuses (a method other
+ * than GET, HEAD or OPTIONS with an Origin that isn't the board's own), and hands the rest to the handler with its
+ * own user_ctx. A WebSocket handler keeps its own handler, and gets ws_origin as its pre-handshake callback: the
+ * handshake is refused (403) on the same Host rule, or unless its Origin, when it has one, is the board's own. */
 #define WEB_HANDLERS 64 /* httpd_config_t.max_uri_handlers */
 
 esp_err_t __real_httpd_register_uri_handler(httpd_handle_t handle, const httpd_uri_t *uri);
@@ -1116,14 +1117,27 @@ static const char *req_header(httpd_req_t *req, const char *name, char *out, siz
     return out;
 }
 
+#define HOST_REFUSED "this name isn't the board's own: use its address, a .local name, or add the name to web_hosts"
+
+/* The Host header into out (*host NULL when there's none); false when the board doesn't answer to it
+   (rdof_webapi_host_ok), or it doesn't fit in cap. */
+static bool host_ok(httpd_req_t *req, char *out, size_t cap, const char **host)
+{
+    const size_t n = httpd_req_get_hdr_value_len(req, "Host");
+    *host = req_header(req, "Host", out, cap);
+    return n < cap && rdof_webapi_host_ok(*host, g_web_hosts);
+}
+
 static esp_err_t origin_gate(httpd_req_t *req)
 {
     const gated_t *g = req->user_ctx;
     req->user_ctx = g->user_ctx;
     char origin[128], host[128], fwd[128];
+    const char *h;
+    if (!host_ok(req, host, sizeof host, &h))
+        return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, HOST_REFUSED);
     if (!rdof_webapi_origin_ok(http_method_str((enum http_method)req->method),
-                               req_header(req, "Origin", origin, sizeof origin),
-                               req_header(req, "Host", host, sizeof host),
+                               req_header(req, "Origin", origin, sizeof origin), h,
                                req_header(req, "X-Forwarded-Host", fwd, sizeof fwd)))
         return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "a page of another origin can't send this here");
     return g->handler(req);
@@ -1137,8 +1151,12 @@ static esp_err_t origin_gate(httpd_req_t *req)
 static esp_err_t ws_origin(httpd_req_t *req)
 {
     char origin[128], host[128], fwd[128];
-    if (rdof_webapi_origin_ok("POST", req_header(req, "Origin", origin, sizeof origin),
-                              req_header(req, "Host", host, sizeof host),
+    const char *h;
+    if (!host_ok(req, host, sizeof host, &h)) {
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, HOST_REFUSED);
+        return ESP_FAIL;
+    }
+    if (rdof_webapi_origin_ok("POST", req_header(req, "Origin", origin, sizeof origin), h,
                               req_header(req, "X-Forwarded-Host", fwd, sizeof fwd)))
         return ESP_OK;
     httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "a page of another origin can't open this here");

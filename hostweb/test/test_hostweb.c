@@ -381,6 +381,26 @@ int main(int argc, char **argv)
     CHECK(strstr(b, "200 OK") && restarts == 4);
     http(port, "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:8073\r\nOrigin: http://example.com\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "200 OK"));
+    /* asked by another name: only an address, a local name or one in web_hosts, whatever the method */
+    http(port, "GET /api/status HTTP/1.1\r\nHost: radio.example.org\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "403") && strstr(b, "web_hosts") && !strstr(b, "\"settings\""));
+    http(port, "GET /api/status HTTP/1.1\r\nHost: pi.local:8080\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "200 OK"));
+    {
+        char longhost[400];
+        memset(longhost, 'a', sizeof longhost);
+        snprintf(longhost + 300, 100, "\r\n\r\n");
+        char r[512];
+        snprintf(r, sizeof r, "GET /api/status HTTP/1.1\r\nHost: %s", longhost); /* one label, but too long to read */
+        http(port, r, b, sizeof b);
+        CHECK(strstr(b, "403"));
+    }
+    rdof_hostweb_hosts("a.example, Radio.Example.org:443");
+    http(port, "GET /api/status HTTP/1.1\r\nHost: radio.example.org\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "200 OK"));
+    rdof_hostweb_hosts(NULL);
+    http(port, "POST /api/restart HTTP/1.1\r\nHost: radio.example.org\r\nContent-Length: 0\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "403") && restarts == 4);
     /* read only: shown, never written */
     settings(false);
     http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);

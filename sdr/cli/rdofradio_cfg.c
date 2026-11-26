@@ -305,6 +305,7 @@ static int trunk_unit(const rdof_plan_t *p)
 
 static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_t cap)
 {
+    snprintf(o->web_hosts, sizeof o->web_hosts, "%s", rdof_plan_web_hosts(p));
     const int tu = trunk_unit(p);
     if (tu >= 0) {
 #ifdef RDOF_TIER3

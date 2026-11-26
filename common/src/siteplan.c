@@ -143,6 +143,9 @@ static bool box_keys(plan_t *p)
     int hub = get(p, root, "usb_hub");
     if (hub >= 0 && !is_type(p, hub, RDOF_JBOOL))
         return fail(p, "usb_hub: true or false");
+    int wh = get(p, root, "web_hosts");
+    if (wh >= 0 && (!is_type(p, wh, RDOF_JSTR) || strlen(str_of(p, wh)) >= RDOF_WEB_HOSTS))
+        return fail(p, "web_hosts: names, comma or space separated, up to %d characters", RDOF_WEB_HOSTS - 1);
     return true;
 }
 
@@ -1145,6 +1148,13 @@ void rdof_plan_close(rdof_plan_t *p)
 }
 
 const rdof_site_t *rdof_plan_site(const rdof_plan_t *p) { return &p->site; }
+
+const char *rdof_plan_web_hosts(const rdof_plan_t *p)
+{
+    const int i = rdof_jget(&p->c->doc, p->c->root, "web_hosts");
+    const rdof_jnode_t *n = i >= 0 ? rdof_jnode(&p->c->doc, i) : NULL;
+    return n && n->type == RDOF_JSTR ? n->str : "";
+}
 const rdof_jdoc_t *rdof_plan_doc(const rdof_plan_t *p) { return &p->c->doc; }
 int rdof_plan_root(const rdof_plan_t *p) { return p->c->root; }
 

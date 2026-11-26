@@ -7283,6 +7283,9 @@ int main(int argc, char **argv)
             snprintf(why, sizeof why, "%s: %s", config_path, err);
             return hold(argc, argv, why);
         }
+#ifdef RDOF_HOST_WEB
+        rdof_hostweb_hosts(rcfg.web_hosts);
+#endif
         if (rcfg.tier3) {
 #ifdef RDOF_TIER3
             const rdofradio_t3_opts_t to = {.sim_n = t3_opts.sim_n,
@@ -7566,6 +7569,9 @@ int main(int argc, char **argv)
                     !ok ? err : !t3cfg.tier3 ? "no tier3 app in it" : "the site's carrier is a modem's (--mmdvm PORT)");
             return 2;
         }
+#ifdef RDOF_HOST_WEB
+        rdof_hostweb_hosts(t3cfg.web_hosts);
+#endif
         signal(SIGINT, on_signal);
         signal(SIGTERM, on_signal);
         if (!rdofradio_t3_standby(&t3cfg, &stop)) /* a standby box: the modem stays shut until the active one is gone */

@@ -17,6 +17,7 @@
 
 #include "app.h"
 #include "cJSON.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "netclock.h"
@@ -35,6 +36,8 @@ static const char *TAG = "settings";
 rdof_roles_t g_roles;
 bool g_cfg_ok;
 char g_cfg_error[160];
+EXT_RAM_BSS_ATTR char g_web_hosts[RDOF_WEB_HOSTS];
+_Static_assert(sizeof g_web_hosts == RDOF_WEB_HOSTS, "app.h's g_web_hosts");
 #if CONFIG_RDOF_ROAMER
 rdof_config_t *g_rcfg[RDOF_MAX_RADIOS];
 #endif
@@ -365,6 +368,8 @@ static bool resolve(const char *text, size_t len, bool check, rdof_roles_t *role
     if (!p)
         return false;
     bool ok = resolve_plan(p, text, len, check, roles, error, cap);
+    if (ok && !check)
+        snprintf(g_web_hosts, sizeof g_web_hosts, "%s", rdof_plan_web_hosts(p));
 #if CONFIG_RDOF_ROAMER
     if (ok && !check)
         site_load(rdof_plan_site(p)); /* the call router: its radios' */

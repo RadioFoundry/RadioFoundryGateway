@@ -43,6 +43,24 @@ int main(void)
     CHECK(C.full && C.rx_hz == 438250000 && C.tx_hz == 438012500 && C.cc == 1 && C.peer_id == 9990601);
     CHECK(C.has_parrot && C.parrot == 9990 && !strcmp(C.name, "example") && !strcmp(C.box, "example"));
     CHECK(C.cfg.slot1 && C.cfg.slot2);
+    CHECK(C.web_hosts[0] == 0);
+
+    /* web_hosts: more names the page answers to; a string, under 128 characters */
+    {
+        char doc[1200];
+        const char *tail = strrchr(example, '}');
+        snprintf(doc, sizeof doc, "%.*s, \"web_hosts\": \"gw.example.org, radio.example.org:8443\"}\n",
+                 (int)(tail - example), example);
+        CHECK(parse(doc) && !strcmp(C.web_hosts, "gw.example.org, radio.example.org:8443"));
+        snprintf(doc, sizeof doc, "%.*s, \"web_hosts\": [\"gw.example.org\"]}\n", (int)(tail - example), example);
+        CHECK(!parse(doc) && strstr(err, "web_hosts"));
+        char names[140];
+        memset(names, 'a', 128);
+        names[128] = 0;
+        snprintf(doc, sizeof doc, "%.*s, \"web_hosts\": \"%s\"}\n", (int)(tail - example), example, names);
+        CHECK(!parse(doc) && strstr(err, "web_hosts"));
+        CHECK(parse(example));
+    }
 
     /* the unit's own HBlink peer: none when its path is on MQTT and the HBlink network has a peer a path (the
        monitored frequencies keep theirs); the box's one peer carries it with identity single; its own when its

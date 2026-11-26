@@ -114,6 +114,9 @@ rdof_plan_t *rdof_plan_open(const char *text, size_t len, char *err, size_t cap)
 void rdof_plan_close(rdof_plan_t *p);
 
 const rdof_site_t *rdof_plan_site(const rdof_plan_t *p);
+/* web_hosts: more names the web page answers to (rdof_webapi_host_ok's extra), "" none; shorter than RDOF_WEB_HOSTS. */
+#define RDOF_WEB_HOSTS 128
+const char *rdof_plan_web_hosts(const rdof_plan_t *p);
 /* The document (as rdof/jsonp.h reads it) and its top object. */
 const rdof_jdoc_t *rdof_plan_doc(const rdof_plan_t *p);
 int rdof_plan_root(const rdof_plan_t *p);

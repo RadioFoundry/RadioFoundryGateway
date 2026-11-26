@@ -459,9 +459,39 @@ static void t_origin(void)
     CHECK(rdof_webapi_origin_ok("POST", "http://w12.lan", "w12.lan", NULL));
 }
 
+/* ── which names the server answers to: the Host header ── */
+
+static void t_host(void)
+{
+    static const char *const ok[] = {"192.168.1.7", "192.168.1.7:8080", "[fe80::1]", "[fe80::1]:80",
+                                     "localhost:8080", "localhost.", "w12", "W12.LAN", "radiofoundry-1948.local",
+                                     "radiofoundry-1948.local.", "pi.home.arpa", "gw.internal", "a.home",
+                                     "b.localdomain", NULL};
+    static const char *const no[] = {"example.com", "192.168.1.7.example.com", "w12.lan.example.com",
+                                     "radiofoundry-1948.example.com", "localhost.example.com", "1.2.3.4.5",
+                                     "999.1.1.1", /* not an address, and not a local name either */
+                                     "local", ".local", "lan", "home.arpa", "w12..lan", "w12.lan:x", ":80",
+                                     "fe80::1", "[fe80::1", "w12/x", "gw.example.org", NULL};
+    CHECK(rdof_webapi_host_ok(NULL, NULL));
+    CHECK(rdof_webapi_host_ok("", NULL));
+    for (int i = 0; ok[i]; i++)
+        CHECK(rdof_webapi_host_ok(ok[i], NULL));
+    for (int i = 0; no[i]; i++)
+        CHECK(!rdof_webapi_host_ok(no[i], NULL));
+    /* names added in the settings (web_hosts) */
+    CHECK(rdof_webapi_host_ok("gw.example.org", "gw.example.org"));
+    CHECK(rdof_webapi_host_ok("gw.example.org:8443", "gw.example.org"));
+    CHECK(rdof_webapi_host_ok("gw.example.org", "a.b, GW.example.org:8443"));
+    CHECK(rdof_webapi_host_ok("gw.example.org", "a.b GW.example.org."));
+    CHECK(!rdof_webapi_host_ok("gw.example.org", "example.org"));
+    CHECK(!rdof_webapi_host_ok("gw.example.org", "a.b, , "));
+    CHECK(!rdof_webapi_host_ok("example.com", ""));
+}
+
 int main(void)
 {
     t_origin();
+    t_host();
     t_status_board();
     t_clock();
     t_status_host();

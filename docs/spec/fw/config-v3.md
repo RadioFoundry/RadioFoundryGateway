@@ -83,6 +83,7 @@ which frequency follows from each device's `hears` and `transmits`; a file only 
 | `slot_timing` | object | `free` | the UTC slot grid ([../slot-timing.md](../slot-timing.md)); inherited by a repeater on a split or the SDR |
 | `wifi`, `ntp` | object | | §2.2; the board keeps them apart (§16) |
 | `usb_hub` | bool | false | a hub on the board's USB port: every USB device at once (a build with hub support: `16mb`, the `hub` overlay; not `w12`, which has no USB host) |
+| `web_hosts` | string | `""` | more names the web page answers to, comma or space separated, under 128 characters (a `:port` is ignored); it always answers by address and local names ([interfaces-http.md](interfaces-http.md) §1). rdofradio reads it too |
 | `selftest_load` | object | `{"channels": 8, "rates": [288000]}` | the SDR self-test's load runs: `channels` 1..16, `rates` up to 4 sample rates |
 | `bench` | object | none | the bench API's devices and TX policy (§4.6) |
 

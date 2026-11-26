@@ -171,6 +171,14 @@ bool rdof_webapi_query(const char *query, const char *key, char *out, size_t cap
  * refused. A WebSocket handshake is asked with method "POST": its Origin, when it has one, must be the server's. */
 bool rdof_webapi_origin_ok(const char *method, const char *origin, const char *host, const char *fwd_host);
 
+/* Whether a server answers a request (any method) by its Host header: only when it's asked by address or by a name
+ * on the local network. Taken: no Host (NULL or ""); else, without its :port and one trailing dot, compared without
+ * case: an IPv4 address (four numbers 0 to 255) or a bracketed IPv6 one; a name of one label (localhost, w12); a name
+ * ending in .local, .lan, .home, .internal, .home.arpa or .localdomain (not the suffix alone); or one of the names in
+ * extra (comma or space separated, each may carry a port, which is ignored; NULL or "" none). Anything else is
+ * refused. X-Forwarded-Host plays no part here. */
+bool rdof_webapi_host_ok(const char *host, const char *extra);
+
 /* A byte ring (the log): put appends, dropping the oldest; read copies the newest bytes that fit in cap - 1 and
  * NUL terminates. The caller locks. */
 typedef struct {

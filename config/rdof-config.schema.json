@@ -676,7 +676,12 @@
         "slot_timing": {"$ref": "#/$defs/slot_timing"},
         "usb_hub": {"$ref": "#/$defs/usb_hub"},
         "selftest_load": {"$ref": "#/$defs/selftest_load"},
-        "bench": {"$ref": "#/$defs/bench"}
+        "bench": {"$ref": "#/$defs/bench"},
+        "web_hosts": {
+          "type": "string",
+          "maxLength": 127,
+          "description": "More names the web server answers to, comma or space separated (a :port is ignored). It answers to its address and local names (.local, .lan, one label) without them."
+        }
       }
     },
     "wifi": {

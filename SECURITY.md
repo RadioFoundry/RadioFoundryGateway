@@ -21,6 +21,10 @@ It's built for a trusted network. Know these before you deploy it:
   upload firmware (OTA) and read its core dumps. Keep it on a network you control.
 - **A POST or a WebSocket from a web page of another origin is refused** (403): the board takes a change, or opens
   a WebSocket, only for its own page or a client that sends no `Origin` header (curl, scripts).
+- **A request whose Host isn't an address or a local name is refused** (403), whatever its method: the board
+  answers to its IP address, a one-label name, and names ending in `.local`, `.lan`, `.home`, `.internal`,
+  `.home.arpa` or `.localdomain`. To reach it by another name (a reverse proxy's, a DNS name of your own), add
+  that name to the settings' `web_hosts` (`"web_hosts": "gw.example.org"`); rdofradio reads the same key.
 - **The setup access point has a published default password** (`radiofoundry`). It comes up whenever the board
   has had no Wi-Fi connection for 20 s.
 - **HBlink4 and MQTT passwords are stored on the board** in plain text (NVS), and the settings API returns them.

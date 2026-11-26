@@ -79,6 +79,7 @@ static struct {
     rdof_hostweb_clock_t clk;
     bool have_clk;
     const char *version;
+    char hosts[128]; /* rdof_hostweb_hosts */
     /* last heard */
     pthread_mutex_t lh_mu;
     rdof_lh_t lh;
@@ -257,6 +258,8 @@ void rdof_hostweb_clock(const rdof_hostweb_clock_t *c)
 }
 
 void rdof_hostweb_version(const char *v) { W.version = v; }
+
+void rdof_hostweb_hosts(const char *names) { snprintf(W.hosts, sizeof W.hosts, "%s", names ? names : ""); }
 
 static size_t clk_json(void *ctx, char *out, size_t cap) { return W.clk.json(out, cap); }
 static bool clk_set(void *ctx, int64_t utc_us, const char **source)
@@ -1109,7 +1112,7 @@ static const char *find_nocase(const char *s, const char *what)
 
 /* A header's value from the request's head (req to end) into out, spaces trimmed; NULL if it isn't there, "" if it
  * doesn't fit. */
-static const char *header(const char *req, const char *end, const char *name, char *out, size_t cap)
+static const char *header(const char *req, const char *end, const char *name, char *out, size_t cap, bool *cut)
 {
     const size_t n = strlen(name);
     for (const char *s = strstr(req, "\r\n"); s && s < end; s = strstr(s + 2, "\r\n")) {
@@ -1126,6 +1129,8 @@ static const char *header(const char *req, const char *end, const char *name, ch
         if (k < cap) {
             memcpy(out, v, k);
             out[k] = 0;
+        } else if (cut) {
+            *cut = true;
         }
         return out;
     }
@@ -1260,9 +1265,16 @@ static void serve(int fd)
     const bool head = !strcmp(method, "HEAD");
     const bool get = !strcmp(method, "GET") || head;
     char origin[256], host[256], fwd[256];
-    if (!rdof_webapi_origin_ok(method, header(req, end, "Origin", origin, sizeof origin),
-                               header(req, end, "Host", host, sizeof host),
-                               header(req, end, "X-Forwarded-Host", fwd, sizeof fwd))) {
+    bool cut = false;
+    const char *h = header(req, end, "Host", host, sizeof host, &cut);
+    if (cut || !rdof_webapi_host_ok(h, W.hosts)) {
+        drop_body(fd, (long)body_have, body_len);
+        respond_str(fd, 403, "text/plain",
+                    "this name isn't this server's own: use its address, a local name, or add the name to web_hosts\n");
+        return;
+    }
+    if (!rdof_webapi_origin_ok(method, header(req, end, "Origin", origin, sizeof origin, NULL), h,
+                               header(req, end, "X-Forwarded-Host", fwd, sizeof fwd, NULL))) {
         drop_body(fd, (long)body_have, body_len);
         respond_str(fd, 403, "text/plain", "a page of another origin can't send this here\n");
         return;

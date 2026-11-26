@@ -499,6 +499,7 @@ Board keys besides the sections:
 |---|---|
 | `oled {sda, scl, ...}` | the screen |
 | `usb_hub` | `true` when the USB port has a hub |
+| `web_hosts` | more names the web page answers to, comma or space separated (`"gw.example.org"`); it always answers by address and local names (`.local`, `.lan`, one label) |
 | `wifi` | `{"networks": [{"ssid", "priority", "hidden", "password", "was"}]}`: wifilist's list |
 | `ntp` | `{"servers": "pool.ntp.org", "poll_s": 300}`: netclock's |
 | on the SDR device | `usb {transfers, transfer_kb}`, `dsp_cores`, `selftest`, `spike`, `sim`, `sim_ppm`, `idle_gate`, `learn_ppm` ([SDR settings](#sdr-settings)) |

@@ -110,7 +110,8 @@ networks and policies. Every unit it makes runs: a repeater app, an SFR or DCDM 
 on simplex frequencies, an SDR that hears; two units that transmit and one SDR at most. On a modem: type, port
 {uart, tx, rx} or {usb, serial, usb_port} (to tell two on a hub apart), hears and transmits. On the SDR: driver, rx
 {rate, gain_db}, usb {transfers, transfer_kb}, dsp_cores (1 or 2); an RTL-SDR's rate is 288000 or 240000 on a board. At the top:
-oled {sda, scl}. A modem on USB and an SDR both run: whichever is plugged in runs, unless "usb_hub": true. Comments
+oled {sda, scl}; web_hosts, more names this page answers to besides its address and local names ("gw.example.org").
+A modem on USB and an SDR both run: whichever is plugged in runs, unless "usb_hub": true. Comments
 are fine. It's checked before it's saved. The Wi-Fi networks and the NTP servers show as wifi {networks} and ntp
 {servers, poll_s}: passwords never leave the board, so a network without a "password" keeps the one it has (add
 "password" to set one).</p>

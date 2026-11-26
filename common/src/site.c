@@ -105,7 +105,7 @@ void rdof_site_ctx_close(rdof_site_ctx_t *c) { close_doc(c); }
 #define POLICY_KEYS "tg", "ptt", "ptt_hold_s", "pc", "apps", "net", "dir"
 static const char *const TOP_KEYS[] = {"version", "name", "id", "callsign", "location", "defaults", "devices",
                                        "frequencies", "apps", "networks", "policies", "pc_hold_s", "wifi", "ntp",
-                                       "oled", "slot_timing", "usb_hub", "selftest_load", "bench", "rules", NULL};
+                                       "oled", "slot_timing", "usb_hub", "selftest_load", "bench", "rules", "web_hosts", NULL};
 /* A frequency's own; the SFR / DCDM keys go with mode sfr or dcdm (inbound_slot with sfr; duplex and active_slots
    with dcdm). */
 #define FREQ_RADIO_KEYS                                                                                                \
