@@ -14,6 +14,7 @@ Related: [bench-api.md](../bench-api.md) (`/api/bench/v1`), [mqtt.md](mqtt.md), 
 | `max_open_sockets` | 8, `lru_purge_enable` | `web.c:web_start` |
 | Task | stack 8192, core 0 | `web.c:web_start` |
 | Auth | none, on any endpoint. The board sits on a private network. | |
+| Origin | a request with a method other than GET, HEAD or OPTIONS that carries an `Origin` header gets 403 `a page of another origin can't send this here` unless the Origin's host[:port] is the `Host` header's (or one of `X-Forwarded-Host`'s, for a reverse proxy). Hosts compare without case; a missing port is the scheme's. `Origin: null` is refused. Requests without an Origin (curl, the tools) and the board's own page are unchanged. Every handler on the server has it, the components' and the bench API's too (`httpd_register_uri_handler` is wrapped); a WebSocket handshake is a GET. The host tools' server does the same | `web.c:origin_gate`, `webapi.c:rdof_webapi_origin_ok` |
 | TLS | none | |
 | Errors | `httpd_resp_send_err`: status + `text/plain` body (the text in the tables below) | `web.c` |
 | Out of memory | 500 `no memory` on any handler that allocates | `web.c` |

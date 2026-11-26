@@ -45,6 +45,9 @@ build/rel/rdofradio ... --web 8080          # http://127.0.0.1:8080/
   `--ota FILE` and the Pluto bundle's `run.sh`). Without it, 501.
 - Every other `/api/` path, and every other POST / DELETE, answers 501 with `{"error":"not on this platform", ...}`:
   core dump, Wi-Fi, the firmware's clock, tasks.
+- A request with a method other than GET, HEAD or OPTIONS that carries an `Origin` header answers 403 unless the
+  Origin's host[:port] is the `Host` header's or one of `X-Forwarded-Host`'s (`rdof_webapi_origin_ok`), as on the
+  board.
 
 ### The status
 

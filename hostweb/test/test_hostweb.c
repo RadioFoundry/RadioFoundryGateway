@@ -366,6 +366,21 @@ int main(int argc, char **argv)
     CHECK(strstr(b, "200 OK") && strstr(b, "restarting") && restarts == 2);
     http(port, "GET /api/log HTTP/1.1\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "restart 2 asked for"));
+    /* a POST from a page: refused from another origin, taken from the tool's own (Host, or a proxy's host) */
+    http(port, "POST /api/restart HTTP/1.1\r\nHost: 127.0.0.1:8073\r\nOrigin: http://example.com\r\n"
+               "Content-Type: text/plain\r\nContent-Length: 2\r\n\r\nhi", b, sizeof b);
+    CHECK(strstr(b, "403") && restarts == 2);
+    http(port, "POST /api/restart HTTP/1.1\r\nHost: 127.0.0.1:8073\r\nOrigin: null\r\nContent-Length: 0\r\n\r\n", b,
+         sizeof b);
+    CHECK(strstr(b, "403") && restarts == 2);
+    http(port, "POST /api/restart HTTP/1.1\r\nhost: 127.0.0.1:8073\r\norigin: http://127.0.0.1:8073\r\n"
+               "Content-Length: 0\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "200 OK") && restarts == 3);
+    http(port, "POST /api/restart HTTP/1.1\r\nHost: 127.0.0.1:8073\r\nX-Forwarded-Host: radio.example.org\r\n"
+               "Origin: https://radio.example.org\r\nContent-Length: 0\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "200 OK") && restarts == 4);
+    http(port, "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:8073\r\nOrigin: http://example.com\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "200 OK"));
     /* read only: shown, never written */
     settings(false);
     http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
@@ -373,7 +388,7 @@ int main(int argc, char **argv)
     http(port, "GET /api/config HTTP/1.1\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "200 OK") && strstr(b, "\"two\""));
     post(port, "/api/config", "{\"name\": \"three\"}", b, sizeof b);
-    CHECK(strstr(b, "403") && strstr(b, "read only") && restarts == 2);
+    CHECK(strstr(b, "403") && strstr(b, "read only") && restarts == 4);
     t = read_all(cfg_path);
     CHECK(t && strstr(t, "\"two\""));
     free(t);

@@ -1527,6 +1527,8 @@ a host tool ([hostweb/README.md](../hostweb/README.md)). Build with `-DRDOF_HOST
 - The API is the firmware's code (`rdof/webapi.h`): `/api/status`, `/api/lastheard`, `/api/log`, with the hooks
   `/api/config`, `/api/resolved`, `/api/restart` and `/api/ota`; `501 not on this platform` for the rest.
 - The status's `caps` say what the server has, and the page hides the rest.
+- A POST (or any method but GET, HEAD and OPTIONS) whose `Origin` isn't the server's own host answers 403, as on
+  the board; requests without an `Origin` are unchanged.
 
 ## PlutoSDR
 

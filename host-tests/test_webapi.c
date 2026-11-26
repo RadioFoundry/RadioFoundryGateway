@@ -418,8 +418,38 @@ static void t_clock(void)
     rdof_webapi_done(&p, &R);
 }
 
+/* ── which pages may send a POST: the Origin header against Host ── */
+
+static void t_origin(void)
+{
+    CHECK(rdof_webapi_origin_ok("POST", NULL, "w12.lan", NULL));                         /* curl, the tools */
+    CHECK(rdof_webapi_origin_ok("POST", "http://w12.lan", "w12.lan", NULL));             /* the board's page */
+    CHECK(rdof_webapi_origin_ok("POST", "http://W12.Lan", "w12.LAN", NULL));             /* case */
+    CHECK(rdof_webapi_origin_ok("POST", "http://192.168.1.7:80", "192.168.1.7", NULL));  /* the scheme's port */
+    CHECK(rdof_webapi_origin_ok("POST", "http://localhost:8080", "localhost:8080", NULL));
+    CHECK(rdof_webapi_origin_ok("DELETE", "http://[fe80::1]:8080", "[FE80::1]:8080", NULL));
+    CHECK(!rdof_webapi_origin_ok("POST", "http://example.com", "w12.lan", NULL));        /* another host */
+    CHECK(!rdof_webapi_origin_ok("POST", "http://w12.lan.example.com", "w12.lan", NULL));
+    CHECK(!rdof_webapi_origin_ok("POST", "http://localhost:8081", "localhost:8080", NULL)); /* another port */
+    CHECK(!rdof_webapi_origin_ok("POST", "https://w12.lan", "w12.lan:80", NULL));        /* 443 against 80 */
+    CHECK(!rdof_webapi_origin_ok("POST", "null", "w12.lan", NULL));
+    CHECK(!rdof_webapi_origin_ok("POST", "", "w12.lan", NULL));
+    CHECK(!rdof_webapi_origin_ok("POST", "http://w12.lan", NULL, NULL));                 /* no Host */
+    CHECK(!rdof_webapi_origin_ok("PUT", "http://w12.lan:x", "w12.lan", NULL));
+    /* behind a proxy that sets Host to the board's address */
+    CHECK(rdof_webapi_origin_ok("POST", "https://radio.example.org", "127.0.0.1:8073", "radio.example.org"));
+    CHECK(rdof_webapi_origin_ok("POST", "https://radio.example.org", "127.0.0.1:8073",
+                                "a.example, Radio.Example.org"));
+    CHECK(!rdof_webapi_origin_ok("POST", "https://other.example.org", "127.0.0.1:8073", "radio.example.org"));
+    /* reading is always open */
+    CHECK(rdof_webapi_origin_ok("GET", "http://example.com", "w12.lan", NULL));
+    CHECK(rdof_webapi_origin_ok("HEAD", "null", "w12.lan", NULL));
+    CHECK(rdof_webapi_origin_ok("OPTIONS", "http://example.com", "w12.lan", NULL));
+}
+
 int main(void)
 {
+    t_origin();
     t_status_board();
     t_clock();
     t_status_host();

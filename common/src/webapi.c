@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 const rdof_webapi_route_t rdof_webapi_routes[] = {
     {"GET", "/api/status"},   {"GET", "/api/config"},    {"POST", "/api/config"}, {"GET", "/api/resolved"},
@@ -138,6 +139,84 @@ bool rdof_webapi_query(const char *query, const char *key, char *out, size_t cap
             return true;
         }
         s = amp ? amp + 1 : end;
+    }
+    return false;
+}
+
+/* s (n bytes) as host and port: a [v6] literal or a name, then :port or def. False if it isn't one. */
+static bool host_port(const char *s, size_t n, unsigned def, const char **host, size_t *hn, unsigned *port)
+{
+    while (n && (*s == ' ' || *s == '\t'))
+        s++, n--;
+    while (n && (s[n - 1] == ' ' || s[n - 1] == '\t'))
+        n--;
+    size_t h = n;
+    if (n && *s == '[') {
+        const char *close = memchr(s, ']', n);
+        if (!close)
+            return false;
+        h = (size_t)(close - s) + 1;
+    } else {
+        for (size_t i = 0; i < n; i++)
+            if (s[i] == ':')
+                h = i;
+    }
+    if (!h)
+        return false;
+    *host = s, *hn = h, *port = def;
+    if (h == n)
+        return true;
+    if (s[h] != ':' || h + 1 == n || n - h > 6)
+        return false;
+    unsigned p = 0;
+    for (size_t i = h + 1; i < n; i++) {
+        if (s[i] < '0' || s[i] > '9')
+            return false;
+        p = p * 10 + (unsigned)(s[i] - '0');
+    }
+    *port = p;
+    return true;
+}
+
+static bool same_host(const char *a, size_t an, const char *b, size_t bn, unsigned def)
+{
+    const char *ah, *bh;
+    size_t ahn, bhn;
+    unsigned ap, bp;
+    if (!host_port(a, an, def, &ah, &ahn, &ap) || !host_port(b, bn, def, &bh, &bhn, &bp) || ahn != bhn || ap != bp)
+        return false;
+    for (size_t i = 0; i < ahn; i++) {
+        char x = ah[i], y = bh[i];
+        if (x >= 'A' && x <= 'Z')
+            x = (char)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z')
+            y = (char)(y - 'A' + 'a');
+        if (x != y)
+            return false;
+    }
+    return true;
+}
+
+bool rdof_webapi_origin_ok(const char *method, const char *origin, const char *host, const char *fwd_host)
+{
+    if (!method || !strcmp(method, "GET") || !strcmp(method, "HEAD") || !strcmp(method, "OPTIONS") || !origin)
+        return true;
+    const char *sep = strstr(origin, "://");
+    if (!sep)
+        return false; /* "null" among them */
+    const size_t sn = (size_t)(sep - origin);
+    const unsigned def = sn == 4 && !strncasecmp(origin, "http", 4)    ? 80
+                         : sn == 5 && !strncasecmp(origin, "https", 5) ? 443
+                                                                       : 0;
+    const char *a = sep + 3;
+    const size_t an = strcspn(a, "/");
+    if (host && same_host(a, an, host, strlen(host), def))
+        return true;
+    for (const char *f = fwd_host; f && *f;) {
+        const size_t fn = strcspn(f, ",");
+        if (same_host(a, an, f, fn, def))
+            return true;
+        f += fn + (f[fn] == ',');
     }
     return false;
 }

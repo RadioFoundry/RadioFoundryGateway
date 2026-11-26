@@ -1087,11 +1087,69 @@ static esp_err_t post_ota(httpd_req_t *req)
 }
 #endif
 
+/* ── a page of another origin: every handler behind the Origin check ──────── */
+
+/* Every httpd_register_uri_handler call in the program, the components' too, comes here (CMakeLists.txt wraps it):
+ * the handler is registered behind origin_gate, which answers 403 to a request that rdof_webapi_origin_ok refuses
+ * (a method other than GET, HEAD or OPTIONS with an Origin that isn't the board's own) and hands the rest to the
+ * handler with its own user_ctx. A WebSocket handler is registered as it is: its handshake is a GET. */
+#define WEB_HANDLERS 64 /* httpd_config_t.max_uri_handlers */
+
+esp_err_t __real_httpd_register_uri_handler(httpd_handle_t handle, const httpd_uri_t *uri);
+
+typedef struct {
+    esp_err_t (*handler)(httpd_req_t *r);
+    void *user_ctx;
+} gated_t;
+
+EXT_RAM_BSS_ATTR static gated_t gated[WEB_HANDLERS];
+static int ngated;
+
+/* A header's value into out, or NULL if the request has none ("" if it doesn't fit). */
+static const char *req_header(httpd_req_t *req, const char *name, char *out, size_t cap)
+{
+    if (!httpd_req_get_hdr_value_len(req, name))
+        return NULL;
+    if (httpd_req_get_hdr_value_str(req, name, out, cap) != ESP_OK)
+        out[0] = 0;
+    return out;
+}
+
+static esp_err_t origin_gate(httpd_req_t *req)
+{
+    const gated_t *g = req->user_ctx;
+    req->user_ctx = g->user_ctx;
+    char origin[128], host[128], fwd[128];
+    if (!rdof_webapi_origin_ok(http_method_str((enum http_method)req->method),
+                               req_header(req, "Origin", origin, sizeof origin),
+                               req_header(req, "Host", host, sizeof host),
+                               req_header(req, "X-Forwarded-Host", fwd, sizeof fwd)))
+        return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "a page of another origin can't send this here");
+    return g->handler(req);
+}
+
+esp_err_t __wrap_httpd_register_uri_handler(httpd_handle_t handle, const httpd_uri_t *uri)
+{
+    if (!uri || !uri->handler || uri->is_websocket)
+        return __real_httpd_register_uri_handler(handle, uri);
+    if (ngated >= WEB_HANDLERS)
+        return ESP_ERR_HTTPD_HANDLERS_FULL;
+    gated_t *g = &gated[ngated];
+    *g = (gated_t){uri->handler, uri->user_ctx};
+    httpd_uri_t u = *uri;
+    u.handler = origin_gate;
+    u.user_ctx = g;
+    const esp_err_t e = __real_httpd_register_uri_handler(handle, &u);
+    if (e == ESP_OK)
+        ngated++;
+    return e;
+}
+
 void web_start(void)
 {
     httpd_handle_t server;
     httpd_config_t c = HTTPD_DEFAULT_CONFIG();
-    c.max_uri_handlers = 64;
+    c.max_uri_handlers = WEB_HANDLERS;
 #if CONFIG_RDOF_BENCH
     c.uri_match_fn = bench_uri_match; /* wildcards, and the bench API's /radios/{name}/link */
 #else

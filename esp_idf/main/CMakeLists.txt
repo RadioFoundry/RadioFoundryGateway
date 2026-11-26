@@ -40,6 +40,8 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE
     "-Wl,--wrap=esp_flash_write" "-Wl,--wrap=esp_flash_erase_region")
 # task_ext.c puts esp-mqtt's task stacks in PSRAM: the two calls that make and end a task, wrapped.
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=xTaskCreatePinnedToCore" "-Wl,--wrap=vTaskDelete")
+# web.c puts every web handler behind its Origin check: the call that registers one, wrapped.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=httpd_register_uri_handler")
 
 if(CONFIG_RDOF_SDR AND CONFIG_RDOF_SDR_FAST)
     set_source_files_properties(${sdr_dsp} PROPERTIES COMPILE_OPTIONS -O2)
