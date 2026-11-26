@@ -27,6 +27,7 @@
  * and the components' own: /api/clock, /api/time, /api/clock/settings and /netclock.js (netclock_http.h),
  * /api/wifi, /api/wifi/networks, /api/wifi/scan and /wifilist.js (wifilist_http.h).
  */
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -550,6 +551,19 @@ static esp_err_t get_lr2021_capture(httpd_req_t *req)
     return e;
 }
 
+/* Text added to a reply of cap bytes at *o; what doesn't fit is cut, and *o stays below cap. */
+static void put(char *j, size_t cap, size_t *o, const char *fmt, ...)
+{
+    if (*o + 1 >= cap)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    const int k = vsnprintf(j + *o, cap - *o, fmt, ap);
+    va_end(ap);
+    if (k > 0)
+        *o = *o + (size_t)k < cap ? *o + (size_t)k : cap - 1;
+}
+
 /* A request's body into PSRAM (at most cap bytes, NUL after it): NULL if it's empty, too big or didn't come. */
 static uint8_t *recv_body(httpd_req_t *req, size_t cap)
 {
@@ -602,13 +616,15 @@ static esp_err_t post_lr2021_seq(httpd_req_t *req)
     int ran = fe_lr2021_seq(fp, len, n, us, stat);
     if (ran < 0)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "not held");
-    char *j = heap_caps_malloc(64 + 48 * (size_t)n, MALLOC_CAP_SPIRAM);
+    const size_t cap = 192 + 64 * (size_t)n; /* the error text, then each frame's */
+    char *j = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
     if (!j)
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
-    int o = sprintf(j, "{\"ran\":%d,\"of\":%d,\"error\":\"%s\",\"frames\":[", ran, n, ran < n ? fe_lr2021_error() : "");
+    size_t o = 0;
+    put(j, cap, &o, "{\"ran\":%d,\"of\":%d,\"error\":\"%s\",\"frames\":[", ran, n, ran < n ? fe_lr2021_error() : "");
     for (int i = 0; i < n && i <= ran && i < n; i++)
-        o += sprintf(j + o, "%s{\"us\":%lld,\"cmd\":%u,\"mode\":%u}", i ? "," : "", (long long)us[i], stat[i][0], stat[i][1]);
-    sprintf(j + o, "]}\n");
+        put(j, cap, &o, "%s{\"us\":%lld,\"cmd\":%u,\"mode\":%u}", i ? "," : "", (long long)us[i], stat[i][0], stat[i][1]);
+    put(j, cap, &o, "]}\n");
     httpd_resp_set_type(req, "application/json");
     esp_err_t e = httpd_resp_sendstr(req, j);
     free(j);
@@ -663,7 +679,8 @@ static esp_err_t post_lr2021_tx(httpd_req_t *req)
     if (!b)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body: 1 byte to 256 KB for the TX FIFO");
     fe_lr2021_tx_result_t *r = heap_caps_malloc(sizeof *r, MALLOC_CAP_SPIRAM);
-    char *j = heap_caps_malloc(2048 + 48 * FE_LR2021_TX_TRACE, MALLOC_CAP_SPIRAM);
+    const size_t cap = 2048 + 48 * FE_LR2021_TX_TRACE;
+    char *j = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
     if (!r || !j) {
         free(b);
         free(r);
@@ -672,24 +689,25 @@ static esp_err_t post_lr2021_tx(httpd_req_t *req)
     }
     int rc = fe_lr2021_tx(b, req->content_len, &o, r);
     free(b);
-    int k = sprintf(j,
-                    "{\"ok\":%s,\"error\":\"%s\",\"settx_us\":%lld,\"done_us\":%lld,\"left_tx_us\":%lld,\"all_in_us\":%lld,"
-                    "\"end_us\":%lld,\"sent\":%u,\"refills\":%u,\"timed_out\":%s,\"rx_flags\":%u,\"tx_flags\":%u,"
-                    "\"irq\":%lu,\"mode\":%u,\"start_cmd\":%u,\"runs\":%d,\"trace\":[",
-                    rc ? "false" : "true", rc ? fe_lr2021_error() : "", (long long)r->settx_us, (long long)r->done_us,
-                    (long long)r->left_tx_us, (long long)r->all_in_us, (long long)r->end_us, (unsigned)r->sent,
-                    r->refills, r->timed_out ? "true" : "false", r->rx_flags, r->tx_flags, (unsigned long)r->irq,
-                    r->mode, r->start_cmd, r->runs);
+    size_t k = 0;
+    put(j, cap, &k,
+        "{\"ok\":%s,\"error\":\"%s\",\"settx_us\":%lld,\"done_us\":%lld,\"left_tx_us\":%lld,\"all_in_us\":%lld,"
+        "\"end_us\":%lld,\"sent\":%u,\"refills\":%u,\"timed_out\":%s,\"rx_flags\":%u,\"tx_flags\":%u,"
+        "\"irq\":%lu,\"mode\":%u,\"start_cmd\":%u,\"runs\":%d,\"trace\":[",
+        rc ? "false" : "true", rc ? fe_lr2021_error() : "", (long long)r->settx_us, (long long)r->done_us,
+        (long long)r->left_tx_us, (long long)r->all_in_us, (long long)r->end_us, (unsigned)r->sent,
+        r->refills, r->timed_out ? "true" : "false", r->rx_flags, r->tx_flags, (unsigned long)r->irq,
+        r->mode, r->start_cmd, r->runs);
     for (int i = 0; i < r->n_trace; i++)
-        k += sprintf(j + k, "%s[%lu,%u,%u,%lu]", i ? "," : "", (unsigned long)r->trace[i].us, r->trace[i].level,
-                     r->trace[i].mode, (unsigned long)r->trace[i].irq);
-    k += sprintf(j + k, "],\"run_us\":[");
+        put(j, cap, &k, "%s[%lu,%u,%u,%lu]", i ? "," : "", (unsigned long)r->trace[i].us, r->trace[i].level,
+            r->trace[i].mode, (unsigned long)r->trace[i].irq);
+    put(j, cap, &k, "],\"run_us\":[");
     for (int i = 0; i < r->runs; i++)
-        k += sprintf(j + k, "%s[%lld,%lld]", i ? "," : "", (long long)r->run_start_us[i], (long long)r->run_done_us[i]);
-    k += sprintf(j + k, "],\"at\":[");
+        put(j, cap, &k, "%s[%lld,%lld]", i ? "," : "", (long long)r->run_start_us[i], (long long)r->run_done_us[i]);
+    put(j, cap, &k, "],\"at\":[");
     for (int i = 0; i < o.n_at; i++)
-        k += sprintf(j + k, "%s[%lld,%u,%u]", i ? "," : "", (long long)r->at_us[i], r->at_status[i][0], r->at_status[i][1]);
-    sprintf(j + k, "]}\n");
+        put(j, cap, &k, "%s[%lld,%u,%u]", i ? "," : "", (long long)r->at_us[i], r->at_status[i][0], r->at_status[i][1]);
+    put(j, cap, &k, "]}\n");
     free(r);
     httpd_resp_set_type(req, "application/json");
     esp_err_t e = httpd_resp_sendstr(req, j);
@@ -738,19 +756,21 @@ static esp_err_t post_lr2021_packet(httpd_req_t *req)
     esp_err_t e = ESP_OK;
     size_t got = 0;
     int rc = fe_lr2021_packet(tx, b, n, &got, &c, &r, &e);
-    char *j = heap_caps_malloc(256 + 2 * got, MALLOC_CAP_SPIRAM);
+    const size_t cap = 320 + 2 * got; /* the error text, the numbers, the packet in hex */
+    char *j = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
     if (!j) {
         free(b);
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
     }
-    int k = sprintf(j, "{\"ok\":%s,\"error\":\"%s\",\"irq\":%lu,\"len\":%u,\"done_us\":%lld,\"timed_out\":%s,"
-                       "\"crc_error\":%s,\"data\":\"",
-                    rc == 0 && e == ESP_OK ? "true" : "false", rc || e != ESP_OK ? fe_lr2021_error() : "",
-                    (unsigned long)r.irq, (unsigned)r.len, (long long)r.done_us, r.timed_out ? "true" : "false",
-                    r.crc_error ? "true" : "false");
+    size_t k = 0;
+    put(j, cap, &k, "{\"ok\":%s,\"error\":\"%s\",\"irq\":%lu,\"len\":%u,\"done_us\":%lld,\"timed_out\":%s,"
+                    "\"crc_error\":%s,\"data\":\"",
+        rc == 0 && e == ESP_OK ? "true" : "false", rc || e != ESP_OK ? fe_lr2021_error() : "",
+        (unsigned long)r.irq, (unsigned)r.len, (long long)r.done_us, r.timed_out ? "true" : "false",
+        r.crc_error ? "true" : "false");
     for (size_t i = 0; !tx && i < got; i++)
-        k += sprintf(j + k, "%02x", b[i]);
-    sprintf(j + k, "\"}\n");
+        put(j, cap, &k, "%02x", b[i]);
+    put(j, cap, &k, "\"}\n");
     free(b);
     httpd_resp_set_type(req, "application/json");
     esp_err_t se = httpd_resp_sendstr(req, j);
