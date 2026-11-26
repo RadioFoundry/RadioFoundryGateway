@@ -397,7 +397,7 @@ static esp_err_t get_lr2021_mem(httpd_req_t *req)
         if (httpd_query_key_value(q, "len", v, sizeof v) == ESP_OK)
             len = (uint32_t)strtoul(v, NULL, 0);
     }
-    if (len == 0 || len % 4 || len > 256 * 1024 || addr % 4 || addr + len > 0x1000000)
+    if (len == 0 || len % 4 || len > 256 * 1024 || addr % 4 || addr > 0x1000000 - len)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "addr and len: multiples of 4, len 4 to 256 KB, under 16 MB");
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
