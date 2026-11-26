@@ -18,7 +18,7 @@ jobs:
         os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Device libraries (rdofradio is built only with one), MQTT and a broker for its end-to-end test
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libiio-dev libad9361-dev libmosquitto-dev mosquitto
@@ -38,7 +38,7 @@ jobs:
           - profile: w12
             defaults: sdkconfig.defaults;sdkconfig.defaults.16mb;sdkconfig.defaults.w12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust for Xtensa (the firmware builds rust/)
         shell: bash
         env:
@@ -61,7 +61,7 @@ jobs:
   system-tests:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: RadioFoundry at systest/radiofoundry.ref
         run: |
           git clone --filter=blob:none https://github.com/RadioFoundry/RadioFoundry ../RadioFoundry
