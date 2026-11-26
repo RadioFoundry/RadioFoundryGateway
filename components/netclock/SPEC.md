@@ -56,7 +56,7 @@ HTTP and the status JSON are in [README.md](README.md).
 | `src/netclock.c:ntp_task` (inline) | 4 misses; 100 ms `SO_RCVTIMEO`; 68 B receive buffer | re-resolve after 4 unanswered polls |
 | `src/netclock_posix.c:OS_STEP_MS` | 100 ms | `set_os_clock`: step the OS clock when it's this far off the model |
 | `src/netclock_posix.c:POLL_S`, `POLL_FAST_S` | 300 s, 120 s | as `CONFIG_NETCLOCK_POLL_S`, `_FAST_S` |
-| `src/netclock_http.c:post_time` (inline) | 1.6e12 ms | lower bound on a browser's `utc_ms` |
+| `src/netclock_http.c:post_time` (inline) | 1.6e12 ms, 4.1e12 ms | lower and upper bounds on a browser's `utc_ms` (2020 to 2100) |
 
 ## NTP
 

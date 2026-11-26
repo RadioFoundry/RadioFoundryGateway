@@ -80,7 +80,7 @@ static esp_err_t post_time(httpd_req_t *req)
     cJSON *j = cJSON_Parse(body);
     const cJSON *ms = cJSON_GetObjectItemCaseSensitive(j, "utc_ms");
     bool applied = false;
-    if (cJSON_IsNumber(ms) && ms->valuedouble > 1.6e12) {  // sanity: after 2020
+    if (cJSON_IsNumber(ms) && ms->valuedouble > 1.6e12 && ms->valuedouble < 4.1e12) {  // between 2020 and 2100
         applied = netclock_set_from_client((int64_t)(ms->valuedouble * 1000.0));
     }
     cJSON_Delete(j);

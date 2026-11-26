@@ -50,7 +50,7 @@ The setup access point is `radiofoundry-<suffix>` (format `"radiofoundry-%s"`), 
 | POST | `/api/ota` | `CONFIG_RDOF_OTA` (default y) | body: the app image (`.bin`), any length | 200 `updated; restarting` | writes the next OTA partition, sets it to boot, restart after 1 s |
 | any | `/api/bench/v1/*` | `CONFIG_RDOF_BENCH` | see [bench-api.md](../bench-api.md) | | |
 | GET | `/api/clock` | always (netclock) | none | JSON (§8.1) | none |
-| POST | `/api/time` | always (netclock) | `{"utc_ms": n}` | `{"applied": bool, "source": "<clock source>"}`; 400 if the body is too long | sets the clock from the browser when `n > 1.6e12` and no better source holds it |
+| POST | `/api/time` | always (netclock) | `{"utc_ms": n}` | `{"applied": bool, "source": "<clock source>"}`; 400 if the body is too long | sets the clock from the browser when `1.6e12 < n < 4.1e12` (2020 to 2100) and no better source holds it |
 | GET | `/api/clock/settings` | always (netclock) | none | `{"servers": [...], "poll_s": n}` | none |
 | POST | `/api/clock/settings` | always (netclock) | the same object, or a string | the settings; 400 + error text | stores them (netclock's NVS namespace); takes effect at once |
 | GET | `/netclock.js` | always (netclock) | none | gzipped JS, `no-cache` | none |

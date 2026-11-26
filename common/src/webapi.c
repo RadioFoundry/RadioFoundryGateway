@@ -377,7 +377,8 @@ bool rdof_webapi_handle(const rdof_webapi_platform_t *p, const char *method, con
         rdof_webapi_clock_t now = {0};
         if (p->clock && p->clock(p->ctx, &now) && now.source)
             source = now.source;
-        const bool applied = ms > 1.6e12 && p->clock_set(p->ctx, (int64_t)(ms * 1000.0), &source); /* after 2020 */
+        const double from = 1.6e12, to = 4.1e12; /* between 2020 and 2100 (NaN is neither) */
+        const bool applied = ms > from && ms < to && p->clock_set(p->ctx, (int64_t)(ms * 1000.0), &source);
         if (!source)
             source = "none";
         const size_t cap = 48 + strlen(source);

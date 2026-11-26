@@ -408,6 +408,15 @@ static void t_clock(void)
     CHECK(req(&p, "POST", "/api/time", NULL, "{\"utc_ms\": 5}") && !strcmp(R.body, "{\"applied\":false,\"source\":\"ntp\"}") &&
           !clock_us); /* before 2020: not a clock */
     rdof_webapi_done(&p, &R);
+    const char *late[] = {"{\"utc_ms\": 4.2e12}", "{\"utc_ms\": 1e300}", "{\"utc_ms\": 1e19}", "{\"utc_ms\": inf}",
+                          "{\"utc_ms\": nan}"};
+    for (int i = 0; i < 5; i++) { /* after 2100, or no number: not a clock */
+        CHECK(req(&p, "POST", "/api/time", NULL, late[i]) && strstr(R.body, "\"applied\":false") && !clock_us);
+        rdof_webapi_done(&p, &R);
+    }
+    CHECK(req(&p, "POST", "/api/time", NULL, "{\"utc_ms\": 4.0e12}") && strstr(R.body, "\"applied\":true") &&
+          clock_us == 4000000000000000LL); /* 2096 */
+    rdof_webapi_done(&p, &R);
     CHECK(req(&p, "GET", "/api/clock/settings", NULL, NULL) && strstr(R.body, "pool.ntp.org"));
     rdof_webapi_done(&p, &R);
     CHECK(req(&p, "POST", "/api/clock/settings", NULL, "{}") && R.status == 403);

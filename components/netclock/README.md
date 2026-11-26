@@ -207,7 +207,7 @@ Paths under `CONFIG_NETCLOCK_HTTP_BASE` (`/api`). JSON responses: `Content-Type:
 | Method, path | Request | Response | Errors |
 |---|---|---|---|
 | `GET /api/clock` | — | status JSON (below), ≤ 12288 B | 500 `no memory`, 500 `too big` |
-| `POST /api/time` | `{"utc_ms": <number>}`, body < 96 B | `{"applied":bool,"source":"<name>"}` | 400 (body too long / read error). `utc_ms` missing, not a number or ≤ 1.6e12 (before 2020-09-13): 200 with `applied:false` |
+| `POST /api/time` | `{"utc_ms": <number>}`, body < 96 B | `{"applied":bool,"source":"<name>"}` | 400 (body too long / read error). `utc_ms` missing, not a number, ≤ 1.6e12 (before 2020-09-13) or ≥ 4.1e12 (after 2099-12): 200 with `applied:false` |
 | `GET /api/clock/settings` | — | settings JSON | — |
 | `POST /api/clock/settings` | settings JSON (object or string), body < 256 B | settings JSON after applying | 400 `too long`; 400 with the validation message as plain text |
 | `GET /netclock.js` | — | the page section, `Content-Encoding: gzip`, `text/javascript`, `Cache-Control: no-cache` | — |
