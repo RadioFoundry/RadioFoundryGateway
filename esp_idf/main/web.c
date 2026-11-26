@@ -241,28 +241,41 @@ static bool fw_settings_save(void *ctx, char *text, size_t len, char *error, siz
     return settings_save(text, len, error, cap);
 }
 
+/* Text added to a reply of cap bytes at *o; what doesn't fit is cut, and *o stays below cap. */
+static void put(char *j, size_t cap, size_t *o, const char *fmt, ...)
+{
+    if (*o + 1 >= cap)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    const int k = vsnprintf(j + *o, cap - *o, fmt, ap);
+    va_end(ap);
+    if (k > 0)
+        *o = *o + (size_t)k < cap ? *o + (size_t)k : cap - 1;
+}
+
 static size_t fw_resolved(void *ctx, char *buf, size_t cap)
 {
-    size_t n = (size_t)snprintf(buf, cap, "%s runs: ", g_roles.box);
+    size_t n = 0;
+    put(buf, cap, &n, "%s runs: ", g_roles.box);
     for (int k = 0; k < g_roles.nradios; k++)
-        n += (size_t)snprintf(buf + n, cap - n, "%s%s", k ? ", " : "", g_roles.radios[k]);
-    n += (size_t)snprintf(buf + n, cap - n, "%s%s%s\n", g_roles.nradios && g_roles.has_sdr ? ", " : "",
-                          g_roles.has_sdr ? g_roles.sdr : "",
-                          g_board.usb_either ? " (both on USB: whichever is plugged in)" : "");
+        put(buf, cap, &n, "%s%s", k ? ", " : "", g_roles.radios[k]);
+    put(buf, cap, &n, "%s%s%s\n", g_roles.nradios && g_roles.has_sdr ? ", " : "", g_roles.has_sdr ? g_roles.sdr : "",
+        g_board.usb_either ? " (both on USB: whichever is plugged in)" : "");
 #if CONFIG_RDOF_ROAMER
     if (g_roles.has_radio && n < cap - 2) {
-        n += (size_t)snprintf(buf + n, cap - n, "\n%s:\n", g_roles.radio);
+        put(buf, cap, &n, "\n%s:\n", g_roles.radio);
         n += roamer_resolved(buf + n, cap - n);
     }
 #endif
 #if CONFIG_RDOF_SDR
     if (g_roles.has_sdr && n < cap - 2) {
-        n += (size_t)snprintf(buf + n, cap - n, "\n%s:\n", g_roles.sdr);
+        put(buf, cap, &n, "\n%s:\n", g_roles.sdr);
         n += sdr_resolved(buf + n, cap - n);
     }
 #endif
     if (site_on() && n < cap - 64) {
-        n += (size_t)snprintf(buf + n, cap - n, "\nthe site, as it runs (paths, policies, talkgroups):\n");
+        put(buf, cap, &n, "\nthe site, as it runs (paths, policies, talkgroups):\n");
         n += site_resolved(buf + n, cap - n);
     }
     return n;
@@ -549,19 +562,6 @@ static esp_err_t get_lr2021_capture(httpd_req_t *req)
     esp_err_t e = httpd_resp_send(req, (const char *)buf, got);
     free(buf);
     return e;
-}
-
-/* Text added to a reply of cap bytes at *o; what doesn't fit is cut, and *o stays below cap. */
-static void put(char *j, size_t cap, size_t *o, const char *fmt, ...)
-{
-    if (*o + 1 >= cap)
-        return;
-    va_list ap;
-    va_start(ap, fmt);
-    const int k = vsnprintf(j + *o, cap - *o, fmt, ap);
-    va_end(ap);
-    if (k > 0)
-        *o = *o + (size_t)k < cap ? *o + (size_t)k : cap - 1;
 }
 
 /* A request's body into PSRAM (at most cap bytes, NUL after it): NULL if it's empty, too big or didn't come. */

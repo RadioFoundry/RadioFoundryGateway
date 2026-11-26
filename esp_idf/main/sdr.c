@@ -7,6 +7,7 @@
  * and esp-dsp's tables.
  */
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -403,8 +404,23 @@ void sdr_status_json(rdof_json_t *j)
     rdof_json_close(j);
 }
 
+/* Text added to buf (cap bytes) at *n; what doesn't fit is cut, and *n stays below cap. */
+static void put(char *buf, size_t cap, size_t *n, const char *fmt, ...)
+{
+    if (*n + 1 >= cap)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    const int k = vsnprintf(buf + *n, cap - *n, fmt, ap);
+    va_end(ap);
+    if (k > 0)
+        *n = *n + (size_t)k < cap ? *n + (size_t)k : cap - 1;
+}
+
 size_t sdr_resolved(char *buf, size_t cap)
 {
+    if (!cap)
+        return 0;
     size_t n = rdof_sdr_config_describe(&g_scfg, buf, cap);
     /* the tuner plan: what plan_center or the window picks for these channels */
     double f[RDOF_SDR_MAX_CHANNELS], c = 0;
@@ -417,19 +433,19 @@ size_t sdr_resolved(char *buf, size_t cap)
         c = g_scfg.center;
         for (int i = 0; i < g_scfg.nch; i++)
             in[i] = fabs(f[i] - c) <= g_scfg.sample_rate * usable / 2;
-        n += (size_t)snprintf(buf + n, cap - n, "plan: center %.5f MHz as set;", c / 1e6);
+        put(buf, cap, &n, "plan: center %.5f MHz as set;", c / 1e6);
     } else if (rdof_plan_center_band(f, g_scfg.nch, g_scfg.sample_rate, usable, dc_guard, &c) == 0) {
         for (int i = 0; i < g_scfg.nch; i++)
             in[i] = true;
-        n += (size_t)snprintf(buf + n, cap - n, "plan: center %.5f MHz (plan_center), every channel;", c / 1e6);
+        put(buf, cap, &n, "plan: center %.5f MHz (plan_center), every channel;", c / 1e6);
     } else {
         int k = rdof_plan_window_band(f, g_scfg.nch, g_scfg.sample_rate, usable, dc_guard, &c, in);
-        n += (size_t)snprintf(buf + n, cap - n, "plan: they don't all fit %.0f kS/s; the best window is %.5f MHz with %d;",
-                              g_scfg.sample_rate / 1e3, c / 1e6, k);
+        put(buf, cap, &n, "plan: they don't all fit %.0f kS/s; the best window is %.5f MHz with %d;",
+            g_scfg.sample_rate / 1e3, c / 1e6, k);
     }
-    for (int i = 0; i < g_scfg.nch && n < cap - 64; i++)
-        n += (size_t)snprintf(buf + n, cap - n, " %s %s%s", g_scfg.ch[i].id, in[i] ? "in" : "out",
-                              in[i] && fabs(f[i] - c) < dc_guard ? " (near DC)" : "");
-    n += (size_t)snprintf(buf + n, cap - n, "\n");
-    return n < cap ? n : cap - 1;
+    for (int i = 0; i < g_scfg.nch && n + 64 < cap; i++)
+        put(buf, cap, &n, " %s %s%s", g_scfg.ch[i].id, in[i] ? "in" : "out",
+            in[i] && fabs(f[i] - c) < dc_guard ? " (near DC)" : "");
+    put(buf, cap, &n, "\n");
+    return n;
 }
