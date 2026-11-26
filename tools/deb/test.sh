@@ -3,7 +3,8 @@
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 #
 # Installs a package built by build.sh in a clean container of each release and checks it: apt installs it with its
-# dependencies, rdofradio runs, takes the settings the package put in /etc/rdofradio, finds SoapySDR when it's
+# dependencies, rdofradio runs, takes the settings the package put in /etc/rdofradio, takes the service's own command
+# line (it gets as far as the modem, which a container hasn't), finds SoapySDR when it's
 # installed (whichever version the release has) and says what to install when it isn't.
 #
 #   tools/deb/test.sh build/deb/out/rdofradio_<version>_<arch>.deb [IMAGE ...]
@@ -44,6 +45,16 @@ rdofradio --help 2>&1 | grep -q "^usage: rdofradio" || { echo "FAIL: rdofradio -
 test -f /etc/rdofradio/config.json && getent passwd rdofradio >/dev/null || { echo "FAIL: settings or user"; exit 1; }
 # the settings it installs parse: --check-config reads them and stops
 r=$(rdofradio --config /etc/rdofradio/config.json --check-config 2>&1) || { echo "FAIL: its settings: $r"; exit 1; }
+# the service command line as installed (ExecStart in the unit, RDOF_ARGS from /etc/default/rdofradio) is taken:
+# it gets as far as opening the modem, which this container has none of (or still runs at the timeout)
+. /etc/default/rdofradio
+x=$(sed -n "s/^ExecStart=//p" /lib/systemd/system/rdofradio.service)
+eval "set -- $x"
+r=$(timeout 60 "$@" 2>&1) && rc=0 || rc=$?
+if [ $rc = 2 ] || echo "$r" | grep -qE "pass --allow-tx|^usage:" ||
+    { [ $rc != 124 ] && ! echo "$r" | grep -q -- "--mmdvm .*: No such file or directory"; }; then
+    echo "FAIL: the service command line (exit $rc): $*"; echo "$r" | tail -5; exit 1
+fi
 # no SoapySDR: says what to install
 r=$(rdofradio --soapy driver=none -r 1536000 --rx 438.5 --listen --seconds 1 2>&1 || true)
 echo "$r" | grep -q "apt install libsoapysdr" || { echo "FAIL: without SoapySDR: $r"; exit 1; }

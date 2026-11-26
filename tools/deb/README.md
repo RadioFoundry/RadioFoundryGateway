@@ -7,10 +7,10 @@ package runs on every release from Debian 10 on: [reference.md, apt packages](..
 |---|---|
 | `build.sh ARCH [VERSION]` | One package, in a Debian container on an x86-64 host with Docker: `build/deb/out/rdofradio_<version>_<arch>.deb`. The version: a tag `v26.11` gives `26.11`, `v26.11-beta1` gives `26.11~beta1` (a prerelease on GitHub, sorted before `26.11`), else `0~git<date>.<hash>` |
 | `inside.sh` | `build.sh`'s part in the container: the sysroot, clang, Rust, libmosquitto, rdofradio, the package |
-| `test.sh DEB [IMAGE ...]` | Installs the package in a clean container of each release and runs it (ARM ones under QEMU; armhf also on an emulated ARMv6). `APT_CACHE=DIR` keeps the downloads in DIR |
+| `test.sh DEB [IMAGE ...]` | Installs the package in a clean container of each release and runs it, the service's own command line too (ARM ones under QEMU; armhf also on an emulated ARMv6). `APT_CACHE=DIR` keeps the downloads in DIR |
 | `publish.sh DEBS SITE` | The repository from a folder of packages, signed with `APT_SIGNING_KEY` (the private key, ASCII armored) |
 | `config.json` | The settings it installs: a BrandMeister simplex hotspot with its callsign, password and ID left to fill in |
-| `default` | `/etc/default/rdofradio`: the device arguments |
+| `default` | `/etc/default/rdofradio`: the device arguments (`--allow-tx`, the modem's port, `--web`) |
 | `rdofradio.service`, `postinst`, `prerm`, `postrm` | The service (not enabled at install) and the `rdofradio` system user |
 | `radiofoundry.asc` | The repository's public key, fingerprint `DB85 2B7A F9E6 9860 D999 AB05 8130 FCC4 2D9A 24C4` |
 | `aarch64_atomics.c` | arm64: the outline atomics buster's libgcc lacks |

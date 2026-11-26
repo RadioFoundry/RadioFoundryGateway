@@ -9,7 +9,8 @@ Installed stopped. To set it up:
    missing; rdofradio --config /etc/rdofradio/config.json --check-config says it too. Other setups to start from
    (a repeater, an RTL-SDR, a PlutoSDR, Tier III) are in /usr/share/doc/rdofradio/examples/. The web page can edit
    and save the settings too.
-2. Options: /etc/default/rdofradio (RDOF_ARGS: the modem's serial port, --web, rdofradio --help for the rest).
+2. Options: /etc/default/rdofradio (RDOF_ARGS: --allow-tx, which a hotspot needs to start, the modem's serial port,
+   --web, rdofradio --help for the rest).
 3. sudo systemctl enable --now rdofradio; journalctl -u rdofradio -f shows what it does.
 
 Anything else that holds the modem's port (MMDVMHost on Pi-Star or WPSD) has to be stopped and disabled first.

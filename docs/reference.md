@@ -1514,7 +1514,7 @@ paste; [tools/deb/README.md](../tools/deb/README.md) how they're built and publi
 | arm64 atomics | Rust's std calls `__aarch64_ldadd4_relax` and the like, which buster's libgcc lacks: `tools/deb/aarch64_atomics.c` |
 
 The package installs `/usr/bin/rdofradio`, the `rdofradio` service (not enabled), `/etc/default/rdofradio` (the
-device arguments: an MMDVM modem on `/dev/ttyAMA0`, the web page on port 8080) and `/etc/rdofradio/config.json`, a
+device arguments: `--allow-tx`, an MMDVM modem on `/dev/ttyAMA0`, the web page on port 8080) and `/etc/rdofradio/config.json`, a
 BrandMeister simplex hotspot from `tools/deb/config.json` with its callsign, password and hotspot ID left to fill in.
 A `brandmeister` or `homebrew` network with its host or password empty, or a peer ID missing or 0, isn't an error: the
 network is left off and `/api/status` `settings_warning` (the page's banner) says what's left, as does
