@@ -25,6 +25,8 @@ It's built for a trusted network. Know these before you deploy it:
   answers to its IP address, a one-label name, and names ending in `.local`, `.lan`, `.home`, `.internal`,
   `.home.arpa` or `.localdomain`. To reach it by another name (a reverse proxy's, a DNS name of your own), add
   that name to the settings' `web_hosts` (`"web_hosts": "gw.example.org"`); rdofradio reads the same key.
+- **The packaged rdofradio's web page listens on every interface** (`--web 0.0.0.0:8080` in
+  `/etc/default/rdofradio`) and has no login either. To keep it to the machine, use `--web 127.0.0.1:8080`.
 - **The setup access point has a published default password** (`radiofoundry`). It comes up whenever the board
   has had no Wi-Fi connection for 20 s.
 - **HBlink4 and MQTT passwords are stored on the board** in plain text (NVS), and the settings API returns them.

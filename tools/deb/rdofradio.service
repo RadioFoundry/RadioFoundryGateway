@@ -21,6 +21,17 @@ RestartSec=5
 # the receive loop and the modem thread ask for SCHED_FIFO and nice -10 when they can
 LimitRTPRIO=10
 LimitNICE=-10
+# the system read only but for its settings (the page saves config.json there) and its state directory; /dev, /sys,
+# /tmp and the real-time limits above stay as they are (serial ports, USB SDRs, GPIO, PPS)
+ProtectSystem=full
+ReadWritePaths=/etc/rdofradio
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+NoNewPrivileges=yes
 KillMode=control-group
 TimeoutStopSec=15
 

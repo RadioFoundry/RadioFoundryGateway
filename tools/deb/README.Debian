@@ -19,4 +19,9 @@ An RTL-SDR needs SoapySDR and its module, loaded only when --soapy is given:
 A PlutoSDR goes through libiio (installed with the package): --iio usb: or --iio ip:192.168.2.1.
 
 The program runs as the rdofradio user, in the dialout and plugdev groups (serial ports, USB SDRs). Updates come
-with apt (sudo apt update && sudo apt upgrade); the web page's program update isn't used here.
+with apt (sudo apt update && sudo apt upgrade); the web page's program update isn't used here. The service sees the
+system read only but for /etc/rdofradio, /var/lib/rdofradio and /tmp; home directories are read only to it.
+
+The web page listens on every interface by default (--web 0.0.0.0:8080 in /etc/default/rdofradio) and, like the
+board's, has no login: anyone who can reach port 8080 can change the settings. To keep it to this machine, use
+--web 127.0.0.1:8080 instead.
