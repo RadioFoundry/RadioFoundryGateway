@@ -372,6 +372,12 @@ static bool clk_status(void *ctx, rdof_webapi_clock_t *c)
     c->source = "ntp";
     return true;
 }
+#define LONG_SOURCE "a clock source whose name runs on well past sixty-four bytes of reply"
+static bool clk_status_long(void *ctx, rdof_webapi_clock_t *c)
+{
+    c->source = LONG_SOURCE;
+    return true;
+}
 static size_t clk_json(void *ctx, char *out, size_t cap) { return (size_t)snprintf(out, cap, "{\"source\":\"ntp\"}"); }
 static bool clk_set(void *ctx, int64_t utc_us, const char **source)
 {
@@ -405,6 +411,10 @@ static void t_clock(void)
     CHECK(req(&p, "GET", "/api/clock/settings", NULL, NULL) && strstr(R.body, "pool.ntp.org"));
     rdof_webapi_done(&p, &R);
     CHECK(req(&p, "POST", "/api/clock/settings", NULL, "{}") && R.status == 403);
+    rdof_webapi_done(&p, &R);
+    p.clock = clk_status_long; /* a long clock source name: the whole of it, and len the body's */
+    CHECK(req(&p, "POST", "/api/time", NULL, "{\"utc_ms\": 5}") && R.status == 200 &&
+          strstr(R.body, LONG_SOURCE "\"}") && R.len == strlen(R.body));
     rdof_webapi_done(&p, &R);
 }
 

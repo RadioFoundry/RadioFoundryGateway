@@ -299,9 +299,14 @@ bool rdof_webapi_handle(const rdof_webapi_platform_t *p, const char *method, con
         if (p->clock && p->clock(p->ctx, &now) && now.source)
             source = now.source;
         const bool applied = ms > 1.6e12 && p->clock_set(p->ctx, (int64_t)(ms * 1000.0), &source); /* after 2020 */
-        if (take(p, r, 64, "application/json"))
-            r->len = (size_t)snprintf(r->body, 64, "{\"applied\":%s,\"source\":\"%s\"}", applied ? "true" : "false",
-                                      source ? source : "none");
+        if (!source)
+            source = "none";
+        const size_t cap = 48 + strlen(source);
+        if (take(p, r, cap, "application/json")) {
+            const int n = snprintf(r->body, cap, "{\"applied\":%s,\"source\":\"%s\"}", applied ? "true" : "false",
+                                   source);
+            r->len = n < 0 ? 0 : (size_t)n < cap ? (size_t)n : cap - 1;
+        }
         break;
     }
     case CLOCK_SET:
