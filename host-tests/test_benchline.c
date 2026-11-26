@@ -792,6 +792,18 @@ static void test_ops(void)
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"code\":\"bad_request\""), "a broken request: %s", out);
     rdof_bl_closed(bl, c, now);
+    /* an empty line, on a fresh bench and on one whose connection has had a request */
+    rdof_bl_t *fresh = rdof_bl_new(&PLAT);
+    c = rdof_bl_open(fresh, now);
+    rdof_bl_input(fresh, c, "\n", 1, now);
+    drain(fresh, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"bad_request\"") && rdof_bl_finished(fresh, c), "an empty line, first: %s", out);
+    rdof_bl_closed(fresh, c, now);
+    rdof_bl_free(fresh);
+    c = ask(bl, "", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"bad_request\""), "an empty line: %s", out);
+    rdof_bl_closed(bl, c, now);
     /* all connections in use */
     int cs[RDOF_BL_CONNS];
     for (int k = 0; k < RDOF_BL_CONNS; k++)

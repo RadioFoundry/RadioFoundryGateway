@@ -721,9 +721,12 @@ void rdof_bl_input(rdof_bl_t *bl, int ci, const char *data, size_t n, double now
     size_t i = 0;
     for (; i < n && c->state == C_LINE; i++) {
         if (data[i] == '\n') {
-            c->line[c->ln] = 0;
+            if (c->line)
+                c->line[c->ln] = 0;
             if (c->overlong)
                 fail(bl, c, "bad_request", "the request is longer than %d bytes", RDOF_BL_LINE_MAX - 1);
+            else if (!c->ln)
+                fail(bl, c, "bad_request", "an empty request");
             else
                 request(bl, ci, now);
         } else if (c->ln + 1 < c->lcap) {
