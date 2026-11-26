@@ -213,6 +213,7 @@ Flashing each board for the first time: [esp32-boards.md](esp32-boards.md).
 | `sdkconfig.defaults.c` | any | the C modules in place of the Rust ones (`CONFIG_RDOF_RUST=n`): a build without a Rust toolchain. The build says what's missing and names this overlay |
 | `sdkconfig.defaults.hub` | `4mb` | USB hub support (`16mb` has it) |
 | `sdkconfig.defaults.dspfast` | `16mb` | experiment: the receive path's hot code in IRAM (`CONFIG_RDOF_SDR_DSP_IRAM`, about 33 KB of internal RAM) and the 64 KB data cache |
+| `sdkconfig.defaults.lab` | `w12` | the LR2021 lab endpoints, `/api/lr2021/*` (`CONFIG_RDOF_LR2021_LAB`): raw commands, memory reads, captures and test transmissions for bench experiments (`tools/lr2021_lab.py`). About 3.4 KB more internal RAM. Not for a released image |
 
 - The Rust modules need Espressif's Rust toolchain for Xtensa ([rust/README.md](../rust/README.md), "How it builds").
 - The USB host CDC-ACM driver (`espressif/usb_host_cdc_acm`), esp-dsp (`espressif/esp-dsp`) and mDNS
@@ -236,7 +237,7 @@ Flashing each board for the first time: [esp32-boards.md](esp32-boards.md).
 | `host-tests/` | the host build of `common/`, `sdr/`, `rtlsdr/` and the components' portable parts, the tests, the golden fixtures, the fake radios (`fake_radio.c`) |
 | `systest/` | the system tests: `radiosim`, `radiolink.c`, `test_radiosim.c` |
 | `hil-tests/` | hardware-in-the-loop tests (pytest) |
-| `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`, `burstramp.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `deb/` (the apt packages: build, test, publish; [README](../tools/deb/README.md)), `linux-arm64/` (rdofradio cross-built for a Debian 13 arm64 host with the Rust modules, its run script and systemd unit), `rtl_probe/` (the RTL-SDR driver on a Linux host over usbfs, for bench checks), `config_check.py`, `hblink4_sctp_check.sh`, `lr2021_lab.py` (LR2021 experiments over a board's `/api/lr2021/*`), `rtl_fir_design.py` |
+| `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`, `burstramp.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `deb/` (the apt packages: build, test, publish; [README](../tools/deb/README.md)), `linux-arm64/` (rdofradio cross-built for a Debian 13 arm64 host with the Rust modules, its run script and systemd unit), `rtl_probe/` (the RTL-SDR driver on a Linux host over usbfs, for bench checks), `config_check.py`, `hblink4_sctp_check.sh`, `lr2021_lab.py` (LR2021 experiments over a board's `/api/lr2021/*`: the `lab` overlay's build), `rtl_fir_design.py` |
 | `config/` | the settings' JSON schema (`rdof-config.schema.json`); `examples/`: settings to start from ([README](../config/examples/README.md)) |
 | `docs/` | the guides ([README](README.md)), this reference, the specs (`spec/`) |
 | `LICENSES/`, `PROVENANCE.md` | third-party license texts, and where each piece of copied or ported code came from |
@@ -359,6 +360,7 @@ transmitter). One image, one settings document, one page.
 | `CONFIG_GNSS_UART_RX_GPIO`, `_TX_GPIO`, `_NUM`, `CONFIG_GNSS_BAUD` | -1 (39, 38, 1, 9600 in `w12`) | the receiver's NMEA ([components/gnss](../components/gnss/README.md)): fix and position in the status, each second's time to netclock. Not started when a modem uses that UART |
 | `CONFIG_RDOF_STATUS_LED_GPIO` | -1 (48 in `4mb` and `16mb`, 46 in `w12`) | the WS2812 status LED: red without Wi-Fi; orange while a configured device isn't working; else green |
 | `CONFIG_RDOF_LOG_RING_KB` | 16 (256 in `16mb`) | the log kept for the page, in PSRAM when there is some; 0 = off |
+| `CONFIG_RDOF_LR2021_LAB` | n (y with the `lab` overlay) | the LR2021 lab endpoints, `/api/lr2021/*` (bench experiments; not for a released image) |
 | `CONFIG_RDOF_CRASH_TEST` | n | `POST /api/crash` crashes the board on purpose ([Crashes](#crashes)); never in service |
 | `CONFIG_RDOF_MODEM_USB` | y | the CDC-ACM driver for a radio on USB (VID / PID / interface settable) |
 | `CONFIG_RDOF_MODEM_UART` | y | an MMDVM_HS or MMDVM board on UART1 or UART2 |
@@ -389,6 +391,8 @@ internal RAM (DIRAM and IRAM, statically) goes over the profile's budget in `too
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
+| `16mb` + `w12` (the Rust modules) | 2026-11-26 | 2555 KB | 1.5 MB of 4 MB | 185 KB |
+| `16mb` + `w12` + `lab` | 2026-11-26 | 2574 KB | 1.5 MB of 4 MB | 187 KB |
 | `16mb` + `w12` (the Rust modules) | 2026-11-25 | 2571 KB | 1.5 MB of 4 MB | 188 KB |
 | `16mb` + `w12` (the Rust modules) | 2026-11-10 | 2477 KB | 1.6 MB of 4 MB | |
 | `16mb` + `w12`, `CONFIG_RDOF_RUST=n` | 2026-11-10 | 2411 KB | 1.6 MB of 4 MB | |
@@ -833,7 +837,7 @@ Modes, by the settings' `sample_rate`:
 - **Dynamic range:** int8 clips at ±32 (R2.26), about 20 dB from noise to clipping; int16 has 50 dB more at twice the
   SPI bytes.
 - **DMR 4FSK in the chip:** ROM 1.24's undocumented 4-level FSK receives DMR with our patch RAM's correlator table
-  (`lr2021_fsk4_dmr_rx`, `POST /api/lr2021/dmr_rx` on a held chip; R3.40, R3.42), at about 6% symbol errors against
+  (`lr2021_fsk4_dmr_rx`, `POST /api/lr2021/dmr_rx` on a held chip, the `lab` build; R3.40, R3.42), at about 6% symbol errors against
   about 1% from our demod on the chip's I/Q (R3.41), so the gateway receives from I/Q.
 - **One synthesizer:** half duplex only (RX to TX 107 us, TX to RX 91 us).
 - **Range:** the LF path is 150 to 960 MHz in the datasheet; it receives from 100 MHz (R2.38), so the front end

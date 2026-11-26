@@ -3,7 +3,8 @@
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 """
 LR2021 experiments over a board's /api/lr2021/* endpoints (web.c): hold the chip, send it commands, capture its RX
-FIFO flat out, and look at what came back. Needs numpy.
+FIFO flat out, and look at what came back. Needs numpy, and a board running the lab build (the w12 profile plus the
+lab overlay, sdkconfig.defaults.lab: CONFIG_RDOF_LR2021_LAB); other images answer 404.
 
   lr2021_lab.py --board <board ip> rates 0x1C 0x13 0x22     route source 2 at each rate code; rate, losses, passband
   lr2021_lab.py --board <board ip> cmd 0101 --n 2           one command frame (hex) and its answer
@@ -16,6 +17,7 @@ FSK rx_bw byte: bits 2:0 log2(decimation / 4), bits 5:3 mode - 1, bits 7:6 a cha
 import argparse
 import json
 import sys
+import urllib.error
 import urllib.request
 
 import numpy as np
@@ -30,8 +32,13 @@ class Board:
 
     def _req(self, path, method="POST", timeout=30):
         r = urllib.request.Request(self.base + path, method=method)
-        with urllib.request.urlopen(r, timeout=timeout) as resp:
-            return resp.read(), resp.headers
+        try:
+            with urllib.request.urlopen(r, timeout=timeout) as resp:
+                return resp.read(), resp.headers
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                sys.exit("the board has no /api/lr2021: flash the lab build (sdkconfig.defaults.lab)")
+            raise
 
     def hold(self, keep=True):
         return self._req(f"/hold?on=1&keep={int(keep)}")[0].decode().strip()

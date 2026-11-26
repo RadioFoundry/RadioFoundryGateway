@@ -377,6 +377,16 @@ menu "RadioFoundry Gateway"
             default to the Meshnology W12's. Its I/Q comes from ROM 1.24's raw route
             (docs/spec/lr2021-iq.md); see docs/reference.md, "Front ends".
 
+    config RDOF_LR2021_LAB
+        bool "LR2021 lab endpoints (/api/lr2021/*)"
+        depends on RDOF_SDR_LR2021
+        default n
+        help
+            Bench experiments with the chip over the web server: raw commands,
+            memory reads, captures, the SPI clock and test transmissions
+            (tools/lr2021_lab.py). Not for a released image. The lab overlay
+            (sdkconfig.defaults.lab) turns it on.
+
     menu "LR2021 pins and options"
         depends on RDOF_SDR_LR2021
 

@@ -276,6 +276,7 @@ static void board_setup(void)
     b->rx_boost = CONFIG_RDOF_LR2021_RX_BOOST;
 }
 
+#if CONFIG_RDOF_LR2021_LAB
 /* The RF switch for a frequency, for the experiments (the session sets its own). */
 static void rf_switch(double hz)
 {
@@ -286,6 +287,7 @@ static void rf_switch(double hz)
         cmd(f, lr2021_cmd_set_dio_rf_switch(f, dio[i], modes[i]));
     }
 }
+#endif
 
 static lr2021_iq_stats_t seen; /* the session's counts already added to st.stats */
 
@@ -1655,6 +1657,25 @@ void fe_lr2021_loss_json(rdof_json_t *j)
     rdof_json_close(j);
 }
 
+int fe_lr2021_power_off(void)
+{
+    if (!st.dev || !st.spi)
+        return -1;
+    lock(); /* kept: nothing reaches the chip again before the board sleeps */
+    st.streaming = false;
+    lr2021_iq_stop(&iq);
+    /* standby first, so the RF switch's DIOs go low (its standby mask) before the GC1109's rail goes: they mustn't
+     * be above its VBAT (its datasheet); then sleep, no clock or context kept (a boot sets it up from reset) */
+    uint8_t f[8];
+    cmd(f, lr2021_radio_set_standby(f, false));
+    cmd(f, lr2021_radio_set_sleep(f, false, false, 0));
+#if CONFIG_RDOF_LR2021_PA_EN_GPIO >= 0
+    gpio_set_level(CONFIG_RDOF_LR2021_PA_EN_GPIO, 0);
+#endif
+    return 0;
+}
+
+#if CONFIG_RDOF_LR2021_LAB
 int fe_lr2021_read_mem(uint32_t addr, uint32_t *w, int n)
 {
     if (!st.dev || !st.spi)
@@ -1667,7 +1688,7 @@ int fe_lr2021_read_mem(uint32_t addr, uint32_t *w, int n)
     return e == ESP_OK ? 0 : -1;
 }
 
-/* ── experiments (web.c's /api/lr2021/...) ─────────────────────────────── */
+/* ── experiments (web.c's /api/lr2021/..., the lab build: CONFIG_RDOF_LR2021_LAB) ── */
 
 int fe_lr2021_hold(bool on, bool keep, int patch)
 {
@@ -1701,24 +1722,6 @@ int fe_lr2021_hold(bool on, bool keep, int patch)
 }
 
 bool fe_lr2021_held(void) { return st.held; }
-
-int fe_lr2021_power_off(void)
-{
-    if (!st.dev || !st.spi)
-        return -1;
-    lock(); /* kept: nothing reaches the chip again before the board sleeps */
-    st.streaming = false;
-    lr2021_iq_stop(&iq);
-    /* standby first, so the RF switch's DIOs go low (its standby mask) before the GC1109's rail goes: they mustn't
-     * be above its VBAT (its datasheet); then sleep, no clock or context kept (a boot sets it up from reset) */
-    uint8_t f[8];
-    cmd(f, lr2021_radio_set_standby(f, false));
-    cmd(f, lr2021_radio_set_sleep(f, false, false, 0));
-#if CONFIG_RDOF_LR2021_PA_EN_GPIO >= 0
-    gpio_set_level(CONFIG_RDOF_LR2021_PA_EN_GPIO, 0);
-#endif
-    return 0;
-}
 
 int fe_lr2021_cmd(const uint8_t *frame, size_t len, uint8_t *out, size_t n, uint8_t status[2])
 {
@@ -1962,6 +1965,7 @@ int fe_lr2021_spi(int hz, int delay_ns)
     unlock();
     return e == ESP_OK ? hz : -1;
 }
+#endif /* CONFIG_RDOF_LR2021_LAB */
 
 /* The format, set at the first pick (the rate changes only with a restart; the settings check picks too, while it
  * streams, so nothing of the session's is touched): int8 as the FIFO gives it when the chip's converter makes the
@@ -1984,6 +1988,7 @@ void fe_lr2021(rdof_fe_t *fe)
 
 #endif
 
+#if CONFIG_RDOF_LR2021_LAB
 /* The driver's TX modes (lr2021_tx.h) on the held chip: the setup frames, then the data through lr2021_tx_stream,
  * at the reader's priority. For bench checks of the driver (web.c's /api/lr2021/txmode). */
 struct tx_src {
@@ -2096,3 +2101,4 @@ int fe_lr2021_wake(void)
     unlock();
     return e == ESP_OK ? 0 : failed("wake", e);
 }
+#endif /* CONFIG_RDOF_LR2021_LAB */

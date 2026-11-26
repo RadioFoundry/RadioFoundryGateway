@@ -15,6 +15,15 @@ void fe_rtlsdr(rdof_fe_t *fe);
 /* The dongle's registers as JSON, for looking for a temperature (reads only): the tuner's 32, demod pages 0-4, the SYS
  * block's 0x3000-0x30ff, each a hex string ("--" for a failed read). 0 with no dongle or too small a buffer. */
 size_t fe_rtlsdr_regs_json(char *buf, size_t cap);
+/* The board turning off (power.c): streaming stopped, the chip in sleep, the front end's supply off. The chip stays
+ * locked; -1 if there's none. */
+int fe_lr2021_power_off(void);
+#include "lr2021.h"
+#include "lr2021_patch.h"
+#include "lr2021_tx.h"
+
+#if CONFIG_RDOF_LR2021_LAB
+/* The lab build's (CONFIG_RDOF_LR2021_LAB): web.c's /api/lr2021/... */
 /* n words of the LR2021's memory from addr (ReadRegMem32, read only), between the reader's reads. -1: no chip or
  * an error. */
 /* Experiments (web.c): lend the chip out (the reader stops; on release a new session starts), a command frame and
@@ -24,9 +33,6 @@ int fe_lr2021_hold(bool on, bool keep, int patch); /* patch 1: load Semtech's pa
 bool fe_lr2021_held(void);
 int fe_lr2021_cmd(const uint8_t *frame, size_t len, uint8_t *out, size_t n, uint8_t status[2]);
 const char *fe_lr2021_error(void);
-/* The board turning off (power.c): streaming stopped, the chip in sleep, the front end's supply off. The chip stays
- * locked; -1 if there's none. */
-int fe_lr2021_power_off(void);
 int fe_lr2021_capture(uint8_t *buf, size_t n, size_t *got, unsigned *overflows, int64_t *us);
 int fe_lr2021_spi(int hz, int delay_ns);
 /* Frames in order, each timed to BUSY low; a length of 0 is a chip reset. Returns how many ran (-1: not held). */
@@ -81,9 +87,6 @@ int fe_lr2021_tx(const uint8_t *data, size_t n, const fe_lr2021_tx_opts_t *o, fe
 int fe_lr2021_read_mem(uint32_t addr, uint32_t *words, int n);
 /* A driver TX mode on the held chip (lr2021_tx.h): its setup frames (*setup_ok counts the ones that went), then
  * data through lr2021_tx_stream. -1 on an error (fe_lr2021_error says what; stats tell an early end). */
-#include "lr2021.h"
-#include "lr2021_patch.h"
-#include "lr2021_tx.h"
 int fe_lr2021_tx_mode(const lr2021_tx_setup_t *s, const uint8_t *data, size_t n, uint32_t timeout, int max_ms,
                       lr2021_tx_stream_stats_t *stats, int *setup_ok);
 /* One packet (lr2021_packet_send / _receive) on the held chip; *err is the driver's result. -1 if not held. */
@@ -94,6 +97,8 @@ int fe_lr2021_packet(bool tx, uint8_t *data, size_t n, size_t *got, const lr2021
 int fe_lr2021_dmr_rx(double hz, int family);
 /* Wake the held chip from SetSleep (lr2021_wake). -1 on an error. */
 int fe_lr2021_wake(void);
+#endif
+
 void fe_sim(rdof_fe_t *fe);
 #if CONFIG_RDOF_SDR_LR2021
 void fe_lr2021(rdof_fe_t *fe);

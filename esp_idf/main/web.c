@@ -398,7 +398,7 @@ static esp_err_t api_shared(httpd_req_t *req)
 }
 
 #if CONFIG_RDOF_SDR
-#if CONFIG_RDOF_SDR_LR2021
+#if CONFIG_RDOF_LR2021_LAB
 /* The LR2021's memory, read only: ?addr=0x...&len=bytes (a multiple of 4, at most 256 KB), as the CPU's
  * little-endian words. For the ROM dump (docs/spec/lr2021-iq.md); the reader loses samples meanwhile. */
 static esp_err_t get_lr2021_mem(httpd_req_t *req)
@@ -433,7 +433,7 @@ static esp_err_t get_lr2021_mem(httpd_req_t *req)
 }
 #endif
 
-#if CONFIG_RDOF_SDR && CONFIG_RDOF_SDR_LR2021
+#if CONFIG_RDOF_SDR && CONFIG_RDOF_LR2021_LAB
 static int unhex(const char *s, uint8_t *out, int cap)
 {
     int n = 0;
@@ -1215,7 +1215,7 @@ void web_start(void)
         {.uri = "/api/spike", .method = HTTP_POST, .handler = post_spike},
         {.uri = "/api/spectrum", .method = HTTP_GET, .handler = get_spectrum},
         {.uri = "/api/rtl/regs", .method = HTTP_GET, .handler = get_rtl_regs},
-#if CONFIG_RDOF_SDR_LR2021
+#if CONFIG_RDOF_LR2021_LAB
         {.uri = "/api/lr2021/mem", .method = HTTP_GET, .handler = get_lr2021_mem},
         {.uri = "/api/lr2021/hold", .method = HTTP_POST, .handler = post_lr2021_hold},
         {.uri = "/api/lr2021/cmd", .method = HTTP_POST, .handler = post_lr2021_cmd},

@@ -62,6 +62,7 @@ Overlays go at the end of `SDKCONFIG_DEFAULTS`, in a new build directory:
 | `sdkconfig.defaults.roamer`, `.sdr` | one role only |
 | `sdkconfig.defaults.hub` | USB hub support on `4mb` (`16mb` has it) |
 | `sdkconfig.defaults.dspfast` | `16mb` experiment: the receive path's hot code in IRAM |
+| `sdkconfig.defaults.lab` | `w12` bench experiments with the LR2021 (`/api/lr2021/*`); not for a released image |
 
 For example the W12 without Rust:
 `-D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.16mb;sdkconfig.defaults.w12;sdkconfig.defaults.c"`.

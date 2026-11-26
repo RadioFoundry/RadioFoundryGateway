@@ -67,8 +67,9 @@ now, and may not build.
 The modules in `rust/` run in place of their C (every firmware profile and the host build, by default; they need a Rust toolchain): change
 the Rust, and its C twin while it's kept ([rust/README.md](rust/README.md)).
 
-Overlays: `.roamer` / `.sdr` (one role), `.c` (the C modules, no Rust toolchain needed), `.hub`, `.dspfast`. Run
-`idf.py size` after a change that adds code or RAM and keep docs/reference.md "Size" current.
+Overlays: `.roamer` / `.sdr` (one role), `.c` (the C modules, no Rust toolchain needed), `.hub`, `.dspfast`, `.lab`
+(the LR2021 lab endpoints, `/api/lr2021/*`, on `w12`; never a released image). Run `idf.py size` after a change that
+adds code or RAM and keep docs/reference.md "Size" current.
 
 The build checks internal RAM against `tools/ram_budget.json` after each link (`tools/ram_budget.py`) and fails
 over it, naming the archives that grew. Move the growth to PSRAM or out of IRAM; raise the budget (`--update`) only

@@ -1,0 +1,3 @@
+# The lab overlay, on top of w12: the LR2021 lab endpoints (/api/lr2021/*, tools/lr2021_lab.py) for bench
+# experiments with the chip. Not for a released image.
+CONFIG_RDOF_LR2021_LAB=y
