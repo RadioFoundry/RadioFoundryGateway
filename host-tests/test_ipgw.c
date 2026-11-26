@@ -1460,6 +1460,24 @@ static void t_routed(void)
     d[10] = (uint8_t)(~c >> 8), d[11] = (uint8_t)~c;
     rdof_ipgw_from_lan(g, d, m, 8.0);
     CHECK(g->n.down_ttl_expired == 1 && f.dmr == 2, "TTL 1: %u", g->n.down_ttl_expired);
+    /* the board's own address isn't a LAN host: not passed up, counted denied */
+    g->lan_ip = IP(192, 168, 1, 7);
+    n = datagram(IP(12, 0, 0, 77), 3335, IP(192, 168, 1, 7), 80, "board", d);
+    radio_sends(g, 77, 9990, false, d, n, 9.0);
+    CHECK(f.rsent == 1 && g->n.denied == 1 && g->n.routed_up == 1, "to the board's own address: %d %u", f.rsent,
+          g->n.denied);
+    /* sources a radio doesn't send from: the destination's, a LAN host's, the reserved ranges' */
+    const uint32_t from[] = {IP(192, 168, 1, 20), IP(192, 168, 1, 30), IP(0, 0, 0, 0),      IP(127, 0, 0, 1),
+                             IP(169, 254, 1, 1),  IP(224, 0, 0, 1),    IP(255, 255, 255, 255)};
+    for (int i = 0; i < (int)(sizeof from / sizeof from[0]); i++) {
+        n = datagram(from[i], 3335, IP(192, 168, 1, 20), 5000, "src", d);
+        radio_sends(g, 77, 9990, false, d, n, 10.0 + i);
+    }
+    CHECK(f.rsent == 1 && g->n.bad_src == 7 && g->n.routed_up == 1, "sources: %d %u", f.rsent, g->n.bad_src);
+    /* a host behind the radio: on */
+    n = datagram(IP(10, 9, 8, 7), 3335, IP(192, 168, 1, 20), 5000, "behind", d);
+    radio_sends(g, 77, 9990, false, d, n, 20.0);
+    CHECK(f.rsent == 2 && g->n.routed_up == 2 && g->n.bad_src == 7, "a host behind the radio: %d", f.rsent);
     free(g);
     /* hosts given, NAT for the rest, and a route still first */
     g = gw(&f, 9990, "\"routed\": {\"hosts\": [\"10.5.0.0/16\"], \"rip\": true}, \"nat\": {\"allow\": [\"198.51.100.0/24\"]}, "

@@ -396,6 +396,16 @@ static bool relay_up(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, uint32_t src, u
     int r = match_route(g, src, dst, group);
     key.route = r;
     if (r < 0 && routed_host(g, dip)) { /* to a LAN host: on as it is, one hop on */
+        if (g->lan_ip && dip == g->lan_ip) { /* the board's own address isn't a LAN host */
+            g->n.denied++;
+            return false;
+        }
+        /* from the radio side: not a LAN host's address, not the destination's, not a reserved one */
+        if (sip == dip || routed_host(g, sip) ||
+            (rdof_ipgw_reserved(&g->cfg, sip) && !rdof_ipgw_in_net(&g->cfg.radio_net, sip))) {
+            g->n.bad_src++;
+            return false;
+        }
         if (d[8] <= 1) {
             g->n.ttl_expired++;
             return true;

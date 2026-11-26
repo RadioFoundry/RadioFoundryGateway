@@ -4385,7 +4385,7 @@ static void ig_arm(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
             snprintf(I->hosts, sizeof I->hosts, "the board's subnet");
         uint32_t ln = 0, lm = 0;
         if (bl->route.lan && bl->route.lan(bl->route.ctx, &ln, &lm))
-            I->g.lan = (rdof_ipgw_net_t){ln & lm, lm};
+            I->g.lan = (rdof_ipgw_net_t){ln & lm, lm}, I->g.lan_ip = ln;
     }
     I->g.home = (rdof_ipgw_where_t){.source = -1, .slot = 2, .freq = (uint32_t)lround(mhz * 1e6), .cc = cc};
     I->sess = c->sess;
@@ -4467,7 +4467,7 @@ static void tick_ipgw(rdof_bl_t *bl, double now)
     if (now >= I->next_tick) {
         uint32_t ln = 0, lm = 0;
         if (I->routed && bl->route.lan && bl->route.lan(bl->route.ctx, &ln, &lm))
-            I->g.lan = (rdof_ipgw_net_t){ln & lm, lm};
+            I->g.lan = (rdof_ipgw_net_t){ln & lm, lm}, I->g.lan_ip = ln;
         rdof_ipgw_tick(&I->g, now);
         I->next_tick = now + 0.25;
     }

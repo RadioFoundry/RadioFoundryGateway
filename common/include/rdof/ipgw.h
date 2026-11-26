@@ -189,12 +189,13 @@ typedef struct {
     uint32_t rx_dup;        /* the same message again within RDOF_IPGW_DEDUP_S, or our own heard back */
     uint32_t not_ip;        /* not SAP 4, or not IPv4 */
     uint32_t bad_ip;        /* IPv4 / UDP header wrong (lengths, checksum) */
-    uint32_t bad_src;       /* a source in radio_net that isn't the sending radio's own address */
+    uint32_t bad_src;       /* a source in radio_net that isn't the sending radio's own address; routed: one on the
+                             * LAN side, the destination itself, or a built-in reserved one */
     uint32_t fragment;      /* IPv4 fragments: not put together */
     uint32_t too_big;       /* past max_bytes */
     uint32_t not_udp;       /* NAT, or a udp route: another protocol (ICMP, TCP, ...) */
     uint32_t no_route;      /* no route took it and NAT is off */
-    uint32_t denied;        /* NAT: the destination is reserved, not allowed, or denied */
+    uint32_t denied;        /* NAT: the destination is reserved, not allowed, or denied; routed: the board itself */
     uint32_t up_rate;       /* over up_pps */
     uint32_t flows_full;    /* no free flow (max_flows), or the platform had no socket */
     uint32_t unresolved;    /* the route's host has no address yet */
@@ -260,6 +261,7 @@ typedef struct rdof_ipgw {
     /* Routed: a whole IPv4 datagram (TTL already less one) out to the LAN, as it is. */
     bool (*send_routed)(void *ctx, const uint8_t *data, size_t len);
     rdof_ipgw_net_t lan; /* the board's own subnet, the platform's (routed hosts when the settings give none) */
+    uint32_t lan_ip;     /* the board's own address on it (0: not known): routed never passes a datagram up to it */
     void *ctx;
     /* where a radio not heard yet is reached (a listen route's flow): the transmitter's channel now (freq 0, cc -1:
      * not known; the platform keeps it current) */

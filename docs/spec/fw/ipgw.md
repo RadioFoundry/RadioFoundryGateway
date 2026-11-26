@@ -76,7 +76,7 @@ Nothing matched and NAT off: dropped (`no_route`).
 | SAP 4 (at least 20 octets, version 4) or SAP 3 | `not_ip` | other SAPs are not supported |
 | SAP 3: the compressed header expands (§5) | `bad_ip`; `sap3` counts the good ones | |
 | IHL ≥ 5, total length within the message, header checksum | `bad_ip` | the message's padding past the total length is dropped |
-| a source in `radio_net` is the sending radio's own address | `bad_src` | any other source is a host off the radio net (behind the radio): a source like 10.0.39.21 is kept |
+| a source in `radio_net` is the sending radio's own address | `bad_src` | any other source is a host off the radio net (behind the radio): a source like 10.0.39.21 is kept; routed up has more (§9.2) |
 | not a fragment (MF clear, offset 0) | `fragment` | fragments are not put together |
 | total length ≤ `max_bytes` | `too_big` | |
 | UDP: length 8 or more and within the datagram; destination port not 0 | `bad_ip` | the UDP checksum isn't checked (the CRC-32 covers the message) |
@@ -229,7 +229,14 @@ that address. No tunnel and no NAT: the datagrams cross as they are, TTL less on
   fragment, or not IPv4, `down_bad_ip`. No flow is opened.
 - **Up.** A radio's datagram that no route takes, to an address in `hosts`, goes out as it is (its source the
   radio's own address), any protocol: `routed_up`. The rest goes to NAT as before (with the default `deny`, NAT
-  doesn't take the LAN's private ranges, so the two don't overlap), else `no_route`.
+  doesn't take the LAN's private ranges, so the two don't overlap), else `no_route`. Two more rules on this path:
+  - The board's own address on the LAN isn't one of the hosts: a datagram to it is dropped, `denied`, with no
+    acknowledgment (as NAT's). rdofradio leaves out the address of the interface it takes as the LAN (`rtun_lan`);
+    the host's other addresses are the host firewall's to keep.
+  - A source on the LAN side, or one no radio sends from, is dropped as `bad_src`: the destination's own address,
+    an address in `hosts` (else the board's subnet), or one in the built-in ranges of §4 (0/8, 127/8, 169.254/16,
+    224/4, 240/4). A source in `radio_net` is still only the sender's own; any other (a host behind the radio)
+    passes.
 - **The route on the LAN.** Each host, or the LAN's router, needs `radio_net via <the board's address>`. The board
   gets its address by DHCP; `tools/rfg_route.py BOARD.local [--watch S]` resolves its name and sets or updates the
   route on a Linux or macOS host. With `rip: true` the board also sends a RIPv2 response for `radio_net` (metric 1,

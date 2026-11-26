@@ -169,7 +169,7 @@ bool rtun_send(const uint8_t *data, size_t len)
     return g_tun >= 0 && write(g_tun, data, len) == (ssize_t)len;
 }
 
-bool rtun_lan(rdof_ipgw_net_t *out)
+bool rtun_lan(rdof_ipgw_net_t *out, uint32_t *ip_out)
 {
     struct ifaddrs *all = NULL, *i;
     bool found = false;
@@ -182,6 +182,7 @@ bool rtun_lan(rdof_ipgw_net_t *out)
         const uint32_t ip = ntohl(((struct sockaddr_in *)i->ifa_addr)->sin_addr.s_addr);
         out->mask = ntohl(((struct sockaddr_in *)i->ifa_netmask)->sin_addr.s_addr);
         out->net = ip & out->mask;
+        *ip_out = ip;
         found = true;
     }
     freeifaddrs(all);

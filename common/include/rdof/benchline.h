@@ -433,13 +433,13 @@ void rdof_bl_set_udp(rdof_bl_t *bl, const rdof_bl_udp_t *u);
 /* Routed IP for the ipgw op in mode routed (docs/spec/fw/ipgw.md 9.2): the platform's route of radio_net to the
  * board (a TUN device, the board's IPv4 input), one owner at a time. open: false with why when another has it. recv:
  * the next datagram from the LAN to radio_net (0: none), polled from the engine's tick. send: a whole datagram out.
- * lan: the board's subnet now (net, mask; false with no address). */
+ * lan: the board's own address and its subnet's mask now (false with no address). */
 typedef struct {
     bool (*open)(void *ctx, uint32_t net, uint32_t mask, char *why, size_t cap);
     size_t (*recv)(void *ctx, uint8_t *buf, size_t cap);
     bool (*send)(void *ctx, const uint8_t *data, size_t len);
     void (*close)(void *ctx);
-    bool (*lan)(void *ctx, uint32_t *net, uint32_t *mask);
+    bool (*lan)(void *ctx, uint32_t *ip, uint32_t *mask);
     void *ctx;
 } rdof_bl_route_t;
 void rdof_bl_set_route(rdof_bl_t *bl, const rdof_bl_route_t *r);

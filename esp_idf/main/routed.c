@@ -95,7 +95,7 @@ bool routed_send(const uint8_t *data, size_t len)
     return true;
 }
 
-bool routed_lan(rdof_ipgw_net_t *out)
+bool routed_lan(rdof_ipgw_net_t *out, uint32_t *ip_out)
 {
     esp_netif_ip_info_t ip;
     esp_netif_t *n = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -103,6 +103,7 @@ bool routed_lan(rdof_ipgw_net_t *out)
         return false;
     out->mask = ntohl(ip.netmask.addr);
     out->net = ntohl(ip.ip.addr) & out->mask;
+    *ip_out = ntohl(ip.ip.addr);
     return true;
 }
 

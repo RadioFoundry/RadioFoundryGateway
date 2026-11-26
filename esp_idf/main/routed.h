@@ -19,7 +19,7 @@ size_t routed_recv(uint8_t *buf, size_t cap);
 /* A whole IPv4 datagram out to the LAN. */
 bool routed_send(const uint8_t *data, size_t len);
 void routed_close(void);
-/* The station's subnet now; false with no address. */
-bool routed_lan(rdof_ipgw_net_t *out);
+/* The station's subnet and its own address now; false with no address. */
+bool routed_lan(rdof_ipgw_net_t *out, uint32_t *ip);
 /* Datagrams dropped (queue full, no memory, too long). */
 uint32_t routed_dropped(void);

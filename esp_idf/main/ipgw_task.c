@@ -383,8 +383,8 @@ static void ipgw_task(void *arg)
         double t = mono();
         if (t >= next_tick) {
             update_home();
-            if (s_routed && !routed_lan(&s_gw->lan))
-                s_gw->lan.net = s_gw->lan.mask = 0;
+            if (s_routed && !routed_lan(&s_gw->lan, &s_gw->lan_ip))
+                s_gw->lan.net = s_gw->lan.mask = s_gw->lan_ip = 0;
             rdof_ipgw_tick(s_gw, t);
             next_tick = t + TICK_EVERY_S;
         }

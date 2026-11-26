@@ -225,8 +225,8 @@ void rdofgw_poll(double now, uint64_t sync48)
     }
     if (g_routed) {
         if (now >= g_next_lan) {
-            if (!rtun_lan(&G->lan))
-                G->lan.net = G->lan.mask = 0;
+            if (!rtun_lan(&G->lan, &G->lan_ip))
+                G->lan.net = G->lan.mask = G->lan_ip = 0;
             g_next_lan = now + RESOLVE_EVERY_S;
         }
         size_t n;

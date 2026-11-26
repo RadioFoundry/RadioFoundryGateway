@@ -3984,12 +3984,12 @@ static bool bl_route_open(void *ctx, uint32_t net, uint32_t mask, char *why, siz
 static size_t bl_route_recv(void *ctx, uint8_t *buf, size_t cap) { return rtun_recv(buf, cap); }
 static bool bl_route_send(void *ctx, const uint8_t *data, size_t len) { return rtun_send(data, len); }
 static void bl_route_close(void *ctx) { rtun_close(); }
-static bool bl_route_lan(void *ctx, uint32_t *net, uint32_t *mask)
+static bool bl_route_lan(void *ctx, uint32_t *ip, uint32_t *mask)
 {
     rdof_ipgw_net_t n;
-    if (!rtun_lan(&n))
+    if (!rtun_lan(&n, ip))
         return false;
-    *net = n.net, *mask = n.mask;
+    *mask = n.mask;
     return true;
 }
 

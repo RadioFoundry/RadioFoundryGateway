@@ -20,7 +20,8 @@ bool rtun_open(const rdof_ipgw_net_t *net, const char *who, bool rip, char *why,
 size_t rtun_recv(uint8_t *buf, size_t cap);
 bool rtun_send(const uint8_t *data, size_t len);
 void rtun_close(void);
-/* The host's subnet: the first interface up with an IPv4 address that isn't the loopback or the TUN device. */
-bool rtun_lan(rdof_ipgw_net_t *out);
+/* The host's subnet and its address there: the first interface up with an IPv4 address that isn't the loopback or
+ * the TUN device. */
+bool rtun_lan(rdof_ipgw_net_t *out, uint32_t *ip);
 
 #endif
