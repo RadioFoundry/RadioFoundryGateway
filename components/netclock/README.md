@@ -210,7 +210,7 @@ Paths under `CONFIG_NETCLOCK_HTTP_BASE` (`/api`). JSON responses: `Content-Type:
 | `POST /api/time` | `{"utc_ms": <number>}`, body < 96 B | `{"applied":bool,"source":"<name>"}` | 400 (body too long / read error). `utc_ms` missing, not a number, ≤ 1.6e12 (before 2020-09-13) or ≥ 4.1e12 (after 2099-12): 200 with `applied:false` |
 | `GET /api/clock/settings` | — | settings JSON | — |
 | `POST /api/clock/settings` | settings JSON (object or string), body < 256 B | settings JSON after applying | 400 `too long`; 400 with the validation message as plain text |
-| `GET /netclock.js` | — | the page section, `Content-Encoding: gzip`, `text/javascript`, `Cache-Control: no-cache` | — |
+| `GET /netclock.js` | — | the page section, `Content-Encoding: gzip`, `text/javascript; charset=utf-8`, `Cache-Control: no-cache` | — |
 
 Five handlers: leave room in `httpd_config_t.max_uri_handlers`. `utc_ms` is converted as
 `(int64_t)(utc_ms × 1000)` µs and stamped with `esp_timer_get_time()` when the handler runs.

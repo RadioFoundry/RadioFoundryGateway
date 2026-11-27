@@ -69,7 +69,7 @@ extern const uint8_t page_end[] asm("_binary_index_html_gz_end");
 
 static esp_err_t get_page(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     return httpd_resp_send(req, (const char *)page_start, page_end - page_start);
 }

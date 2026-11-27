@@ -113,7 +113,7 @@ static esp_err_t post_settings(httpd_req_t *req)
 
 static esp_err_t get_js(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/javascript");
+    httpd_resp_set_type(req, "text/javascript; charset=utf-8");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     return httpd_resp_send(req, (const char *)netclock_js_start, netclock_js_end - netclock_js_start);

@@ -263,7 +263,7 @@ compatible security, 211 no AP within the auth threshold, 212 no AP within the R
 | `GET <base>/wifi` | 200 `application/json`, `Cache-Control: no-store`: status JSON; 500 `too big` / `no memory` |
 | `POST <base>/wifi/networks` | body 1 to 4096 bytes of [edit JSON](#edits) (else 400). 200: status JSON; 400 `text/plain`: the error text; 500 `read failed` / `no memory` |
 | `POST <base>/wifi/scan` | 200 `{"scanning":true}`; the result shows in `GET <base>/wifi` a few seconds later |
-| `GET /wifilist.js` | 200 `text/javascript`, `Content-Encoding: gzip`, `Cache-Control: no-cache`: `web/wifilist.js`, gzip level 9, mtime 0, embedded at build |
+| `GET /wifilist.js` | 200 `text/javascript; charset=utf-8`, `Content-Encoding: gzip`, `Cache-Control: no-cache`: `web/wifilist.js`, gzip level 9, mtime 0, embedded at build |
 
 No authentication: protect the server if it needs it.
 
