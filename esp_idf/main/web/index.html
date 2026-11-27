@@ -52,7 +52,7 @@ canvas{display:block;width:100%;background:#0b0b10;border-radius:6px}#spec{heigh
 </head>
 <body>
 <header>
-<div class="top"><h1 id="title">RadioFoundry Gateway</h1><a id="health" class="pill" href="#overview">...</a><span id="clock"></span></div>
+<div class="top"><h1 id="title">RadioFoundry Gateway</h1><a id="health" class="pill" href="#overview">...</a><button id="langbtn" class="sec" type="button" onclick="toggleLang()" title="中文 / English" style="margin:0;padding:2px 10px">中</button><span id="clock"></span></div>
 <nav id="nav"><a href="#overview">Overview</a><a href="#heard">Last heard</a><a href="#radios">Radios</a><a href="#network" data-cap="wifi netclock os_clock">Network</a><a href="#settings" data-cap="settings">Settings</a><a href="#maint">Logs &amp; maintenance</a></nav>
 </header>
 <main>
@@ -158,80 +158,372 @@ expected output (no dongle needed). The USB spike measures how much of the RTL-S
 </section>
 </main>
 <script>
+// ── i18n: English default, switch to Chinese (persisted in localStorage) ──
+// Components (netclock.js, wifilist.js) call window.rdofT() and listen for
+// the 'rdof-langchange' event, so the same dictionary covers every part of
+// the page. Unknown strings fall back to the original English unchanged.
+const ZH = {
+  // nav / tabs / section headers
+  'Overview': '概览', 'Last heard': '最近通话', 'Radios': '电台', 'Network': '网络',
+  'Settings': '设置', 'Logs & maintenance': '日志与维护', 'all calls': '全部通话',
+  'Channels': '信道', 'Spectrum': '频谱', 'Clock': '时钟',
+  'This board runs no radio or SDR.': '本板未运行电台或 SDR。',
+  'Wi-Fi networks': 'Wi-Fi 网络', 'As resolved, and the SDR\'s tuner plan': '解析结果与 SDR 调谐器规划',
+  'Firmware update': '固件更新', 'SDR tests': 'SDR 测试', 'Log': '日志', 'Tasks': '任务',
+  // buttons
+  'Save and restart': '保存并重启', 'Export': '导出', 'Import': '导入', 'Reload': '重新加载',
+  'Refresh': '刷新', 'Upload': '上传', 'Restart': '重启', 'Turn off': '关机',
+  'Run the self-test': '运行自检', 'Run the USB spike': '运行 USB 峰值测试', 'Load': '加载',
+  'every 5 s': '每 5 秒', 'as text': '以文本查看',
+  // filter segment
+  'All': '全部', 'Active': '进行中',
+  // tooltips (spectrum)
+  'Zoom out (-)': '缩小 (-)', 'Zoom in (+)': '放大 (+)',
+  'Zoom to fit: the whole span': '缩放至全部：显示整个频段',
+  'Cut out the wide spans with nothing received': '裁掉没有接收信号的宽频段',
+  // simple status words (shown through sp() / pill())
+  'yes': '是', 'no': '否', 'up': '在线', 'down': '离线', 'none': '无', 'ok': '正常',
+  'waiting': '等待中', 'not ready': '未就绪', 'on air': '发射中', 'hearing': '接收中',
+  'ready': '就绪', 'idle': '空闲', 'not receiving': '未接收', 'calibrating': '校准中',
+  'transmitting': '发射中', 'receiving': '接收中', 'failed': '失败', 'not open': '未打开',
+  'starting': '启动中', 'synchronized': '已同步', 'not synchronized': '未同步',
+  'sync state not known': '同步状态未知', 'not set': '未设置', 'from a browser': '来自浏览器',
+  'keyed': '发射中', 'busy': '忙',
+  // health / problems
+  ' problems': ' 个问题', ' problem': ' 个问题', ' warnings': ' 个警告', ' warning': ' 个警告',
+  'All good': '一切正常', 'all good': '一切正常',
+  'Settings: ': '设置：', ' (running the defaults)': '（运行默认配置）',
+  'Wi-Fi not connected': 'Wi-Fi 未连接', ' (setup access point on)': '（设置接入点已开启）',
+  'Clock not set': '时钟未设置', 'System clock not synchronized': '系统时钟未同步',
+  'A core dump is saved (Logs & maintenance)': '已保存核心转储（见日志与维护）',
+  'It crashed': '它崩溃了', 'It stopped on its own': '它自行停止了',
+  ' before this start (Logs & maintenance)': '（在本次启动之前，见日志与维护）',
+  'Built from uncommitted source': '由未提交的源码构建',
+  'radio not ready': '电台未就绪', 'HBlink4 down': 'HBlink4 离线', 'MQTT down': 'MQTT 离线',
+  'front end not open': '前端未打开', 'port not open': '端口未打开', 'not ready yet': '尚未就绪',
+  'Safe mode: the board crashed several times in a row soon after boot, so its radios are off. Fix the settings, then restart.':
+    '安全模式：板卡在启动后不久连续崩溃多次，因此电台已关闭。请修复设置后重启。',
+  'Roamer ': '漫游器 ', 'Repeater ': '中继器 ', 'SFR repeater ': 'SFR 中继器 ', 'Radio of ': '电台：',
+  'Modem ': '调制解调器 ', 'SDR ': 'SDR ',
+  ' monitored channel': ' 个被监控信道', 's\' HBlink4 peers': ' 个的 HBlink4 对等端',
+  '\'s HBlink4 peer': ' 的 HBlink4 对等端', ' down': ' 离线',
+  ' bursts dropped': ' 个突发被丢弃', ' chunks dropped': ' 个块被丢弃',
+  ' chunks dropped (late)': ' 个块被丢弃（延迟）', ' overflows': ' 次溢出',
+  ' ring overflows': ' 次环形溢出', ' sample errors': ' 个采样错误',
+  ' transmit errors': ' 个发射错误', ' MQTT posts dropped': ' 条 MQTT 上报被丢弃',
+  ' posts dropped': ' 条上报被丢弃', 'DSP load ': 'DSP 负载 ',
+  ' of ': ' / ', ' HBlink4 peers up': ' 个 HBlink4 对等端在线',
+  'Memory: ': '内存：', ' allocation': ' 次分配',
+  ' refused since boot (the last ': ' 次自启动以来被拒绝（最近一次 ',
+  ' bytes, in ': ' 字节，来自 ', 'a task': '某个任务',
+  // board / overview rows
+  'Runs': '运行', 'Board ': '板卡 ', 'Program ': '程序 ', 'Wi-Fi': 'Wi-Fi',
+  'Up': '运行时长', 'Crash': '崩溃', 'Last exit': '上次退出', 'Build': '构建',
+  'Memory': '内存', 'Process': '进程', 'System': '系统', ' resident, ': ' 常驻，',
+  ' peak': ' 峰值', ' available of ': ' 可用 / 共 ', 'CPU': 'CPU', 'core ': '核心 ',
+  'this program ': '本程序 ', 'Battery': '电池', 'Settings': '设置',
+  ' (both on USB: whichever is plugged in runs)': '（两者都在 USB 上：插入哪个就运行哪个）',
+  ' (last ': '（上次 ', 'reset': '复位', 'start': '启动', 'Built with': '构建包含',
+  'Last reset': '上次复位', 'Last start': '上次启动', 'Last': '最近',
+  'Its last line': '其最后一行', 'Erase the record': '清除记录',
+  'core dump saved': '已保存核心转储', 'Cause': '原因', '), address ': '），地址 ',
+  'Backtrace': '回溯', '(corrupted)': '（已损坏）', 'Size': '大小',
+  'Erase the core dump': '清除核心转储', 'Self-test': '自检', 'not run': '未运行',
+  'USB spike': 'USB 峰值测试',
+  'none recorded': '无记录', 'killed by ': '被 ', 'signal ': '信号 ',
+  'exited with code ': '退出码 ', 'its log': '其日志', 'none saved': '未保存',
+  'core dump, bad: ': '核心转储，错误：', ' at ': ' 位于 ', ' (image ': '（镜像 ',
+  'core dump': '核心转储',
+  // roamer / radio card labels
+  'Kind / protocol': '类型 / 协议', 'Channel': '信道', 'Heard / sending': '听到 / 发送',
+  'Modem requests': '调制解调器请求', ' without a reply, ': ' 次无应答，',
+  ' refused': ' 次被拒绝', 'Bursts heard': '听到的突发数', 'Transceiver': '收发器',
+  ' status polls missed, ': ' 次状态轮询丢失，', ' network bursts dropped': ' 个网络突发被丢弃',
+  'slot 1 ': '时隙 1 ', ', slot 2 ': '，时隙 2 ', 'Jitter buffer': '抖动缓冲',
+  ', target ': '，目标 ', ' ms, jitter ': ' ms，抖动 ', ' ms, late ': ' ms，延迟 ',
+  ' to ': ' 至 ', ' streams, ': ' 个流，', ' underruns, ': ' 次欠载，',
+  ' grown, ': ' 次增长，', ' shrunk': ' 次收缩', 'Split': '分流', ' epoch ': ' 纪元 ',
+  ' sent, ': ' 已发送，', ' received, ': ' 已接收，', ' dropped, ': ' 已丢弃，',
+  ' failed': ' 次失败', 'Monitoring': '监控中', ' MHz, ': ' MHz，',
+  ' bursts': ' 个突发', ', HBlink4 ': '，HBlink4 ', 'Heard': '听到', 'Sending': '发送',
+  'HBlink4 / MQTT': 'HBlink4 / MQTT', 'port open, no answer': '端口已开，无应答',
+  'not connected (': '未连接（', ' (': '（', '), ': '），',
+  ' logins, ': ' 次登录，', ' last at ': ' 最近在 ', ', quiet ': '，静默 ',
+  ', retry in up to ': '，最多 ', ' s)': ' 秒后重试）', ' sent, ': ' 已发送，',
+  ' received, ': ' 已接收，', ' no peer: not on an HBlink network': ' 无对等端：不在 HBlink 网络上',
+  'SCTP ': 'SCTP ', ', RTT ': '，RTT ', ' ms, ': ' ms，', ' resent': ' 次重发',
+  ' given up': ' 次放弃', ' lost': ' 次丢失',
+  // apps
+  'Parrot': '鹦鹉', 'IP gateway': 'IP 网关', 'Trunked site': '集群站点',
+  ' to ': ' 至 ', 'TG ': '群组 ', 'ID ': 'ID ', 'Slot ': '时隙 ',
+  ' a call from the network': ' 一个来自网络的呼叫', ', peer ': '，对等端 ',
+  'Frequencies': '频率', 'in ': '收 ', ', out ': '，发 ', ', CC': '，色码',
+  'none: local only': '无：仅本地', 'Bursts': '突发', ' heard': ' 听到',
+  ' sent': ' 已发送', ' dropped': ' 已丢弃', 'Answers': '应答', 'Call': '呼叫',
+  'Calls': '呼叫数', ' replayed, ': ' 次重放，', ' ignored': ' 次忽略',
+  ' cut short': ' 次截断',
+  // ppm / warming
+  'set to ': '设为 ', ', learning': '，学习中', ', learning off': '，学习关闭',
+  ', learned ': '，已学习 ', 'sample clock': '采样时钟', ' channels\' AFC': ' 个信道的 AFC',
+  ', saved ': '，已保存 ', ', simulated ': '，模拟 ', 'Learned at: ': '学习于：',
+  ' C ': '°C ', '; expects ': '；预期 ', ' at ': ' 于 ',
+  'Warming up': '预热中', ': nothing saved until the die': '：在芯片',
+  ' and the sample rate hold': ' 和采样率保持', ' holds': ' 保持',
+  ' for 10 min. ': ' 10 分钟后才会保存。', 'Sample clock: ': '采样时钟：',
+  'waiting for the board\'s clock rate': '等待板卡时钟频率', 'timing (': '计时中（',
+  ' s)': ' 秒）', ' over ': ' 持续 ', ' min': ' 分钟',
+  '(not yet trusted)': '（尚未可信）', ' restarts for lost samples': ' 次因采样丢失重启',
+  'die ': '芯片 ', 'under 10 min of readings': '读数不足 10 分钟',
+  'moved ': '变化 ', ' (more than ': '（超过 ', ' C)': '°C）', ', held': '，已保持',
+  'sample rate ': '采样率 ', 'timed for ': '已计时 ', ' (fit started over ': '（拟合开始超过 ',
+  ' times)': ' 次）', ' ppm': ' ppm',
+  // slot timing
+  ' on ': ' 于 ', 'no clock': '无时钟', ', within ': '，误差在 ', ' us': ' 微秒',
+  ', for ': '，持续 ', ' s': ' 秒', '; the last slot ': '；上一时隙 ',
+  ' us off before steering (': ' 微秒偏差（校向前）', ' samples slipped or inserted)': ' 个采样被滑动或插入）',
+  // SDR card
+  'none': '无', 'not plugged in': '未插入', 'Receiving': '接收中',
+  ' at ': ' 于 ', ' MHz': ' MHz', ', ': '，', ' kS/s, gain ': ' kS/s，增益 ',
+  'tuner AGC': '调谐器 AGC', ' dB': ' dB', ' (AGC)': '（AGC）',
+  'calibrating (tuned to the TX LO)': '校准中（调谐到发射本振）',
+  'not yet measured': '尚未测量', ' of ': ' / ', ' kS/s (': ' kS/s（',
+  ' errors, ': ' 个错误，', ' ms lost': ' ms 丢失', 'Samples': '采样',
+  'Samples (simulated)': '采样（模拟）', 'SPI samples': 'SPI 采样', 'USB samples': 'USB 采样',
+  'input': '输入', 'channelizer': '信道化', 'demods': '解调', 'trackers': '跟踪',
+  ' of core 1 (esp-dsp FFT ': ' 核心 1（esp-dsp FFT ', ', FIR ': '，FIR ', 'on': '开', 'off': '关',
+  'Transmitting': '发射中', ' on ': ' 于 ', ' (LO ': '（本振 ', '), gain ': '），增益 ',
+  ' write errors': ' 个写入错误', ' an RTL-SDR': ' 一个 RTL-SDR',
+  'Tuner ppm': '调谐器 ppm', 'Slot timing': '时隙定时', ' in the window': ' 在窗口内',
+  ' peers': ' 个对等端', ' MQTT / HBlink4': ' MQTT / HBlink4',
+  // channel table
+  'Id': '标识', 'Name': '名称', 'MHz': 'MHz', 'In window': '在窗口内',
+  'RSSI': 'RSSI', 'AFC Hz': 'AFC Hz', 'Idle': '空闲', ' dBm': ' dBm',
+  // modem
+  'Port': '端口', 'Role': '角色', 'Answers': '应答', 'State': '状态',
+  // links / heard table
+  'Links': '链路', 'When': '时间', 'From': '来自', 'To': '到', 'Radio': '电台',
+  'Length': '时长', 'Signal': '信号', ' active': ' 个进行中',
+  'No calls yet.': '暂无通话。', ' dB': ' dB', '% BER': '% BER',
+  'data': '数据', ' blocks': ' 个块', 'late entry': '晚入', 'emergency': '紧急',
+  'encrypted': '加密', 'lost': '丢失', ' UTC': ' UTC', '● live': '● 进行中',
+  ' ago': '前', 'now': '刚刚', 'not tuned': '未调谐',
+  // clock / status
+  'RadioFoundry ': 'RadioFoundry ', ' · RadioFoundry': ' · RadioFoundry',
+  'no answer': '无应答', 'up ': '已运行 ', 'clock not set': '时钟未设置',
+  'From ': '来自 ', 'Read only here: ': '此处只读：',
+  'this program\'s command line': '本程序的命令行',
+  'Upload a new program (the bundle\'s rdofradio.gz, or rdofradio): it stops, and its supervisor puts the new one in place and starts it.':
+    '上传新程序（包中的 rdofradio.gz 或 rdofradio）：它会停止，由其管理器放置新程序并启动。',
+  'Not in this build (FreeRTOS run-time stats are off).': '此构建中不可用（FreeRTOS 运行时统计已关闭）。',
+  // confirm dialogs
+  'Turn the board off? Only its power key turns it on again.': '关闭板卡？只有电源键才能再次开机。',
+  'Restart the board?': '重启板卡？', 'Restart the program?': '重启程序？',
+  'Erase the record of the last exit?': '清除上次退出的记录？',
+  'Erase the saved core dump?': '清除已保存的核心转储？',
+  'uploading ': '正在上传 ', ')...': '）……',
+  // spectrum status line / hover
+  'A row every ': '每一行 ', ' ms, ': ' ms，', ' Hz a bin.': ' Hz 每点。',
+  'Starting...': '启动中……', ' ms; each channel\'s own, ': ' ms；每个信道各自的，',
+  ' Zoom ': ' 缩放 ', 'x.': ' 倍。', 'cut: ': '裁剪：', ' - ': ' - ',
+  ' MHz, nothing received': ' MHz，无接收信号', ' dBFS': ' dBFS',
+  ' (past the channel filter)': '（超过信道滤波器）',
+  // memory card
+  'not planned': '未规划', 'plan fits': '规划合适', 'plan short': '规划不足',
+  'Internal': '内部', ' free, ': ' 空闲，', ' in one piece': ' 一块连续',
+  'DMA': 'DMA', 'PSRAM': 'PSRAM', 'Margin': '余量',
+  ' kept for Wi-Fi and lwIP': ' 为 Wi-Fi 和 lwIP 保留', ' (strict)': '（严格）',
+  ' spare': ' 剩余', ' short': ' 不足', 'Planned': '已规划',
+  ' internal held, ': ' 内部已占用，', ' budgeted, ': ' 已预算，',
+  'Outside the plan': '规划外', ' (of ': '（共 ',
+  ' free at the plan: budgets, Wi-Fi, lwIP, the rest)': ' 在规划时空闲：预算、Wi-Fi、lwIP 及其它）',
+  'Role': '角色', 'Claim': '项', 'Bytes': '字节', 'In': '位置', 'How': '方式',
+  ' claims': ' 项申请', ' handed over)': ' 已移交）', ' (not taken)': '（未占用）',
+  'planned': '已规划', 'refused': '被拒绝', 'held': '持有', 'alloc': '已分配',
+  // os clock card
+  'system clock, ': '系统时钟，', 'Estimated error': '估计误差',
+  'Maximum error': '最大误差', 'Offset': '偏移', 'Frequency': '频率',
+  'The operating system sets this clock (its NTP client); this page only reads it.':
+    '操作系统设置此时钟（其 NTP 客户端）；本页仅读取。',
+  // ── netclock.js ──
+  'S': 'S', 'Server': '服务器', 'Stratum': '层级', 'Refid': '参考标识', 'Reach': '可达',
+  'Last rx': '上次接收', 'Delay': '延迟', 'Jitter': '抖动', 'Root dist': '根距离', 'NP': 'NP',
+  'NTP servers (space separated, up to 6; pool.ntp.org counts 3)': 'NTP 服务器（空格分隔，最多 6 个；pool.ntp.org 计为 3 个）',
+  'Poll (s)': '轮询（秒）', 'Save': '保存', 'Set from this browser': '用本浏览器设置',
+  'References': '参考', 'Time (UTC)': '时间 (UTC)', 'Source': '源', 'Result': '结果',
+  'Residual': '残差', 'In fit': '在拟合中', 'Rate': '速率', 'Die': '芯片',
+  'Reference': '参考源', 'Since last reference': '距上次参考', 'Slewing': '跳变',
+  'Last offset': '上次偏移', 'RMS offset': 'RMS 偏移', 'Skew': '频偏抖动',
+  'Holdover, 1 h': '保持 1 小时', 'Stored frequency': '存储频率',
+  'References / span': '参考数 / 跨度', 'Poll interval': '轮询间隔',
+  'Root delay': '根延迟', 'Root dispersion': '根离散',
+  'Polls / no majority': '轮询 / 无多数', 'Outliers ignored': '忽略的离群值',
+  'Die temperature': '芯片温度', 'Temperature correction': '温度校正', 'Learned at': '学习于',
+  'slow': '慢', 'fast': '快', 'none yet': '尚无', 'no pulses': '无脉冲',
+  'NTP (no server selected)': 'NTP（未选择服务器）', 'GNSS pulse per second': 'GNSS 秒脉冲',
+  'GNSS NMEA time (no pulse)': 'GNSS NMEA 时间（无脉冲）', 'browser clock': '浏览器时钟',
+  'No NTP servers yet (no network, or none set)': '尚无 NTP 服务器（无网络或未设置）',
+  'No references yet': '尚无参考', 'unresolved': '未解析', 'Added': '已添加',
+  'Deleted': '已删除', 'Moved': '已移动', 'Scanning...': '扫描中……', 'Failed: ': '失败：',
+  'Not applied: the clock follows NTP': '未应用：时钟跟随 NTP',
+  'Set from this browser (±': '已通过本浏览器设置（±', ' ms)': ' ms）',
+  'Residuals show once the rate is fitted (about 10 min of references)': '速率拟合后显示残差（约需 10 分钟参考）',
+  ' + ': ' + ', ' more': ' 更多', ' pulses, last ': ' 个脉冲，最后一次 ',
+  ' ago; ': ' 前；', ' out of step, ': ' 个失步，', ' unnumbered': ' 个未编号',
+  ' numbered by GNSS': ' 个由 GNSS 编号', 'last ': '最后 ',
+  ' ms after the pulse': ' ms（脉冲后）', ' references': ' 次参考',
+  '(min ': '（最小 ', ' outlier ': ' 离群值 ', 'Saved': '已保存',
+  // ── wifilist.js ──
+  'Network': '网络', 'Priority': '优先级', 'Signal': '信号', 'Password': '密码',
+  'Network name': '网络名称', 'hidden': '隐藏', 'Add': '添加', 'Cancel': '取消',
+  'Edit': '编辑', 'Delete': '删除', 'Connected': '已连接', 'to ': '到 ',
+  'Not connected': '未连接', 'Setup access point ': '设置接入点 ', ' is on (': ' 已开启（',
+  '(hidden)': '（隐藏）', 'set': '已设置', 'open': '开放',
+  'No networks yet: add one below': '尚无网络：请在下方添加', 'in the list': '在列表中',
+  'Nothing in sight': '视野内无网络', 'No scan yet': '尚未扫描', 'ago': '前',
+  'lost: ': '丢失：', 'None': '无', 'set (blank keeps it)': '已设置（留空保持）',
+  'open (blank)': '开放（留空）', 'Delete ': '删除 ', 'Channel': '信道',
+  'Security': '安全', 'What': '原因', 'In sight and recent failures': '可见网络与近期失败',
+  'Scan': '扫描',
+  'not seen': '未发现', 'to': '到', 'channel': '信道',
+  ' is on (http://192.168.4.1/)': ' 已开启 (http://192.168.4.1/)', 'secured': '已加密',
+  // ── additional keys: fragments, labels, no-leading-space variants ──
+  ' peers registered': ' 个对等端已注册',
+  'Waiting': '等待', 'for ': ' ', ' to be plugged in': ' 未插入',
+  'the radio': '电台', 'an RTL-SDR': 'RTL-SDR',
+  'Free': '空闲', 'Memory free': '可用内存', 'Process memory': '进程内存', 'Budget': '预算',
+  'Device': '设备', 'More fields': '更多字段', 'Modem': '调制解调器', 'system clock': '系统时钟',
+  'no peer: not on an HBlink network': '无对等端：不在 HBlink 网络上',
+  ' received': ' 已接收', 'sending': '发送中', 'Repeater': '中继器',
+  ' C': '°C', ' C, ': '°C，', ' PSRAM': ' PSRAM', ' internal, ': ' 内部，',
+  ' resent, ': ' 次重发，', ' ignored, ': ' 次忽略，', ' given up, ': ' 次放弃，',
+  ' refused)': ' 次被拒绝）', ', listening': '，监听中', ', scanning': '，扫描中',
+  ')': '）', '; ': '；',
+  ', MQTT ': '，MQTT ', ', SCTP ': '，SCTP ', ' (RTT ': '（RTT ',
+  '(both on USB: whichever is plugged in runs)': '（两者都在 USB 上：插入哪个就运行哪个）',
+  '(setup access point on)': '（设置接入点已开启）',
+  '(not taken)': '（未占用）',
+  'Board': '板卡', 'Program': '程序', 'Slot': '时隙', 'DSP load': 'DSP 负载', ' dB, ': ' dB，',
+  // ── static help text (applyLang matches with collapsed whitespace) ──
+  'RF: heard on the air (SDR, radio or repeater). NET: from the network, sent out over RF.': 'RF：在空中间听到（SDR、电台或中继器）。NET：来自网络，经 RF 发出。',
+  'Each task\'s core, priority and share of a core since the last load.': '自上次加载以来每个任务的核心、优先级及占用核心的份额。',
+  'Upload an app image (.bin): the board writes it to the other slot and restarts into it.': '上传应用镜像（.bin）：板卡将其写入另一个插槽并重启进入该镜像。',
+  'The self-test runs a built-in 0.6 s recording through the SDR receiver and checks it against the expected output (no dongle needed). The USB spike measures how much of the RTL-SDR\'s stream Full Speed USB delivers at 288, 250 and 240 kS/s (the dongle must be in). Both restart the board; the results show here and in the log.': '自检运行一段内置的 0.6 秒录音通过 SDR 接收器，并与预期输出比对（无需 dongle）。USB 峰值测试测量 RTL-SDR 的码流在 288、250 和 240 kS/s 下全速 USB 能传送多少（必须插入 dongle）。两者都会重启板卡；结果显示在此处和日志中。',
+  'The tuner\'s span (or, where only channels are received, each channel\'s own), averaged over each row; the bands are the channels. dBFS at the configured gain. Scroll or pinch to zoom, drag to pan, double-click for the whole span; keys - + zoom, [ ] pan. Wide spans with nothing received are cut out (torn edges, the width hidden written between; the break button turns that off); each channel shows 12 kHz either side, dimmed past its filter\'s cutoff, and channels that close make one strip.': '调谐器的跨度（或在仅接收信道的地方为每个信道各自的跨度），按行平均；波段即信道。以配置增益下的 dBFS 显示。滚动或捏合缩放，拖拽平移，双击查看全跨度；按键 - + 缩放，[ ] 平移。未收到信号的宽跨度会被裁掉（边缘呈撕裂状，隐藏的宽度标注在中间；断开按钮可关闭此功能）；每个信道两侧各显示 12 kHz，超过滤波器截止处变暗，相邻信道合并为一条带。',
+  'A box config in JSON, version 3: name, id, callsign, location, defaults, devices, frequencies, apps, networks and policies. Every unit it makes runs: a repeater app, an SFR or DCDM frequency, a device that transmits on simplex frequencies, an SDR that hears; two units that transmit and one SDR at most. On a modem: type, port {uart, tx, rx} or {usb, serial, usb_port} (to tell two on a hub apart), hears and transmits. On the SDR: driver, rx {rate, gain_db}, usb {transfers, transfer_kb}, dsp_cores (1 or 2); an RTL-SDR\'s rate is 288000 or 240000 on a board. At the top: oled {sda, scl}; web_hosts, more names this page answers to besides its address and local names ("gw.example.org"). A modem on USB and an SDR both run: whichever is plugged in runs, unless "usb_hub": true. Comments are fine. It\'s checked before it\'s saved. The Wi-Fi networks and the NTP servers show as wifi {networks} and ntp {servers, poll_s}: passwords never leave the board, so a network without a "password" keeps the one it has (add "password" to set one).': 'JSON 格式的盒式配置，版本 3：name、id、callsign、location、defaults、devices、frequencies、apps、networks 与 policies。它生成的每个单元都会运行：一个 repeater 应用、一个 SFR 或 DCDM 频点、一个在单工频点上发射的设备、一个接收的 SDR；最多两个发射单元和一个 SDR。调制解调器项：type、port {uart, tx, rx} 或 {usb, serial, usb_port}（用于区分集线器上的两个设备）、hears 与 transmits。SDR 项：driver、rx {rate, gain_db}、usb {transfers, transfer_kb}、dsp_cores（1 或 2）；板卡上 RTL-SDR 的速率为 288000 或 240000。顶部：oled {sda, scl}；web_hosts，除了自身地址和本地名称（"gw.example.org"）之外此页面还响应的更多名称。USB 上的调制解调器和 SDR 都会运行：插入哪个就运行哪个，除非 "usb_hub": true。可以写注释。保存前会校验。Wi-Fi 网络与 NTP 服务器分别显示为 wifi {networks} 和 ntp {servers, poll_s}：密码永远不会离开板卡，因此没有 "password" 的网络会保留原有密码（添加 "password" 以设置新密码）。',
+};
+const I18N = {
+  lang: (function () { try { return localStorage.getItem('rdof_lang') || 'en'; } catch (e) { return 'en'; } })()
+};
+const t = s => (I18N.lang === 'zh' && ZH[s] != null) ? ZH[s] : s;
+window.rdofT = t;
+window.rdofLang = () => I18N.lang;
+const _origText = new Map();
+function applyLang() {
+  if ($('langbtn')) $('langbtn').textContent = I18N.lang === 'zh' ? 'EN' : '中';
+  // Translate static text nodes (the dynamic DOM is rebuilt by render() with t()).
+  const accept = n => n.parentNode && !n.parentNode.closest('script,style,textarea') ?
+    NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+  const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {acceptNode: accept});
+  let n;
+  while ((n = tw.nextNode())) {
+    if (!_origText.has(n)) _origText.set(n, n.nodeValue);
+    const raw = _origText.get(n), s = raw.trim().replace(/\s+/g, ' ');
+    if (!s) continue;
+    const lead = raw.match(/^\s*/)[0], trail = raw.match(/\s*$/)[0];
+    n.nodeValue = (I18N.lang === 'zh' && ZH[s] != null) ? lead + ZH[s] + trail : raw;
+  }
+  document.querySelectorAll('[title]').forEach(el => {
+    if (el.dataset.tTitle == null) el.dataset.tTitle = el.getAttribute('title');
+    el.setAttribute('title', t(el.dataset.tTitle));
+  });
+  document.querySelectorAll('[placeholder]').forEach(el => {
+    if (el.dataset.tPh == null) el.dataset.tPh = el.getAttribute('placeholder');
+    el.setAttribute('placeholder', t(el.dataset.tPh));
+  });
+  if (typeof render === 'function') render();
+  document.dispatchEvent(new CustomEvent('rdof-langchange'));
+}
+window.rdofApplyLang = applyLang;
+function toggleLang() {
+  I18N.lang = I18N.lang === 'zh' ? 'en' : 'zh';
+  try { localStorage.setItem('rdof_lang', I18N.lang); } catch (e) {}
+  $('langbtn').textContent = I18N.lang === 'zh' ? 'EN' : '中';
+  applyLang();
+}
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const sp = (c, t) => '<span class="' + c + '">' + t + '</span>';
+const sp = (c, txt) => '<span class="' + c + '">' + t(txt) + '</span>';
 const yes = v => v ? sp('ok', 'yes') : sp('bad', 'no');
 const up = v => v ? sp('ok', 'up') : sp('bad', 'down');
 const hbUp = r => 'hblink' in r ? up(r.hblink) : sp('mute', 'none');             // a unit with no HBlink peer
 const num = v => v == null ? '-' : Number(v).toLocaleString('en-US');
 const cnt = v => v ? sp('warn', num(v)) : '0';                       // a count of trouble: orange when not 0
 const kb = b => b == null ? '-' : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
-const mhz = f => f ? (f / 1e6).toFixed(5) + ' MHz' : 'not tuned';
+const mhz = f => f ? (f / 1e6).toFixed(5) + ' MHz' : t('not tuned');
 const pct = v => v == null ? '-' : Math.round(v * 100) + '%';
 const dur = s => { s = Math.max(0, s); if (s < 60) return s.toFixed(s < 10 ? 1 : 0) + ' s';
   const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
   return d ? d + 'd ' + h + 'h' : h ? h + 'h ' + m + 'm' : m + 'm ' + Math.floor(s % 60) + 's'; };
-const ago = s => s < 2 ? 'now' : dur(s).replace(/\.\d/, '') + ' ago';
+const ago = s => s < 2 ? t('now') : dur(s).replace(/\.\d/, '') + t(' ago');
 const kv = r => '<dl class="kv">' + r.filter(Boolean).map(x => '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>').join('') + '</dl>';
 const card = (h, body) => '<div class="card"><h2>' + h + '</h2>' + body + '</div>';
-const pill = (c, t) => '<span class="pill ' + c + '">' + t + '</span>';
+const pill = (c, txt) => '<span class="pill ' + c + '">' + t(txt) + '</span>';
 const S = {s: null, tab: 'overview', calls: new Map(), seq: 0, max: 50, now: 0, nowAt: 0, statusAt: Date.now(), f: 'all'};
 const radios = s => s.roamers || (s.roamer ? [s.roamer] : []);
 // The SDRs: the board's one, or a host tool's (sdrs); the radios and modems a host tool drives on a port (modems)
 const sdrs = s => s.sdrs || (s.sdr ? [s.sdr] : []);
 const modems = s => s.modems || [];
-const waiting = (s, what) => s.started ? null : [['Waiting', 'for ' + what + ' to be plugged in']];
+const waiting = (s, what) => s.started ? null : [[t('Waiting'), t('for ') + t(what) + t(' to be plugged in')]];
 
 // ── health: what's wrong, the worst first ─────────────────────────────────
 function problems(s) {
-  const p = [], bad = t => p.push(['bad', t]), warn = t => p.push(['warn', t]);
-  if (has(s, 'settings') && !s.settings_ok) bad('Settings: ' + s.settings_error + ' (running the defaults)');
-  if (s.settings_warning) bad('Settings: ' + s.settings_warning);
-  if (has(s, 'wifi') && !s.wifi) (s.ap_mode ? warn : bad)('Wi-Fi not connected' + (s.ap_mode ? ' (setup access point on)' : ''));
-  if (has(s, 'netclock') && s.clock == 'none') warn('Clock not set');
-  if (has(s, 'os_clock') && s.clock_os && !(s.clock_os.known && s.clock_os.synced)) warn('System clock not synchronized');
-  if (has(s, 'coredump') && s.crash) warn('A core dump is saved (Logs & maintenance)');
-  if (has(s, 'crash') && s.last_exit) warn((s.last_exit.signal ? 'It crashed' : 'It stopped on its own') + ' before this start (Logs & maintenance)');
-  if (/-dirty$/.test(s.version)) warn('Built from uncommitted source');
+  const p = [], bad = msg => p.push(['bad', msg]), warn = msg => p.push(['warn', msg]);
+  if (has(s, 'settings') && !s.settings_ok) bad(t('Settings: ') + s.settings_error + t(' (running the defaults)'));
+  if (s.settings_warning) bad(t('Settings: ') + s.settings_warning);
+  if (has(s, 'wifi') && !s.wifi) (s.ap_mode ? warn : bad)(t('Wi-Fi not connected') + (s.ap_mode ? t(' (setup access point on)') : ''));
+  if (has(s, 'netclock') && s.clock == 'none') warn(t('Clock not set'));
+  if (has(s, 'os_clock') && s.clock_os && !(s.clock_os.known && s.clock_os.synced)) warn(t('System clock not synchronized'));
+  if (has(s, 'coredump') && s.crash) warn(t('A core dump is saved (Logs & maintenance)'));
+  if (has(s, 'crash') && s.last_exit) warn((s.last_exit.signal ? t('It crashed') : t('It stopped on its own')) + t(' before this start (Logs & maintenance)'));
+  if (/-dirty$/.test(s.version)) warn(t('Built from uncommitted source'));
   radios(s).forEach((r, i) => {
-    const n = (r.mode == 'roamer' ? 'Roamer ' : 'Repeater ') + r.name + ': ';
+    const n = (r.mode == 'roamer' ? t('Roamer ') : t('Repeater ')) + r.name + ': ';
     if (s.usb_either && !i && !r.started) return;
     if (r.radio_error) bad(n + r.radio_error);
-    else if (!r.radio_ready) bad(n + 'radio not ready');
+    else if (!r.radio_ready) bad(n + t('radio not ready'));
     if (r.brandmeister && r.brandmeister.state != 'up') warn(n + 'BrandMeister ' + r.brandmeister.state.replace('_', ' '));
-    else if (has(s, 'links') && r.hblink === false) warn(n + 'HBlink4 down');
+    else if (has(s, 'links') && r.hblink === false) warn(n + t('HBlink4 down'));
     const cd = (r.channels || []).filter(c => c.hblink === false).length;
-    if (has(s, 'links') && cd) warn(n + cd + ' monitored channel' + (cd > 1 ? 's\' HBlink4 peers' : '\'s HBlink4 peer') + ' down');
-    if (has(s, 'links') && 'mqtt' in r && !r.mqtt) warn(n + 'MQTT down');
-    if (r.queue_dropped || r.dropped) warn(n + num(r.queue_dropped || r.dropped) + ' bursts dropped');
+    if (has(s, 'links') && cd) warn(n + cd + t(' monitored channel') + (cd > 1 ? t('s\' HBlink4 peers') : t('\'s HBlink4 peer')) + t(' down'));
+    if (has(s, 'links') && 'mqtt' in r && !r.mqtt) warn(n + t('MQTT down'));
+    if (r.queue_dropped || r.dropped) warn(n + num(r.queue_dropped || r.dropped) + t(' bursts dropped'));
   });
   sdrs(s).forEach(d => {
     if (s.usb_either && !d.started) return;
-    const n = 'SDR ' + d.name + ': ';
+    const n = t('SDR ') + d.name + ': ';
     if (d.rtl_error) bad(n + d.rtl_error);
-    else if (!d.rtl_open && !d.sim) bad(n + 'front end not open');
-    else if (!d.receiving && !d.calibrating) bad(n + 'not receiving');
+    else if (!d.rtl_open && !d.sim) bad(n + t('front end not open'));
+    else if (!d.receiving && !d.calibrating) bad(n + t('not receiving'));
     const of = d.overflows != null ? d.overflows : d.ring_overflows, errs = d.read_errors != null ? d.read_errors : d.usb_errors;
-    if (of) warn(n + num(of) + (d.sim ? ' chunks dropped' : d.overflows != null ? ' overflows' : ' ring overflows'));
-    if (errs) warn(n + num(errs) + ' sample errors');
-    if (d.tx_errors) warn(n + num(d.tx_errors) + ' transmit errors');
-    if (d.cpu_load > 0.9) warn(n + 'DSP load ' + pct(d.cpu_load));
-    if ('mqtt' in d && !d.mqtt) warn(n + 'MQTT down');
-    if (d.mqtt_dropped) warn(n + num(d.mqtt_dropped) + ' MQTT posts dropped');
-    if (d.hblink_up < d.hblink_peers) warn(n + d.hblink_up + ' of ' + d.hblink_peers + ' HBlink4 peers up');
+    if (of) warn(n + num(of) + (d.sim ? t(' chunks dropped') : d.overflows != null ? t(' overflows') : t(' ring overflows')));
+    if (errs) warn(n + num(errs) + t(' sample errors'));
+    if (d.tx_errors) warn(n + num(d.tx_errors) + t(' transmit errors'));
+    if (d.cpu_load > 0.9) warn(n + t('DSP load ') + pct(d.cpu_load));
+    if ('mqtt' in d && !d.mqtt) warn(n + t('MQTT down'));
+    if (d.mqtt_dropped) warn(n + num(d.mqtt_dropped) + t(' MQTT posts dropped'));
+    if (d.hblink_up < d.hblink_peers) warn(n + d.hblink_up + t(' of ') + d.hblink_peers + t(' HBlink4 peers up'));
   });
   const af = s.memory && s.memory.alloc_fails;
-  if (af && af.n) warn('Memory: ' + num(af.n) + ' allocation' + (af.n > 1 ? 's' : '') + ' refused since boot (the last ' + num(af.size) + ' bytes, in ' + (af.task || 'a task') + ')');
-  if (s.safe_mode) bad('Safe mode: the board crashed several times in a row soon after boot, so its radios are off. Fix the settings, then restart.');
+  if (af && af.n) warn(t('Memory: ') + num(af.n) + t(' allocation') + (af.n > 1 ? 's' : '') + t(' refused since boot (the last ') + num(af.size) + t(' bytes, in ') + (af.task || t('a task')) + ')');
+  if (s.safe_mode) bad(t('Safe mode: the board crashed several times in a row soon after boot, so its radios are off. Fix the settings, then restart.'));
   modems(s).forEach(m => {
     const n = (m.kind || 'Modem') + ' ' + m.name + ': ';
     if (m.error) bad(n + m.error);
-    else if (!m.open) bad(n + 'port not open');
-    else if (!m.ready) warn(n + 'not ready yet');
+    else if (!m.open) bad(n + t('port not open'));
+    else if (!m.ready) warn(n + t('not ready yet'));
   });
   for (const [k, v] of extras(s)) if (v && typeof v == 'object') flat(v).forEach(([f, x]) => {
-    if (tone(f, x) == 'bad') bad(k.replace(/_/g, ' ') + ' ' + f.replace(/_/g, ' ') + ': ' + (typeof x == 'boolean' ? 'no' : x));
+    if (tone(f, x) == 'bad') bad(k.replace(/_/g, ' ') + ' ' + f.replace(/_/g, ' ') + ': ' + (typeof x == 'boolean' ? t('no') : x));
   });
   return p.sort((a, b) => (a[0] == 'bad' ? 0 : 1) - (b[0] == 'bad' ? 0 : 1));
 }
@@ -254,7 +546,7 @@ const opened = new Set();
 document.addEventListener('toggle', e => { const k = e.target.dataset && e.target.dataset.k;
   if (k != null) e.target.open ? opened.add(k) : opened.delete(k); }, true);
 const more = (o, known, key) => { const r = flat(o).filter(([k]) => !known.includes(k.split('.')[0]));
-  return r.length ? '<details data-k="' + esc(key) + '"' + (opened.has(key) ? ' open' : '') + '><summary>More fields (' + r.length +
+  return r.length ? '<details data-k="' + esc(key) + '"' + (opened.has(key) ? ' open' : '') + '><summary>' + t('More fields') + ' (' + r.length +
     ')</summary>' + fields(r) + '</details>' : ''; };
 
 // ── the board ─────────────────────────────────────────────────────────────
@@ -262,251 +554,251 @@ const clockName = c => c === 'pps' ? sp('ok', 'GNSS PPS') : c === 'ntp' ? sp('ok
 // The system clock (a host): what the OS's NTP client reports.
 const osSync = o => !o || !o.known ? sp('mute', 'sync state not known') : o.synced ? sp('ok', 'synchronized') : sp('warn', 'not synchronized');
 const usText = v => v == null ? '-' : Math.abs(v) >= 1000 ? (v / 1000).toFixed(2) + ' ms' : Number(v).toFixed(0) + ' us';
-const clockRow = s => has(s, 'netclock') ? ['Clock', clockName(s.clock)] : has(s, 'os_clock') ? ['Clock', 'system clock, ' + osSync(s.clock_os)] : null;
+const clockRow = s => has(s, 'netclock') ? [t('Clock'), clockName(s.clock)] : has(s, 'os_clock') ? [t('Clock'), t('system clock, ') + osSync(s.clock_os)] : null;
 const wifiText = s => yes(s.wifi) + (s.ip ? ' ' + esc(s.ip) : '') + (s.ap_mode ? ' ' + sp('warn', '(setup access point on)') : '');
 // What this server has (caps in /api/status). A board without them is firmware with everything.
 const FW_CAPS = {ota: true, restart: true, wifi: true, tasks: true, coredump: true, board_mem: true, netclock: true, links: true, settings: true, settings_edit: true};
 const caps = s => (s && s.caps) || FW_CAPS;
 const has = (s, c) => !!caps(s)[c];
-const memRow = s => has(s, 'board_mem') ? ['Memory free', kb(s.heap_free) + ' internal, ' + kb(s.psram_free) + ' PSRAM'] :
-  has(s, 'sys_mem') ? ['Process memory', kb(s.rss) + ' resident, ' + kb(s.rss_peak) + ' peak'] : null;
+const memRow = s => has(s, 'board_mem') ? [t('Memory free'), kb(s.heap_free) + t(' internal, ') + kb(s.psram_free) + t(' PSRAM')] :
+  has(s, 'sys_mem') ? [t('Process memory'), kb(s.rss) + t(' resident, ') + kb(s.rss_peak) + t(' peak')] : null;
 // Each core's busy share (cpu: one figure per core, with the FreeRTOS run-time stats built in).
-const cpuRow = s => (s.cpu || s.cpu_process != null) && ['CPU', (s.cpu || []).map((v, c) => 'core ' + c + ' ' + sp(v > 0.9 ? 'bad' : v > 0.75 ? 'warn' : '', pct(v))).join(', ') +
-  (s.cpu_process != null ? (s.cpu ? '; ' : '') + 'this program ' + pct(s.cpu_process) : '')];
+const cpuRow = s => (s.cpu || s.cpu_process != null) && [t('CPU'), (s.cpu || []).map((v, c) => t('core ') + c + ' ' + sp(v > 0.9 ? 'bad' : v > 0.75 ? 'warn' : '', pct(v))).join(', ') +
+  (s.cpu_process != null ? (s.cpu ? t('; ') : '') + t('this program ') + pct(s.cpu_process) : '')];
 // The battery (power: a board with a power key or a battery monitor).
-const battRow = s => s.power && s.power.battery_mv != null && ['Battery', (s.power.battery_pct < 0 ? sp('mute', 'none') :
+const battRow = s => s.power && s.power.battery_mv != null && [t('Battery'), (s.power.battery_pct < 0 ? sp('mute', 'none') :
   sp(s.power.battery_pct < 15 ? 'bad' : s.power.battery_pct < 30 ? 'warn' : '', s.power.battery_pct + '%')) +
   ' <span class="mute">(' + (s.power.battery_mv / 1000).toFixed(2) + ' V)</span>'];
-const buildRow = s => ['Build', (/-dirty$/.test(s.version) ? sp('bad', esc(s.version)) : esc(s.version)) + (s.idf ? ' · IDF ' + esc(s.idf) : '')];
+const buildRow = s => [t('Build'), (/-dirty$/.test(s.version) ? sp('bad', esc(s.version)) : esc(s.version)) + (s.idf ? ' · IDF ' + esc(s.idf) : '')];
 const boardRows = s => [
-  ['Runs', (radios(s).concat(sdrs(s), modems(s)).map(x => x.name).filter(Boolean).map(esc).join(', ') || '-') +
-    (s.usb_either ? ' <span class="mute">(both on USB: whichever is plugged in runs)</span>' : '')],
-  has(s, 'settings') && ['Settings', s.settings_ok ? sp('ok', 'ok') : sp('bad', esc(s.settings_error) + ' (running the defaults)')],
-  has(s, 'wifi') && ['Wi-Fi', wifiText(s)], clockRow(s), memRow(s), cpuRow(s), battRow(s),
-  ['Up', dur(s.uptime_s) + ' <span class="mute">(last ' + (has(s, 'coredump') ? 'reset' : 'start') + ': ' + esc(s.reset) + ')</span>'],
-  has(s, 'coredump') && ['Crash', crashText(s.crash)], has(s, 'crash') && ['Last exit', exitText(s.last_exit)], buildRow(s)];
+  [t('Runs'), (radios(s).concat(sdrs(s), modems(s)).map(x => x.name).filter(Boolean).map(esc).join(', ') || '-') +
+    (s.usb_either ? ' <span class="mute">' + t('(both on USB: whichever is plugged in runs)') + '</span>' : '')],
+  has(s, 'settings') && [t('Settings'), s.settings_ok ? sp('ok', 'ok') : sp('bad', esc(s.settings_error) + t(' (running the defaults)'))],
+  has(s, 'wifi') && [t('Wi-Fi'), wifiText(s)], clockRow(s), memRow(s), cpuRow(s), battRow(s),
+  [t('Up'), dur(s.uptime_s) + ' <span class="mute">(last ' + (has(s, 'coredump') ? t('reset') : t('start')) + ': ' + esc(s.reset) + ')</span>'],
+  has(s, 'coredump') && [t('Crash'), crashText(s.crash)], has(s, 'crash') && [t('Last exit'), exitText(s.last_exit)], buildRow(s)];
 // A host's memory: the process's, and the system's.
-const hostMemCard = s => '<h2>Memory</h2>' + kv([['Process', kb(s.rss) + ' resident, ' + kb(s.rss_peak) + ' peak'],
-  s.mem_total != null && ['System', kb(s.mem_avail) + ' available of ' + kb(s.mem_total)]]);
+const hostMemCard = s => '<h2>' + t('Memory') + '</h2>' + kv([[t('Process'), kb(s.rss) + t(' resident, ') + kb(s.rss_peak) + t(' peak')],
+  s.mem_total != null && [t('System'), kb(s.mem_avail) + t(' available of ') + kb(s.mem_total)]]);
 // The system clock's card (Network): the OS's NTP discipline, read only.
 function osClockCard(s) {
   const o = s.clock_os || {};
-  return '<h2>Clock ' + (o.known && o.synced ? pill('ok', 'synchronized') : o.known ? pill('warn', 'not synchronized') : '') + '</h2>' +
-    kv([['Source', esc(o.source || 'system clock')], ['State', osSync(o)],
-      o.known && ['Estimated error', usText(o.est_error_us)], o.known && ['Maximum error', usText(o.max_error_us)],
-      o.known && ['Offset', usText(o.offset_us)], o.known && ['Frequency', (o.freq_ppm == null ? '-' : Number(o.freq_ppm).toFixed(3) + ' ppm')]]) +
-    '<p class="mute">The operating system sets this clock (its NTP client); this page only reads it.</p>';
+  return '<h2>' + t('Clock') + ' ' + (o.known && o.synced ? pill('ok', 'synchronized') : o.known ? pill('warn', 'not synchronized') : '') + '</h2>' +
+    kv([[t('Source'), esc(o.source || t('system clock'))], [t('State'), osSync(o)],
+      o.known && [t('Estimated error'), usText(o.est_error_us)], o.known && [t('Maximum error'), usText(o.max_error_us)],
+      o.known && [t('Offset'), usText(o.offset_us)], o.known && [t('Frequency'), (o.freq_ppm == null ? '-' : Number(o.freq_ppm).toFixed(3) + ' ppm')]]) +
+    '<p class="mute">' + t('The operating system sets this clock (its NTP client); this page only reads it.') + '</p>';
 }
 // The memory plan (docs/spec/fw/memory.md): what each role claimed at boot, and the heap now.
-const freeLargest = (o, label) => o ? kb(o.free) + ' free, ' + kb(o.largest) + ' in one piece' + (label || '') : '-';
+const freeLargest = (o, label) => o ? kb(o.free) + t(' free, ') + kb(o.largest) + t(' in one piece') + (label || '') : '-';
 function memCard(m) {
-  if (!m) return '<h2>Memory</h2>' + kv([['Free', '-']]);
+  if (!m) return '<h2>' + t('Memory') + '</h2>' + kv([[t('Free'), '-']]);
   const i = m.internal, roles = Object.entries(m.roles || {});
-  const state = r => r.state == 'planned' ? (r.why ? sp('warn', 'planned, ' + esc(r.why)) : sp('ok', 'planned')) :
-    sp(r.state == 'refused' ? 'bad' : 'mute', esc(r.state) + (r.why ? ': ' + esc(r.why) : ''));
+  const state = r => r.state == 'planned' ? (r.why ? sp('warn', t('planned') + ', ' + esc(r.why)) : sp('ok', 'planned')) :
+    sp(r.state == 'refused' ? 'bad' : 'mute', esc(t(r.state)) + (r.why ? ': ' + esc(r.why) : ''));
   const claims = (name, r) => '<details data-k="mem.' + esc(name) + '"' + (opened.has('mem.' + name) ? ' open' : '') + '><summary>' +
-    esc(name) + ' claims</summary><div class="wrap"><table><tr><th>Claim</th><th class="n">Bytes</th><th>In</th><th>How</th></tr>' +
+    esc(name) + t(' claims') + '</summary><div class="wrap"><table><tr><th>' + t('Claim') + '</th><th class="n">' + t('Bytes') + '</th><th>' + t('In') + '</th><th>' + t('How') + '</th></tr>' +
     Object.entries(r.claims || {}).map(([k, c]) => '<tr><td>' + esc(k) + '</td><td class="n">' + num(c.bytes) + '</td><td>' + esc(c.in) +
-      '</td><td>' + esc(c.how) + (c.how == 'hold' ? ' (' + c.handed + ' handed over)' : c.how == 'alloc' && !c.taken ? ' <span class="mute">(not taken)</span>' : '') +
+      '</td><td>' + esc(c.how) + (c.how == 'hold' ? ' (' + c.handed + t(' handed over)') : c.how == 'alloc' && !c.taken ? ' <span class="mute">' + t('(not taken)') + '</span>' : '') +
       '</td></tr>').join('') + '</table></div></details>';
-  return '<h2>Memory ' + (!m.planned ? pill('warn', 'not planned') : m.ok ? pill('ok', 'plan fits') : pill('bad', 'plan short')) + '</h2>' +
+  return '<h2>' + t('Memory') + ' ' + (!m.planned ? pill('warn', 'not planned') : m.ok ? pill('ok', 'plan fits') : pill('bad', 'plan short')) + '</h2>' +
     (m.error ? '<p>' + sp('bad', esc(m.error)) + '</p>' : '') +
-    kv([['Internal', freeLargest(i)], ['DMA', freeLargest(m.dma)], ['PSRAM', freeLargest(m.psram)],
-      ['Margin', kb(m.margin) + ' kept for Wi-Fi and lwIP' + (m.strict ? ' (strict)' : '') + ', ' +
-        (m.spare >= 0 ? kb(m.spare) + ' spare' : sp('bad', kb(-m.spare) + ' short'))],
-      i && ['Planned', kb(i.planned) + ' internal held, ' + kb(i.budget) + ' budgeted, ' + kb(m.psram && m.psram.planned) + ' PSRAM'],
-      i && ['Outside the plan', kb(i.outside_plan) + ' <span class="mute">(of ' + kb(i.at_plan) + ' free at the plan: budgets, Wi-Fi, lwIP, the rest)</span>']]) +
-    (roles.length ? '<div class="wrap"><table><tr><th>Role</th><th>State</th><th class="n">Internal</th><th class="n">DMA</th><th class="n">PSRAM</th><th class="n">Budget</th></tr>' +
+    kv([[t('Internal'), freeLargest(i)], [t('DMA'), freeLargest(m.dma)], [t('PSRAM'), freeLargest(m.psram)],
+      [t('Margin'), kb(m.margin) + t(' kept for Wi-Fi and lwIP') + (m.strict ? t(' (strict)') : '') + ', ' +
+        (m.spare >= 0 ? kb(m.spare) + t(' spare') : sp('bad', kb(-m.spare) + t(' short')))],
+      i && [t('Planned'), kb(i.planned) + t(' internal held, ') + kb(i.budget) + t(' budgeted, ') + kb(m.psram && m.psram.planned) + t(' PSRAM')],
+      i && [t('Outside the plan'), kb(i.outside_plan) + ' <span class="mute">(of ' + kb(i.at_plan) + t(' free at the plan: budgets, Wi-Fi, lwIP, the rest)') + '</span>']]) +
+    (roles.length ? '<div class="wrap"><table><tr><th>' + t('Role') + '</th><th>' + t('State') + '</th><th class="n">' + t('Internal') + '</th><th class="n">' + t('DMA') + '</th><th class="n">' + t('PSRAM') + '</th><th class="n">' + t('Budget') + '</th></tr>' +
       roles.map(([k, r]) => '<tr><td>' + esc(k) + '</td><td style="white-space:normal">' + state(r) + '</td><td class="n">' + kb(r.internal) +
         '</td><td class="n">' + kb(r.dma) + '</td><td class="n">' + kb(r.psram) + '</td><td class="n">' + kb(r.budget) + '</td></tr>').join('') +
       '</table></div>' + roles.map(([k, r]) => claims(k, r)).join('') : '');
 }
 // A host tool's last exit, as its supervisor recorded it
 function exitText(x) {
-  if (!x) return 'none recorded';
-  return sp(x.signal ? 'bad' : 'warn', x.signal ? 'killed by ' + esc(x.signal_name || 'signal ' + x.signal) : 'exited with code ' + x.rc) +
-    (x.at ? ', ' + ago(Date.now() / 1000 - x.at) : '') + ' · <a href="/api/crash">its log</a>';
+  if (!x) return t('none recorded');
+  return sp(x.signal ? 'bad' : 'warn', x.signal ? t('killed by ') + esc(x.signal_name || t('signal ') + x.signal) : t('exited with code ') + x.rc) +
+    (x.at ? ', ' + ago(Date.now() / 1000 - x.at) : '') + ' · <a href="/api/crash">' + t('its log') + '</a>';
 }
 function crashText(c) {
-  if (!c) return 'none saved';
-  return sp('bad', c.error ? 'core dump, bad: ' + esc(c.error) : esc(c.task) + ' at ' + esc(c.pc) + ', ' + esc(c.cause) +
-    (c.details ? ': ' + esc(c.details) : '') + (c.this_image !== false ? '' : ' (image ' + esc(c.elf) + ')')) +
-    ' · <a href="/api/coredump">core dump</a>';
+  if (!c) return t('none saved');
+  return sp('bad', c.error ? t('core dump, bad: ') + esc(c.error) : esc(c.task) + t(' at ') + esc(c.pc) + ', ' + esc(c.cause) +
+    (c.details ? ': ' + esc(c.details) : '') + (c.this_image !== false ? '' : t(' (image ') + esc(c.elf) + ')')) +
+    ' · <a href="/api/coredump">' + t('core dump') + '</a>';
 }
 
 // ── a roamer or repeater ──────────────────────────────────────────────────
 // with an Apps card for the repeater itself, this card is its radio
-const rname = r => (r.mode === 'roamer' ? 'Roamer ' : S.s && S.s.apps && S.s.apps.some(a => a.name == r.name) ? 'Radio of ' : r.mode === 'sfr repeater' ? 'SFR repeater ' : 'Repeater ') + esc(r.name);
+const rname = r => (r.mode === 'roamer' ? t('Roamer ') : S.s && S.s.apps && S.s.apps.some(a => a.name == r.name) ? t('Radio of ') : r.mode === 'sfr repeater' ? t('SFR repeater ') : t('Repeater ')) + esc(r.name);
 const rstate = (r, either) => either && !r.started ? pill('warn', 'waiting') : r.radio_error || !r.radio_ready ? pill('bad', 'not ready') :
   r.keyed || r.sending ? pill('ok', 'on air') : r.heard ? pill('ok', 'hearing') : pill('ok', 'ready');
-const chan = r => mhz(r.frequency) + ' CC' + r.colorCode + (r.state ? ', ' + esc(r.state) : '') +
-  (r.listening ? ', listening' : '') + (r.scanning ? ', scanning' : '') + (r.keyed ? ', ' + sp('ok', 'keyed') : '');
-const radioRow = r => ['Radio', yes(r.radio_ready) + ' ' + esc(r.modem || (r.modem_open ? 'port open, no answer' : 'not connected (' + r.port + ')')) +
+const chan = r => mhz(r.frequency) + ' CC' + r.colorCode + (r.state ? t(', ') + esc(t(r.state)) : '') +
+  (r.listening ? t(', listening') : '') + (r.scanning ? t(', scanning') : '') + (r.keyed ? t(', ') + sp('ok', 'keyed') : '');
+const radioRow = r => [t('Radio'), yes(r.radio_ready) + ' ' + esc(r.modem || (r.modem_open ? t('port open, no answer') : t('not connected (') + r.port + ')')) +
   (r.radio_error ? '<br>' + sp('bad', esc(r.radio_error)) : '')];
-const bmText = b => esc(b.state.replace('_', ' ')) + ' <span class="mute">(' + num(b.logins) + ' logins, ' + cnt(b.refusals) + ' refused' +
-  (b.refused_at ? ' last at ' + esc(b.refused_at) : '') + ', quiet ' + cnt(b.went_quiet) + (b.state == 'up' ? '' : ', retry in up to ' + b.backoff_s + ' s') + ')</span>';
-const hbRow = r => r.brandmeister ? ['BrandMeister', bmText(r.brandmeister) + '<br>' + num(r.hblink_tx) + ' sent, ' + num(r.hblink_rx) + ' received'] :
+const bmText = b => esc(t(b.state.replace('_', ' '))) + ' <span class="mute">(' + num(b.logins) + t(' logins, ') + cnt(b.refusals) + t(' refused') +
+  (b.refused_at ? t(' last at ') + esc(b.refused_at) : '') + t(', quiet ') + cnt(b.went_quiet) + (b.state == 'up' ? '' : t(', retry in up to ') + b.backoff_s + ' s') + ')</span>';
+const hbRow = r => r.brandmeister ? ['BrandMeister', bmText(r.brandmeister) + '<br>' + num(r.hblink_tx) + t(' sent, ') + num(r.hblink_rx) + t(' received')] :
   !('hblink' in r) ? ['HBlink4', sp('mute', 'no peer: not on an HBlink network')] :
-  ['HBlink4', up(r.hblink) + ' <span class="mute">(' + num(r.hblink_tx) + ' sent, ' + num(r.hblink_rx) + ' received)</span>' + (r.sctp ?
-  '<br>SCTP ' + esc(r.sctp.state) + ', RTT ' + r.sctp.srtt_ms + ' ms, ' + cnt(r.sctp.retransmits + r.sctp.fast_retransmits) + ' resent, ' +
-  cnt(r.sctp.abandoned) + ' given up, ' + cnt(r.sctp.failures) + ' lost' : '')];
+  ['HBlink4', up(r.hblink) + ' <span class="mute">(' + num(r.hblink_tx) + t(' sent, ') + num(r.hblink_rx) + t(' received') + ')</span>' + (r.sctp ?
+  '<br>SCTP ' + esc(t(r.sctp.state)) + t(', RTT ') + r.sctp.srtt_ms + t(' ms, ') + cnt(r.sctp.retransmits + r.sctp.fast_retransmits) + t(' resent, ') +
+  cnt(r.sctp.abandoned) + t(' given up, ') + cnt(r.sctp.failures) + t(' lost') : '')];
 const R_KNOWN = 'name mode started port split modem_open radio_ready radio_error modem protocol radio requests no_reply refused bursts_heard state listening scanning status_misses queue_dropped keyed busy1 busy2 dropped jitter frequency colorCode hblink hblink_tx hblink_rx brandmeister mqtt heard sending channels'.split(' ');
 function roamerFull(r, either) {
   const w = either && waiting(r, 'the radio'), j = r.jitter, sl = r.split;
   return card(rname(r) + ' ' + rstate(r, either), kv(w || [
     radioRow(r),
-    ['Kind / protocol', esc(r.radio || '-') + ' / ' + r.protocol],
-    ['Channel', chan(r)],
-    ['Heard / sending', esc(r.heard || '-') + ' / ' + esc(r.sending || '-')],
-    ['Modem requests', num(r.requests) + ' (' + cnt(r.no_reply) + ' without a reply, ' + cnt(r.refused) + ' refused)'],
-    ['Bursts heard', num(r.bursts_heard)],
-    r.status_misses != null && ['Transceiver', cnt(r.status_misses) + ' status polls missed, ' + cnt(r.queue_dropped) + ' network bursts dropped'],
-    r.keyed != null && !S.s.apps && ['Repeater', 'slot 1 ' + (r.busy1 ? sp('ok', 'busy') : 'idle') + ', slot 2 ' + (r.busy2 ? sp('ok', 'busy') : 'idle') + ', ' + cnt(r.dropped) + ' bursts dropped'],
-    j && ['Jitter buffer', esc(j.mode) + ', target ' + j.target_ms + ' ms, jitter ' + j.jitter_ms + ' ms, late ' + j.late_ms + ' ms' +
-      (j.min_ms != null ? ' (' + j.min_ms + ' to ' + j.max_ms + ' ms)' : '') + '<br>' + num(j.streams) + ' streams, ' + cnt(j.underruns) +
-      ' underruns, ' + num(j.grown) + ' grown, ' + num(j.shrunk) + ' shrunk'],
-    sl && ['Split', yes(sl.ready) + ' epoch ' + sl.epoch + ', ' + num(sl.tx) + ' sent, ' + num(sl.rx) + ' received, ' + cnt(sl.dropped) + ' dropped, ' + cnt(sl.failed) + ' failed'],
+    [t('Kind / protocol'), esc(r.radio || '-') + ' / ' + r.protocol],
+    [t('Channel'), chan(r)],
+    [t('Heard / sending'), esc(r.heard || '-') + ' / ' + esc(r.sending || '-')],
+    [t('Modem requests'), num(r.requests) + t(' (') + cnt(r.no_reply) + t(' without a reply, ') + cnt(r.refused) + t(' refused)')],
+    [t('Bursts heard'), num(r.bursts_heard)],
+    r.status_misses != null && [t('Transceiver'), cnt(r.status_misses) + t(' status polls missed, ') + cnt(r.queue_dropped) + t(' network bursts dropped')],
+    r.keyed != null && !S.s.apps && [t('Repeater'), t('slot 1 ') + (r.busy1 ? sp('ok', 'busy') : t('idle')) + t(', slot 2 ') + (r.busy2 ? sp('ok', 'busy') : t('idle')) + t(', ') + cnt(r.dropped) + t(' bursts dropped')],
+    j && [t('Jitter buffer'), esc(j.mode) + t(', target ') + j.target_ms + t(' ms, jitter ') + j.jitter_ms + t(' ms, late ') + j.late_ms + t(' ms') +
+      (j.min_ms != null ? t(' (') + j.min_ms + t(' to ') + j.max_ms + t(' ms)') : '') + '<br>' + num(j.streams) + t(' streams, ') + cnt(j.underruns) +
+      t(' underruns, ') + num(j.grown) + t(' grown, ') + num(j.shrunk) + t(' shrunk')],
+    sl && [t('Split'), yes(sl.ready) + t(' epoch ') + sl.epoch + t(', ') + num(sl.tx) + t(' sent, ') + num(sl.rx) + t(' received, ') + cnt(sl.dropped) + t(' dropped, ') + cnt(sl.failed) + t(' failed')],
     has(S.s, 'links') && hbRow(r),
     has(S.s, 'links') && 'mqtt' in r && ['MQTT', up(r.mqtt)],
-    r.channels && ['Monitoring', r.channels.map(c => esc(c.id) + ' ' + (c.freq / 1e6).toFixed(5) + ' MHz, ' + num(c.bursts) + ' bursts' +
-      (c.rssi ? ', ' + c.rssi + ' dBm' : '') + ('hblink' in c ? ', HBlink4 ' + up(c.hblink) : '')).join('<br>')],
+    r.channels && [t('Monitoring'), r.channels.map(c => esc(c.id) + ' ' + (c.freq / 1e6).toFixed(5) + t(' MHz, ') + num(c.bursts) + t(' bursts') +
+      (c.rssi ? t(', ') + c.rssi + t(' dBm') : '') + ('hblink' in c ? t(', HBlink4 ') + up(c.hblink) : '')).join('<br>')],
   ]) + more(r, R_KNOWN, 'r:' + r.name));
 }
 const roamerBrief = (r, either) => card(rname(r) + ' ' + rstate(r, either), kv((either && waiting(r, 'the radio')) ||
-  [radioRow(r), ['Channel', chan(r)], ['Heard', esc(r.heard || '-')], ['Sending', esc(r.sending || '-')], has(S.s, 'links') && ('mqtt' in r ? ['HBlink4 / MQTT', hbUp(r) + ' / ' + up(r.mqtt)] : ['HBlink4', hbUp(r)])]));
+  [radioRow(r), [t('Channel'), chan(r)], [t('Heard'), esc(r.heard || '-')], [t('Sending'), esc(r.sending || '-')], has(S.s, 'links') && ('mqtt' in r ? [t('HBlink4 / MQTT'), hbUp(r) + ' / ' + up(r.mqtt)] : ['HBlink4', hbUp(r)])]));
 
 // ── the apps: every repeater, parrot and IP gateway the settings have, each with what it's doing ──
 const APP_KIND = {repeater: 'Repeater', parrot: 'Parrot', ipgw: 'IP gateway', trunk: 'Trunked site'};
 const A_KNOWN = 'name type in out cc net slots id group keyed heard bursts_heard bursts_sent dropped state replayed ignored cut src dst'.split(' ');
-const callText = h => h.src + ' to ' + (h.group ? 'TG ' : '') + h.dst;
+const callText = h => h.src + t(' to ') + (h.group ? t('TG ') : '') + h.dst;
 function appSlot(a, sl) {
   const h = (a.heard || []).find(x => x.slot == sl.slot);
-  return ['Slot ' + sl.slot, (h ? sp('ok', 'hearing') + ' ' + callText(h) : sl.sending ? sp('ok', 'sending') + ' a call from the network' : 'idle') +
-    ' <span class="mute">(' + esc(sl.path) + (sl.peer != null ? ', peer ' + sl.peer : '') + ')</span>'];
+  return [t('Slot ') + sl.slot, (h ? sp('ok', 'hearing') + ' ' + callText(h) : sl.sending ? sp('ok', 'sending') + t(' a call from the network') : t('idle')) +
+    ' <span class="mute">(' + esc(sl.path) + (sl.peer != null ? t(', peer ') + sl.peer : '') + ')</span>'];
 }
 function appState(a) {
   if (a.type == 'repeater') return a.keyed ? pill('ok', 'on air') : (a.heard || []).length ? pill('ok', 'hearing') : 'keyed' in a ? pill('ok', 'ready') : '';
-  return a.state ? pill(a.state == 'idle' ? 'ok' : 'warn', esc(a.state)) : '';
+  return a.state ? pill(a.state == 'idle' ? 'ok' : 'warn', esc(t(a.state))) : '';
 }
 function appRows(a) {
   if (a.type == 'repeater') return [
-    ['Frequencies', 'in ' + mhz(a.in) + ', out ' + mhz(a.out) + (a.cc != null ? ', CC' + a.cc : '')],
-    ['Network', a.net ? esc(a.net) : sp('mute', 'none: local only')],
+    [t('Frequencies'), t('in ') + mhz(a.in) + t(', out ') + mhz(a.out) + (a.cc != null ? ', CC' + a.cc : '')],
+    [t('Network'), a.net ? esc(a.net) : sp('mute', 'none: local only')],
     ...(a.slots || []).map(sl => appSlot(a, sl)),
-    a.bursts_heard != null && ['Bursts', num(a.bursts_heard) + ' heard' + (a.bursts_sent != null ? ', ' + num(a.bursts_sent) + ' sent, ' + cnt(a.dropped) + ' dropped' : '')],
+    a.bursts_heard != null && [t('Bursts'), num(a.bursts_heard) + t(' heard') + (a.bursts_sent != null ? t(', ') + num(a.bursts_sent) + t(' sent, ') + cnt(a.dropped) + t(' dropped') : '')],
   ];
   return [
-    a.id != null && ['Answers', (a.group ? 'TG ' : 'ID ') + a.id],
-    a.state && a.src && ['Call', callText({src: a.src, dst: a.dst, group: a.group})],
-    a.replayed != null && ['Calls', num(a.replayed) + ' replayed, ' + cnt(a.ignored) + ' ignored, ' + cnt(a.cut) + ' cut short'],
+    a.id != null && [t('Answers'), (a.group ? t('TG ') : t('ID ')) + a.id],
+    a.state && a.src && [t('Call'), callText({src: a.src, dst: a.dst, group: a.group})],
+    a.replayed != null && [t('Calls'), num(a.replayed) + t(' replayed, ') + cnt(a.ignored) + t(' ignored, ') + cnt(a.cut) + t(' cut short')],
   ];
 }
-const appCard = a => card(esc(APP_KIND[a.type] || a.type) + ' ' + esc(a.name) + ' ' + appState(a), kv(appRows(a)) + more(a, A_KNOWN, 'a:' + a.name));
+const appCard = a => card(esc(t(APP_KIND[a.type] || a.type)) + ' ' + esc(a.name) + ' ' + appState(a), kv(appRows(a)) + more(a, A_KNOWN, 'a:' + a.name));
 
 // ── the SDR ───────────────────────────────────────────────────────────────
 // What warming up is waiting on: each reading not yet 10 min long, or moving more than it may
 function settleWait(p) {
   const w = [];
-  if (p.die_c != null) w.push('die ' + p.die_c.toFixed(1) + ' C, ' + (p.die_spread == null ? 'under 10 min of readings' :
-    'moved ' + p.die_spread.toFixed(1) + ' C' + (p.die_spread > p.die_tol ? ' (more than ' + p.die_tol + ' C)' : ', held')));
+  if (p.die_c != null) w.push(t('die ') + p.die_c.toFixed(1) + t(' C, ') + (p.die_spread == null ? t('under 10 min of readings') :
+    t('moved ') + p.die_spread.toFixed(1) + t(' C') + (p.die_spread > p.die_tol ? t(' (more than ') + p.die_tol + t(' C)') : t(', held'))));
   const c = p.clock;
-  if (c) w.push('sample rate ' + (c.spread == null ? 'timed for ' + Math.round(c.span_s / 60) + ' min' +
-    (c.steps ? ' (fit started over ' + c.steps + ' times)' : '') :
-    'moved ' + c.spread.toFixed(2) + ' ppm' + (c.spread > c.spread_tol ? ' (more than ' + c.spread_tol + ')' : ', held')));
+  if (c) w.push(t('sample rate ') + (c.spread == null ? t('timed for ') + Math.round(c.span_s / 60) + t(' min') +
+    (c.steps ? t(' (fit started over ') + c.steps + t(' times)') : '') :
+    t('moved ') + c.spread.toFixed(2) + t(' ppm') + (c.spread > c.spread_tol ? t(' (more than ') + c.spread_tol + t(')') : t(', held'))));
   return w.length ? '(' + w.join('; ') + ')' : '';
 }
 function ppm(p) {
   if (!p) return '-';
   const f = (v, n) => v == null ? '-' : (v > 0 ? '+' : '') + v.toFixed(n);
-  let t = 'set to ' + p.rtl + (p.learned == null ? (p.learning ? ', learning' : ', learning off') :
-    ', learned ' + f(p.learned, 2) + ' (' + (p.by == 'clock' ? 'sample clock' : p.channels + ' channels\' AFC') + ')') +
-    (p.saved == null ? '' : ', saved ' + f(p.saved, 2)) + (p.sim == null ? '' : ', simulated ' + f(p.sim, 2)) +
-    (p.table && p.table.length ? '<br>Learned at: ' + p.table.map(e => e.c + ' C ' + f(e.ppm, 2) +
+  let out = t('set to ') + p.rtl + (p.learned == null ? (p.learning ? t(', learning') : t(', learning off')) :
+    t(', learned ') + f(p.learned, 2) + ' (' + (p.by == 'clock' ? t('sample clock') : p.channels + t(' channels\' AFC')) + ')') +
+    (p.saved == null ? '' : t(', saved ') + f(p.saved, 2)) + (p.sim == null ? '' : t(', simulated ') + f(p.sim, 2)) +
+    (p.table && p.table.length ? '<br>' + t('Learned at: ') + p.table.map(e => e.c + t(' C ') + f(e.ppm, 2) +
       (e.n > 1 ? ' (' + e.n + ')' : '')).join(', ') +
-      (p.expected == null ? '' : '; expects ' + f(p.expected, 2) + (p.die_c == null ? '' : ' at ' + p.die_c.toFixed(1) + ' C')) : '') +
-    (p.settled ? '' : '<br><span class="warn">Warming up</span>: nothing saved until the die' +
-      (p.clock ? ' and the sample rate hold' : ' holds') + ' for 10 min. ' + settleWait(p));
+      (p.expected == null ? '' : t('; expects ') + f(p.expected, 2) + (p.die_c == null ? '' : t(' at ') + p.die_c.toFixed(1) + t(' C'))) : '') +
+    (p.settled ? '' : '<br><span class="warn">' + t('Warming up') + '</span>' + t(': nothing saved until the die') +
+      (p.clock ? t(' and the sample rate hold') : t(' holds')) + t(' for 10 min. ') + settleWait(p));
   const c = p.clock;
-  if (c) t += '<br>Sample clock: ' + (c.board == null ? 'waiting for the board\'s clock rate' :
-    c.ppm == null ? 'timing (' + Math.round(c.span_s) + ' s)' :
-    f(c.ppm, 2) + ' &plusmn; ' + c.err.toFixed(2) + ' over ' + Math.round(c.span_s / 60) + ' min' +
-    (c.trusted ? '' : ' <span class="warn">(not yet trusted)</span>')) +
-    (c.steps ? ', ' + c.steps + ' restarts for lost samples' : '');
-  return t;
+  if (c) out += '<br>' + t('Sample clock: ') + (c.board == null ? t('waiting for the board\'s clock rate') :
+    c.ppm == null ? t('timing (') + Math.round(c.span_s) + t(' s)') :
+    f(c.ppm, 2) + ' &plusmn; ' + c.err.toFixed(2) + t(' over ') + Math.round(c.span_s / 60) + t(' min') +
+    (c.trusted ? '' : ' <span class="warn">' + t('(not yet trusted)') + '</span>')) +
+    (c.steps ? t(', ') + c.steps + t(' restarts for lost samples') : '');
+  return out;
 }
 /* UTC slot timing: the gate's state and source, how far off, holdover's age, the modem's last slot against the grid */
-function slotTiming(t) {
-  const cls = {aligned: 'ok', holdover: 'warn', free: 'warn', stopped: 'bad'}[t.state];
-  let v = '<span class="' + cls + '">' + esc(t.state) + '</span> on ' + esc(t.source || 'no clock') +
-    (t.err_us == null ? '' : ', within ' + Math.round(t.err_us) + ' us');
-  if (t.state == 'holdover') v += ', for ' + Math.round(t.holdover_s) + ' s';
-  if (t.phase_us != null) v += '; the last slot ' + t.phase_us.toFixed(1) + ' us off before steering (' + t.slips + ' samples slipped or inserted)';
-  if (t.why) v += '<br>' + esc(t.why);
+function slotTiming(tm) {
+  const cls = {aligned: 'ok', holdover: 'warn', free: 'warn', stopped: 'bad'}[tm.state];
+  let v = '<span class="' + cls + '">' + esc(t(tm.state)) + '</span>' + t(' on ') + esc(tm.source || t('no clock')) +
+    (tm.err_us == null ? '' : t(', within ') + Math.round(tm.err_us) + t(' us'));
+  if (tm.state == 'holdover') v += t(', for ') + Math.round(tm.holdover_s) + t(' s');
+  if (tm.phase_us != null) v += t('; the last slot ') + tm.phase_us.toFixed(1) + t(' us off before steering (') + tm.slips + t(' samples slipped or inserted)');
+  if (tm.why) v += '<br>' + esc(tm.why);
   return v;
 }
 // A board's front end by its kind; a host tool's device by its name
-const feRow = d => [{lr2021: 'LR2021', sx1255: 'SX1255', host: 'Device'}[d.frontend] || 'RTL-SDR', (d.sim ? '<span class="warn">none</span> ' : yes(d.rtl_open) + ' ') +
-  esc(d.rtl || 'not plugged in') + (d.rtl_error ? '<br>' + sp('bad', esc(d.rtl_error)) : '')];
-const rxRow = d => ['Receiving', yes(d.receiving) + (d.calibrating ? ' ' + sp('warn', 'calibrating (tuned to the TX LO)') :
-  d.center_hz ? ' at ' + (d.center_hz / 1e6).toFixed(5) + ' MHz' : '') + ', ' + d.sample_rate / 1000 + ' kS/s, gain ' +
-  (d.gain_db == null ? 'tuner AGC' : d.gain_db + ' dB' + (d.agc ? ' (AGC)' : ''))];
+const feRow = d => [{lr2021: 'LR2021', sx1255: 'SX1255', host: t('Device')}[d.frontend] || 'RTL-SDR', (d.sim ? '<span class="warn">' + t('none') + '</span> ' : yes(d.rtl_open) + ' ') +
+  esc(d.rtl || t('not plugged in')) + (d.rtl_error ? '<br>' + sp('bad', esc(d.rtl_error)) : '')];
+const rxRow = d => [t('Receiving'), yes(d.receiving) + (d.calibrating ? ' ' + sp('warn', 'calibrating (tuned to the TX LO)') :
+  d.center_hz ? t(' at ') + (d.center_hz / 1e6).toFixed(5) + t(' MHz') : '') + t(', ') + d.sample_rate / 1000 + t(' kS/s, gain ') +
+  (d.gain_db == null ? t('tuner AGC') : d.gain_db + t(' dB') + (d.agc ? t(' (AGC)') : ''))];
 function usbRow(d) {
   if (d.samples_expected_per_s != null) { // a host tool: samples a second against the rate, what the device dropped
     const r = d.samples_per_s == null ? null : d.samples_per_s / d.samples_expected_per_s;
-    return ['Samples', (r == null ? 'not yet measured' : (d.samples_per_s / 1000).toFixed(1) + ' of ' + d.samples_expected_per_s / 1000 + ' kS/s (' +
-      sp(r < 0.99 ? 'warn' : '', (100 * r).toFixed(1) + '%') + ')') + ', ' + cnt(d.read_errors) + ' errors, ' + cnt(d.overflows) + ' overflows' +
-      (d.lost_ms ? ', ' + sp('warn', d.lost_ms.toFixed(1) + ' ms lost') : '')];
+    return [t('Samples'), (r == null ? t('not yet measured') : (d.samples_per_s / 1000).toFixed(1) + t(' of ') + d.samples_expected_per_s / 1000 + ' kS/s (' +
+      sp(r < 0.99 ? 'warn' : '', (100 * r).toFixed(1) + '%') + ')') + t(', ') + cnt(d.read_errors) + t(' errors, ') + cnt(d.overflows) + t(' overflows') +
+      (d.lost_ms ? t(', ') + sp('warn', d.lost_ms.toFixed(1) + t(' ms lost')) : '')];
   }
   const r = d.usb_bytes_per_s == null ? null : d.usb_bytes_per_s / d.usb_expected_per_s;
-  const u = r == null ? '-' : Math.round(d.usb_bytes_per_s / 1000) + ' of ' + Math.round(d.usb_expected_per_s / 1000) + ' KB/s (' +
+  const u = r == null ? '-' : Math.round(d.usb_bytes_per_s / 1000) + t(' of ') + Math.round(d.usb_expected_per_s / 1000) + ' KB/s (' +
     sp(r < 0.99 ? 'warn' : '', (100 * r).toFixed(1) + '%') + ')';
-  return [d.sim ? 'Samples (simulated)' : d.frontend == 'lr2021' ? 'SPI samples' : 'USB samples', u + ', ' + cnt(d.usb_errors) + ' errors, ' +
-    cnt(d.ring_overflows) + (d.sim ? ' chunks dropped (late)' : ' ring overflows')];
+  return [d.sim ? t('Samples (simulated)') : d.frontend == 'lr2021' ? t('SPI samples') : t('USB samples'), u + t(', ') + cnt(d.usb_errors) + t(' errors, ') +
+    cnt(d.ring_overflows) + (d.sim ? t(' chunks dropped (late)') : t(' ring overflows'))];
 }
 const STAGE = {input: 'input', channelize: 'channelizer', demod: 'demods', track: 'trackers'};
-const loadRow = d => d.cpu_load != null && ['DSP load', sp(d.cpu_load > 0.9 ? 'bad' : d.cpu_load > 0.75 ? 'warn' : '', pct(d.cpu_load)) +
-  (d.load_of ? ' of ' + esc(d.load_of) : ' of core 1 (esp-dsp FFT ' + (d.esp_dsp_fft ? 'on' : 'off') + ', FIR ' + (d.esp_dsp_fir ? 'on' : 'off') + ')') +
-  (d.cpu_stages ? '<br><span class="mute">' + Object.entries(d.cpu_stages).map(([k, v]) => esc(STAGE[k] || k.replace(/_/g, ' ')) + ' ' + pct(v)).join(', ') +
+const loadRow = d => d.cpu_load != null && [t('DSP load'), sp(d.cpu_load > 0.9 ? 'bad' : d.cpu_load > 0.75 ? 'warn' : '', pct(d.cpu_load)) +
+  (d.load_of ? t(' of ') + esc(d.load_of) : t(' of core 1 (esp-dsp FFT ') + (d.esp_dsp_fft ? t('on') : t('off')) + t(', FIR ') + (d.esp_dsp_fir ? t('on') : t('off')) + t(')')) +
+  (d.cpu_stages ? '<br><span class="mute">' + Object.entries(d.cpu_stages).map(([k, v]) => esc(t(STAGE[k] || k.replace(/_/g, ' '))) + ' ' + pct(v)).join(', ') +
   '</span>' : '')];
 // A host tool's SDR that transmits too: its channel and LO, the gain, keyed or not
-const txRow = d => d.tx_hz != null && ['Transmitting', (d.tx_on ? sp('ok', 'keyed') : 'idle') + ' on ' + mhz(d.tx_hz) + ' (LO ' + mhz(d.tx_lo_hz) +
-  '), gain ' + d.tx_gain_db + ' dB, ' + cnt(d.tx_errors) + ' write errors'];
+const txRow = d => d.tx_hz != null && [t('Transmitting'), (d.tx_on ? sp('ok', 'keyed') : t('idle')) + t(' on ') + mhz(d.tx_hz) + t(' (LO ') + mhz(d.tx_lo_hz) +
+  t('), gain ') + d.tx_gain_db + t(' dB, ') + cnt(d.tx_errors) + t(' write errors')];
 const sstate = (d, either) => either && !d.started ? pill('warn', 'waiting') : d.rtl_error ? pill('bad', 'not receiving') :
   d.calibrating ? pill('warn', 'calibrating') : !d.receiving ? pill('bad', 'not receiving') : d.tx_on ? pill('ok', 'transmitting') : pill('ok', 'receiving');
 const S_KNOWN = ('name started rtl_open sim frontend rtl rtl_error receiving sample_rate center_hz gain_db cpu_load cpu_stages usb_bytes_per_s ' +
   'usb_expected_per_s usb_errors ring_overflows ppm mqtt mqtt_dropped hblink_peers hblink_up esp_dsp_fft esp_dsp_fir channels slot_timing ' +
   'calibrating agc samples_per_s samples_expected_per_s read_errors overflows lost_ms load_of tx_hz tx_lo_hz tx_gain_db tx_on tx_errors').split(' ');
 const busy = (radio, ch) => [...S.calls.values()].some(c => c.active && c.radio == radio && c.channel == ch);
-const mqttRow = d => 'mqtt' in d && ['MQTT', up(d.mqtt) + ', ' + cnt(d.mqtt_dropped) + ' posts dropped'];
-const peersRow = d => d.hblink_peers > 0 && ['HBlink4', sp(d.hblink_up < d.hblink_peers ? 'warn' : '', d.hblink_up + ' of ' + d.hblink_peers) + ' peers registered'];
+const mqttRow = d => 'mqtt' in d && ['MQTT', up(d.mqtt) + t(', ') + cnt(d.mqtt_dropped) + t(' posts dropped')];
+const peersRow = d => d.hblink_peers > 0 && ['HBlink4', sp(d.hblink_up < d.hblink_peers ? 'warn' : '', d.hblink_up + t(' of ') + d.hblink_peers) + t(' peers registered')];
 const sdrFull = (d, either) => card('SDR ' + esc(d.name) + ' ' + sstate(d, either), kv((either && waiting(d, 'an RTL-SDR')) || [
     feRow(d), rxRow(d), usbRow(d), txRow(d),
-    d.ppm && ['Tuner ppm', ppm(d.ppm)],
+    d.ppm && [t('Tuner ppm'), ppm(d.ppm)],
     loadRow(d),
-    d.slot_timing && d.slot_timing.mode == 'utc' && ['Slot timing', slotTiming(d.slot_timing)],
+    d.slot_timing && d.slot_timing.mode == 'utc' && [t('Slot timing'), slotTiming(d.slot_timing)],
     mqttRow(d), peersRow(d),
   ]) + more(d, S_KNOWN, 's:' + d.name));
 // Each SDR's channels: one table, or a table each under its name
 function chanTables(list) {
   $('chans').innerHTML = list.map(d => (list.length > 1 ? '<h3>SDR ' + esc(d.name) + '</h3>' : '') + chanTable(d.name, d.channels || [])).join('');
 }
-const chanTable = (radio, chans) => '<table><tr><th>Id</th><th>Name</th><th class="n">MHz</th><th>In window</th><th class="n">Bursts</th><th class="n">RSSI</th>' +
-    '<th class="n w">AFC Hz</th><th class="n w">Idle</th></tr>' + chans.map(c => '<tr' + (busy(radio, c.id) ? ' class="live"' : '') + '><td>' +
+const chanTable = (radio, chans) => '<table><tr><th>' + t('Id') + '</th><th>' + t('Name') + '</th><th class="n">MHz</th><th>' + t('In window') + '</th><th class="n">' + t('Bursts') + '</th><th class="n">RSSI</th>' +
+    '<th class="n w">AFC Hz</th><th class="n w">' + t('Idle') + '</th></tr>' + chans.map(c => '<tr' + (busy(radio, c.id) ? ' class="live"' : '') + '><td>' +
       esc(c.id) + '</td><td>' + esc(c.name) + '</td><td class="n">' + (c.freq / 1e6).toFixed(5) + '</td><td>' + yes(c.in) + '</td><td class="n">' +
-      num(c.bursts) + '</td><td class="n">' + (c.rssi ? c.rssi + ' dBm' : '-') + '</td><td class="n w">' + c.afc + '</td><td class="n w">' +
+      num(c.bursts) + '</td><td class="n">' + (c.rssi ? c.rssi + t(' dBm') : '-') + '</td><td class="n w">' + c.afc + '</td><td class="n w">' +
       (c.idle == null ? '-' : c.idle + '%') + '</td></tr>').join('') + '</table>';
 const sdrBrief = (d, either) => card('SDR ' + esc(d.name) + ' ' + sstate(d, either), kv((either && waiting(d, 'an RTL-SDR')) ||
-  [feRow(d), rxRow(d), usbRow(d), txRow(d), loadRow(d), d.channels && ['Channels', d.channels.filter(c => c.in).length + ' of ' + d.channels.length + ' in the window'],
-   ('mqtt' in d || d.hblink_peers > 0) && ['MQTT / HBlink4', ('mqtt' in d ? up(d.mqtt) : '-') + ' / ' + (d.hblink_peers > 0 ? d.hblink_up + ' of ' + d.hblink_peers + ' peers' : '-')]]));
+  [feRow(d), rxRow(d), usbRow(d), txRow(d), loadRow(d), d.channels && [t('Channels'), d.channels.filter(c => c.in).length + t(' of ') + d.channels.length + t(' in the window')],
+   ('mqtt' in d || d.hblink_peers > 0) && [t('MQTT / HBlink4'), ('mqtt' in d ? up(d.mqtt) : '-') + ' / ' + (d.hblink_peers > 0 ? d.hblink_up + t(' of ') + d.hblink_peers + t(' peers') : '-')]]));
 
 // ── a radio or modem a host tool drives on a port (a RadioFoundry radio's hotspot, an MMDVM) ──
 const M_KNOWN = 'name kind role port open ready version state error'.split(' ');
 const mstate = m => m.error ? pill('bad', 'failed') : !m.open ? pill('bad', 'not open') : !m.ready ? pill('warn', 'starting') : pill('ok', 'ready');
-const mrows = m => [['Port', yes(m.open) + ' ' + esc(m.port || '-') + (m.error ? '<br>' + sp('bad', esc(m.error)) : '')],
-  m.role && ['Role', esc(m.role)], ['Answers', esc(m.version || '-')], m.state && ['State', esc(m.state)]];
-const modemFull = m => card(esc(m.kind || 'Modem') + ' ' + esc(m.name) + ' ' + mstate(m), kv(mrows(m)) +
+const mrows = m => [[t('Port'), yes(m.open) + ' ' + esc(m.port || '-') + (m.error ? '<br>' + sp('bad', esc(m.error)) : '')],
+  m.role && [t('Role'), esc(m.role)], [t('Answers'), esc(m.version || '-')], m.state && [t('State'), esc(t(m.state))]];
+const modemFull = m => card(esc(m.kind || t('Modem')) + ' ' + esc(m.name) + ' ' + mstate(m), kv(mrows(m)) +
   fields(flat(m).filter(([k]) => !M_KNOWN.includes(k.split('.')[0]))));
-const modemBrief = m => card(esc(m.kind || 'Modem') + ' ' + esc(m.name) + ' ' + mstate(m), kv(mrows(m)));
+const modemBrief = m => card(esc(m.kind || t('Modem')) + ' ' + esc(m.name) + ' ' + mstate(m), kv(mrows(m)));
 
 // ── each tab, from the last status ────────────────────────────────────────
 function render() {
@@ -514,14 +806,14 @@ function render() {
   if (!s) return;
   const p = problems(s), nb = p.filter(x => x[0] == 'bad').length, h = $('health');
   h.className = 'pill ' + (nb ? 'bad' : p.length ? 'warn' : 'ok');
-  h.textContent = nb ? nb + (nb > 1 ? ' problems' : ' problem') : p.length ? p.length + (p.length > 1 ? ' warnings' : ' warning') : 'All good';
-  const t = S.tab, rs = radios(s), ds = sdrs(s);
-  if (t == 'overview') {
-    $('ov_health').innerHTML = '<h2>' + (has(s, 'coredump') ? 'Board ' : 'Program ') + (p.length ? '' : pill('ok', 'all good')) + '</h2>' + (p.length ? '<ul class="prob">' +
+  h.textContent = nb ? nb + (nb > 1 ? t(' problems') : t(' problem')) : p.length ? p.length + (p.length > 1 ? t(' warnings') : t(' warning')) : t('All good');
+  const tab = S.tab, rs = radios(s), ds = sdrs(s);
+  if (tab == 'overview') {
+    $('ov_health').innerHTML = '<h2>' + (has(s, 'coredump') ? t('Board ') : t('Program ')) + (p.length ? '' : pill('ok', 'all good')) + '</h2>' + (p.length ? '<ul class="prob">' +
       p.map(x => '<li class="' + x[0] + '">' + esc(x[1]) + '</li>').join('') + '</ul>' : '') + kv(boardRows(s));
     $('ov_cards').innerHTML = rs.map((r, i) => roamerBrief(r, s.usb_either && !i)).join('') + ds.map(d => sdrBrief(d, s.usb_either)).join('') +
       modems(s).map(modemBrief).join('');
-  } else if (t == 'radios') {
+  } else if (tab == 'radios') {
     $('apps').innerHTML = (s.apps || []).map(appCard).join('');
     $('radios').innerHTML = rs.map((r, i) => roamerFull(r, s.usb_either && !i)).join('');
     $('sdrs').innerHTML = ds.map(d => sdrFull(d, s.usb_either)).join('');
@@ -540,43 +832,43 @@ function render() {
       pick.value = spec.sdr;
     }
     $('noradio').hidden = !!(rs.length || ds.length || modems(s).length);
-  } else if (t == 'network') {
-    $('links').innerHTML = has(s, 'wifi') || has(s, 'links') ? card('Links', kv([has(s, 'wifi') && ['Wi-Fi', wifiText(s)], clockRow(s),
-      ...(has(s, 'links') ? rs.map(r => [esc(r.name), 'HBlink4 ' + hbUp(r) + ', MQTT ' + up(r.mqtt) + (r.sctp ? ', SCTP ' + esc(r.sctp.state) + ' (RTT ' + r.sctp.srtt_ms + ' ms)' : '')]) : []),
+  } else if (tab == 'network') {
+    $('links').innerHTML = has(s, 'wifi') || has(s, 'links') ? card(t('Links'), kv([has(s, 'wifi') && [t('Wi-Fi'), wifiText(s)], clockRow(s),
+      ...(has(s, 'links') ? rs.map(r => [esc(r.name), 'HBlink4 ' + hbUp(r) + t(', MQTT ') + up(r.mqtt) + (r.sctp ? t(', SCTP ') + esc(t(r.sctp.state)) + t(' (RTT ') + r.sctp.srtt_ms + t(' ms)') : '')]) : []),
       ...(has(s, 'links') ? ds.filter(d => 'mqtt' in d || d.hblink_peers > 0).map(d => [esc(d.name), ('mqtt' in d ? 'MQTT ' + up(d.mqtt) : '') +
-        ('mqtt' in d && d.hblink_peers > 0 ? ', ' : '') + (d.hblink_peers > 0 ? 'HBlink4 ' + d.hblink_up + ' of ' + d.hblink_peers + ' peers' : '')]) : [])])) : '';
+        ('mqtt' in d && d.hblink_peers > 0 ? t(', ') : '') + (d.hblink_peers > 0 ? 'HBlink4 ' + d.hblink_up + t(' of ') + d.hblink_peers + t(' peers') : '')]) : [])])) : '';
     if (has(s, 'os_clock')) $('osclock').innerHTML = osClockCard(s);
-  } else if (t == 'maint') {
-    $('m_board').innerHTML = '<h2>' + (has(s, 'coredump') ? 'Board' : 'Program') + '</h2>' + kv([buildRow(s), ['Up', dur(s.uptime_s)],
-      [has(s, 'coredump') ? 'Last reset' : 'Last start', esc(s.reset)], memRow(s), cpuRow(s), battRow(s),
-      has(s, 'coredump') && ['Built with', [s.build_roamer && 'roamer', s.build_sdr && 'SDR'].filter(Boolean).join(', ') || '-']]);
+  } else if (tab == 'maint') {
+    $('m_board').innerHTML = '<h2>' + (has(s, 'coredump') ? t('Board') : t('Program')) + '</h2>' + kv([buildRow(s), [t('Up'), dur(s.uptime_s)],
+      [has(s, 'coredump') ? t('Last reset') : t('Last start'), esc(s.reset)], memRow(s), cpuRow(s), battRow(s),
+      has(s, 'coredump') && [t('Built with'), [s.build_roamer && 'roamer', s.build_sdr && 'SDR'].filter(Boolean).join(', ') || '-']]);
     $('pwroff').hidden = !(s.power && s.power.key);
     $('m_more').innerHTML = extras(s).map(([k, v]) => card(esc(k.replace(/_/g, ' ')), v && typeof v == 'object' ? fields(flat(v)) : fv(k, v))).join('');
     const c = s.crash, x = s.last_exit;
-    if (has(s, 'crash')) $('m_crash').innerHTML = '<h2>Last exit ' + (x ? pill(x.signal ? 'bad' : 'warn', x.signal ? 'crashed' : 'stopped') : pill('ok', 'none')) +
-      '</h2>' + kv([['Last', exitText(x)], x && x.last_line && ['Its last line', '<code>' + esc(x.last_line) + '</code>']]) +
-      (x ? '<button type="button" class="sec" onclick="eraseExit()">Erase the record</button>' : '');
-    else $('m_crash').innerHTML = '<h2>Crash ' + (c ? pill('bad', 'core dump saved') : pill('ok', 'none')) + '</h2>' + kv([['Last', crashText(c)],
-      c && c.exccause != null && ['Cause', esc(c.cause) + ' (' + c.exccause + '), address ' + esc(c.excvaddr)],
-      c && c.backtrace && ['Backtrace', '<code>' + esc(c.backtrace) + '</code>' + (c.backtrace_corrupted ? ' ' + sp('warn', '(corrupted)') : '')],
-      c && ['Size', kb(c.size)]]) + (c ? '<button type="button" class="sec" onclick="eraseDump()">Erase the core dump</button>' : '');
+    if (has(s, 'crash')) $('m_crash').innerHTML = '<h2>' + t('Last exit') + ' ' + (x ? pill(x.signal ? 'bad' : 'warn', x.signal ? 'crashed' : 'stopped') : pill('ok', 'none')) +
+      '</h2>' + kv([[t('Last'), exitText(x)], x && x.last_line && [t('Its last line'), '<code>' + esc(x.last_line) + '</code>']]) +
+      (x ? '<button type="button" class="sec" onclick="eraseExit()">' + t('Erase the record') + '</button>' : '');
+    else $('m_crash').innerHTML = '<h2>' + t('Crash') + ' ' + (c ? pill('bad', 'core dump saved') : pill('ok', 'none')) + '</h2>' + kv([[t('Last'), crashText(c)],
+      c && c.exccause != null && [t('Cause'), esc(c.cause) + ' (' + c.exccause + t('), address ') + esc(c.excvaddr)],
+      c && c.backtrace && [t('Backtrace'), '<code>' + esc(c.backtrace) + '</code>' + (c.backtrace_corrupted ? ' ' + sp('warn', '(corrupted)') : '')],
+      c && [t('Size'), kb(c.size)]]) + (c ? '<button type="button" class="sec" onclick="eraseDump()">' + t('Erase the core dump') + '</button>' : '');
     $('m_mem').innerHTML = has(s, 'board_mem') ? memCard(s.memory) : hostMemCard(s);
     $('tests').hidden = !s.build_sdr;
-    if (s.build_sdr) $('tests_t').innerHTML = '<dt>Self-test</dt><dd>' + esc(s.selftest || 'not run') + '</dd><dt>USB spike</dt><dd>' + esc(s.spike || 'not run') + '</dd>';
+    if (s.build_sdr) $('tests_t').innerHTML = '<dt>' + t('Self-test') + '</dt><dd>' + esc(s.selftest || t('not run')) + '</dd><dt>' + t('USB spike') + '</dt><dd>' + esc(s.spike || t('not run')) + '</dd>';
   }
-  if (t == 'overview' || t == 'heard') renderHeard();
+  if (tab == 'overview' || tab == 'heard') renderHeard();
 }
 
 // ── last heard ────────────────────────────────────────────────────────────
 function callRow(c, now, brief) {
   const a = (now - c.t0) / 1000, d = c.active ? a : c.duration;
-  const sig = [c.rssi != null && c.rssi + ' dBm', c.ber != null && c.ber.toFixed(1) + '% BER'].filter(Boolean).join(' · ');
-  const info = [c.kind == 'data' && 'data' + (c.frames != null ? ', ' + c.frames + ' blocks' : ''), c.kind == 'csbk' && esc(c.desc || 'CSBK'),
-    c.late && 'late entry', c.emergency && sp('bad', 'emergency'), c.encrypted && sp('warn', 'encrypted'),
-    c.end == 'lost' && sp('warn', 'lost')].filter(Boolean).join(', ');
+  const sig = [c.rssi != null && c.rssi + t(' dBm'), c.ber != null && c.ber.toFixed(1) + t('% BER')].filter(Boolean).join(' · ');
+  const info = [c.kind == 'data' && t('data') + (c.frames != null ? t(', ') + c.frames + t(' blocks') : ''), c.kind == 'csbk' && esc(c.desc || 'CSBK'),
+    c.late && t('late entry'), c.emergency && sp('bad', 'emergency'), c.encrypted && sp('warn', 'encrypted'),
+    c.end == 'lost' && sp('warn', 'lost')].filter(Boolean).join(t(', '));
   const tt = c.start_ms ? new Date(c.start_ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : '';
-  return '<tr' + (c.active ? ' class="live"' : '') + '><td title="' + tt + '">' + (c.active ? sp('ok', '&#9679; live') : ago(a)) + '</td><td>' +
-    pill(c.dir, c.dir.toUpperCase()) + '</td><td class="n">' + c.src + '</td><td>' + (c.group ? 'TG ' : '') + c.dst + '</td>' +
+  return '<tr' + (c.active ? ' class="live"' : '') + '><td title="' + tt + '">' + (c.active ? sp('ok', '● live') : ago(a)) + '</td><td>' +
+    pill(c.dir, c.dir.toUpperCase()) + '</td><td class="n">' + c.src + '</td><td>' + (c.group ? t('TG ') : '') + c.dst + '</td>' +
     (brief ? '' : '<td class="n">' + c.slot + '</td>') + '<td>' + esc(c.radio) + (c.channel ? ' / ' + esc(c.channel) : '') +
     (brief ? ' <span class="mute">TS' + c.slot + (c.freq ? ' ' + (c.freq / 1e6).toFixed(4) : '') + '</span>' : '') + '</td>' +
     (brief ? '' : '<td class="w">' + (c.freq ? (c.freq / 1e6).toFixed(5) : '') + (c.cc != null ? ' CC' + c.cc : '') + '</td>') +
@@ -584,12 +876,12 @@ function callRow(c, now, brief) {
 }
 function renderHeard() {
   const now = Date.now(), all = [...S.calls.values()].sort((a, b) => b.id - a.id);
-  const head = brief => '<table><tr><th>When</th><th></th><th class="n">From</th><th>To</th>' + (brief ? '' : '<th class="n">Slot</th>') +
-    '<th>Radio</th>' + (brief ? '' : '<th class="w">MHz</th>') + '<th class="n">Length</th>' + (brief ? '' : '<th class="w">Signal</th><th></th>') + '</tr>';
-  const none = '<p class="mute">No calls yet.</p>';
+  const head = brief => '<table><tr><th>' + t('When') + '</th><th></th><th class="n">' + t('From') + '</th><th>' + t('To') + '</th>' + (brief ? '' : '<th class="n">' + t('Slot') + '</th>') +
+    '<th>' + t('Radio') + '</th>' + (brief ? '' : '<th class="w">MHz</th>') + '<th class="n">' + t('Length') + '</th>' + (brief ? '' : '<th class="w">' + t('Signal') + '</th><th></th>') + '</tr>';
+  const none = '<p class="mute">' + t('No calls yet.') + '</p>';
   if (S.tab == 'overview') {
     const act = all.filter(c => c.active), rest = all.filter(c => !c.active).slice(0, Math.max(0, 6 - act.length));
-    $('ov_lhn').textContent = act.length ? act.length + ' active' : '';
+    $('ov_lhn').textContent = act.length ? act.length + t(' active') : '';
     $('ov_heard').innerHTML = all.length ? head(true) + act.concat(rest).map(c => callRow(c, now, true)).join('') + '</table>' : none;
   } else {
     const f = S.f, l = all.filter(c => f == 'all' || (f == 'live' ? c.active : c.dir == f));
@@ -618,29 +910,29 @@ async function status() {
     S.s = s;
     S.statusAt = Date.now();
     applyCaps(s);
-    $('title').textContent = 'RadioFoundry ' + S.s.name;
-    document.title = S.s.name + ' · RadioFoundry';
-  } catch (e) { $('health').className = 'pill bad'; $('health').textContent = 'no answer'; return; }
+    $('title').textContent = t('RadioFoundry ') + S.s.name;
+    document.title = S.s.name + t(' · RadioFoundry');
+  } catch (e) { $('health').className = 'pill bad'; $('health').textContent = t('no answer'); return; }
   render();
 }
 function clock() {
   const s = S.s, ms = S.now ? S.now + Date.now() - S.nowAt : 0;
   $('clock').innerHTML = [ms ? new Date(ms).toISOString().slice(11, 19) + ' UTC' : S.nowAt ? sp('warn', 'clock not set') : '',
-    s ? 'up ' + dur(s.uptime_s + (Date.now() - S.statusAt) / 1000).replace(/\.\d/, '') : ''].filter(Boolean).join(' · ');
+    s ? t('up ') + dur(s.uptime_s + (Date.now() - S.statusAt) / 1000).replace(/\.\d/, '') : ''].filter(Boolean).join(' · ');
 }
 let n = 0;
 async function tick() {
   if (document.hidden) return;
-  const t = S.tab, k = n++;
+  const tab = S.tab, k = n++;
   if (k % 2 == 0) await status();
-  if ((t == 'overview' || t == 'heard' || t == 'radios') ? k % 2 == 1 : k % 15 == 1) await heard();
-  if (t == 'overview' || t == 'heard') renderHeard();
-  if (t == 'maint' && $('logauto').checked && k % 5 == 0) loadLog();
+  if ((tab == 'overview' || tab == 'heard' || tab == 'radios') ? k % 2 == 1 : k % 15 == 1) await heard();
+  if (tab == 'overview' || tab == 'heard') renderHeard();
+  if (tab == 'maint' && $('logauto').checked && k % 5 == 0) loadLog();
   clock();
 }
 function show() {
-  const t = (location.hash || '#overview').slice(1);
-  S.tab = document.querySelector('section[data-tab="' + t + '"]') ? t : 'overview';
+  const tab = (location.hash || '#overview').slice(1);
+  S.tab = document.querySelector('section[data-tab="' + tab + '"]') ? tab : 'overview';
   for (const x of document.querySelectorAll('section[data-tab]')) x.classList.toggle('on', x.dataset.tab == S.tab);
   for (const a of $('nav').children) a.classList.toggle('on', a.hash == '#' + S.tab);
   if (S.tab == 'settings' && !$('cfg').value) config();
@@ -658,14 +950,14 @@ function applyCaps(s) {
   for (const el of document.querySelectorAll('[data-cap]')) el.classList.toggle('nocap', !el.dataset.cap.split(' ').some(k => c[k]));
   for (const [k, src] of [['wifi', '/wifilist.js'], ['netclock', '/netclock.js']])
     if (c[k] && !loaded[k]) { loaded[k] = true; const e = document.createElement('script'); e.src = src; document.body.appendChild(e); }
-  $('fwh').textContent = c.ota ? 'Firmware update' : 'Restart';
+  $('fwh').textContent = c.ota ? t('Firmware update') : t('Restart');
   if (c.ota && !c.coredump) { /* a host program (rdofradio): its supervisor puts the new one in place */
     $('fw').accept = '';
-    $('otahelp').textContent = 'Upload a new program (the bundle\'s rdofradio.gz, or rdofradio): it stops, and its supervisor puts the new one in place and starts it.';
+    $('otahelp').textContent = t('Upload a new program (the bundle\'s rdofradio.gz, or rdofradio): it stops, and its supervisor puts the new one in place and starts it.');
   }
   $('cfg').readOnly = !c.settings_edit;
   $('cfgsrc').hidden = !s.settings_source && c.settings_edit;
-  $('cfgsrc').textContent = (c.settings_edit ? 'From ' : 'Read only here: ') + (s.settings_source || 'this program\'s command line');
+  $('cfgsrc').textContent = (c.settings_edit ? t('From ') : t('Read only here: ')) + (s.settings_source || t('this program\'s command line'));
   if (!c.ota && !c.coredump && !S.hostSeen) { S.hostSeen = true; $('logauto').checked = true; }
   const a = [...$('nav').children].find(x => x.hash == '#' + S.tab);
   if (a && a.classList.contains('nocap')) { history.replaceState(null, '', '#overview'); show(); }
@@ -692,16 +984,16 @@ async function loadLog() {
 async function tasks() {
   const r = await fetch('/api/tasks');
   $('tasks').hidden = false;
-  $('tasks').textContent = r.ok || r.status == 409 ? await r.text() : 'Not in this build (FreeRTOS run-time stats are off).';
+  $('tasks').textContent = r.ok || r.status == 409 ? await r.text() : t('Not in this build (FreeRTOS run-time stats are off).');
 }
-async function powerOff() { if (confirm('Turn the board off? Only its power key turns it on again.')) $('otamsg').textContent = await (await fetch('/api/power_off', {method: 'POST'})).text(); }
-async function restart() { if (confirm(has(S.s, 'coredump') ? 'Restart the board?' : 'Restart the program?')) $('otamsg').textContent = await (await fetch('/api/restart', {method: 'POST'})).text(); }
-async function eraseExit() { if (confirm('Erase the record of the last exit?')) { await fetch('/api/crash', {method: 'DELETE'}); status(); } }
-async function eraseDump() { if (confirm('Erase the saved core dump?')) { await fetch('/api/coredump', {method: 'DELETE'}); status(); } }
+async function powerOff() { if (confirm(t('Turn the board off? Only its power key turns it on again.'))) $('otamsg').textContent = await (await fetch('/api/power_off', {method: 'POST'})).text(); }
+async function restart() { if (confirm(has(S.s, 'coredump') ? t('Restart the board?') : t('Restart the program?'))) $('otamsg').textContent = await (await fetch('/api/restart', {method: 'POST'})).text(); }
+async function eraseExit() { if (confirm(t('Erase the record of the last exit?'))) { await fetch('/api/crash', {method: 'DELETE'}); status(); } }
+async function eraseDump() { if (confirm(t('Erase the saved core dump?'))) { await fetch('/api/coredump', {method: 'DELETE'}); status(); } }
 async function ota() {
   const f = $('fw').files[0];
   if (!f) return;
-  $('otamsg').textContent = 'uploading ' + f.name + ' (' + kb(f.size) + ')...';
+  $('otamsg').textContent = t('uploading ') + f.name + ' (' + kb(f.size) + t(')...');
   const r = await fetch('/api/ota', {method: 'POST', body: f});
   $('otamsg').innerHTML = r.ok ? sp('ok', esc(await r.text())) : sp('bad', esc(await r.text()));
 }
@@ -793,7 +1085,7 @@ function drawSpec() {
   const y = d => h - (d - spec.lo) / (spec.hi - spec.lo) * h;
   g.strokeStyle = 'rgba(255,255,255,.12)'; g.fillStyle = 'rgba(255,255,255,.5)'; g.lineWidth = 1;
   for (let d = Math.ceil(spec.lo / 10) * 10; d < spec.hi; d += 10) {
-    g.beginPath(); g.moveTo(0, y(d)); g.lineTo(w, y(d)); g.stroke(); g.fillText(d + ' dB', 4 * dpr, y(d) + 2 * dpr);
+    g.beginPath(); g.moveTo(0, y(d)); g.lineTo(w, y(d)); g.stroke(); g.fillText(d + t(' dB'), 4 * dpr, y(d) + 2 * dpr);
   }
   if (spec.units) {                                                   // a line every 1, 2 or 5 x 10^k Hz, ~90 px apart
     const step = niceStep(90 * vw * spec.units / c.clientWidth), dp = Math.max(2, Math.min(5, Math.ceil(6 - Math.log10(step))));
@@ -803,8 +1095,8 @@ function drawSpec() {
         const x = xf(f); if (x < 0 || x > w) continue;
         g.strokeStyle = 'rgba(255,255,255,.12)'; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
         if (x >= free) {
-          const t = (f / 1e6).toFixed(dp); g.fillStyle = 'rgba(255,255,255,.5)'; g.fillText(t, x + 3 * dpr, h - 14 * dpr);
-          free = x + g.measureText(t).width + 10 * dpr;
+          const lbl = (f / 1e6).toFixed(dp); g.fillStyle = 'rgba(255,255,255,.5)'; g.fillText(lbl, x + 3 * dpr, h - 14 * dpr);
+          free = x + g.measureText(lbl).width + 10 * dpr;
         }
       }
   }
@@ -849,12 +1141,12 @@ function drawSpec() {
   if (spec.hover != null && spec.last && segs.length) {
     const f = uToF(spec.v0 + spec.hover * vw), sg = segAt(f), right = spec.hover > 0.7;
     const p = spec.pieces.find(p => f >= p.lo && f < p.hi);
-    const t = sg.gap ? 'cut: ' + (sg.f0 / 1e6).toFixed(4) + ' - ' + (sg.f1 / 1e6).toFixed(4) + ' MHz, nothing received'
-      : (f / 1e6).toFixed(4) + ' MHz' + (p ? '  ' + (-spec.last[p.off + Math.floor((f - p.f0) / p.bw)] / 2).toFixed(1) + ' dBFS' +
-        (p.pass && Math.abs(f - p.mid) > p.pass ? ' (past the channel filter)' : '') : '');
+    const lbl = sg.gap ? t('cut: ') + (sg.f0 / 1e6).toFixed(4) + t(' - ') + (sg.f1 / 1e6).toFixed(4) + t(' MHz, nothing received')
+      : (f / 1e6).toFixed(4) + ' MHz' + (p ? '  ' + (-spec.last[p.off + Math.floor((f - p.f0) / p.bw)] / 2).toFixed(1) + t(' dBFS') +
+        (p.pass && Math.abs(f - p.mid) > p.pass ? t(' (past the channel filter)') : '') : '');
     g.strokeStyle = 'rgba(255,255,255,.6)'; g.lineWidth = 1; g.beginPath(); g.moveTo(spec.hover * w, 0); g.lineTo(spec.hover * w, h); g.stroke();
     g.fillStyle = '#fff'; g.textAlign = right ? 'right' : 'left';
-    g.fillText(t, spec.hover * w + (right ? -6 : 6) * dpr, 20 * dpr);
+    g.fillText(lbl, spec.hover * w + (right ? -6 : 6) * dpr, 20 * dpr);
     g.textAlign = 'left';
   }
 }
@@ -887,7 +1179,7 @@ function setView(a, b, whole) {
   const w = Math.min(most, Math.max(spec.units ? 4 * bw / spec.units : 0.01, b - a));   // at most 4 bins across
   a = Math.max(-MARGIN, Math.min(1 + MARGIN - w, a));
   spec.v0 = a; spec.v1 = a + w;
-  $('specinfo').dataset.zoom = w < 1 ? ' Zoom ' + (1 / w).toFixed(1) + 'x.' : '';
+  $('specinfo').dataset.zoom = w < 1 ? t(' Zoom ') + (1 / w).toFixed(1) + t('x.') : '';
   drawSpec(); drawWf();
 }
 function specAll() { setView(-MARGIN, 1 + MARGIN, true); }
@@ -975,16 +1267,16 @@ async function spectrum() {
     for (const r of d.rows) { const row = unb64(r); specRange(row); wfRow(row); spec.last = row; }
     if (d.rows.length) drawWf();
     spec.seq = d.seq;
-    $('specinfo').textContent = d.row_ms ? 'A row every ' + d.row_ms + ' ms, ' + (d.rate / d.bins).toFixed(0) +
-      ' Hz a bin.' + ($('specinfo').dataset.zoom || '') : 'Starting...';
-    if (d.pieces && d.row_ms) $('specinfo').textContent = 'A row every ' + d.row_ms + ' ms; each channel\'s own, ' +
-      d.pieces[0].bw.toFixed(0) + ' Hz a bin.' + ($('specinfo').dataset.zoom || '');
+    $('specinfo').textContent = d.row_ms ? t('A row every ') + d.row_ms + t(' ms, ') + (d.rate / d.bins).toFixed(0) +
+      t(' Hz a bin.') + ($('specinfo').dataset.zoom || '') : t('Starting...');
+    if (d.pieces && d.row_ms) $('specinfo').textContent = t('A row every ') + d.row_ms + t(' ms; each channel\'s own, ') +
+      d.pieces[0].bw.toFixed(0) + t(' Hz a bin.') + ($('specinfo').dataset.zoom || '');
     drawSpec();
   } catch (e) {}
   spec.busy = false;
 }
 setInterval(spectrum, 400);
-show(); tick(); setInterval(tick, 1000);
+show(); applyLang(); tick(); setInterval(tick, 1000);
 </script>
 </body>
 </html>

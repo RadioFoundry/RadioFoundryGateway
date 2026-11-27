@@ -5,6 +5,8 @@
 //   data-refresh="5"     seconds between refreshes while visible
 // Colors come from the page's --mute, --line, --ok, --bad, --accent if it has them.
 // Passwords never come back from the board: a stored one shows as "set".
+// Localization: the page may define window.rdofT(s) (returns the Chinese string, or s when English /
+// unknown) and window.rdofApplyLang() to retranslate static text; this file re-renders on 'rdof-langchange'.
 (() => {
   const css = `.wl{--wl-mute:var(--mute,#6b6b70);--wl-line:var(--line,#d8d8dc);--wl-ok:var(--ok,#1a7f37);--wl-bad:var(--bad,#c62828);--wl-acc:var(--accent,#0b5cad)}
 .wl table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}.wl td,.wl th{padding:3px 6px;border-bottom:1px solid var(--wl-line);text-align:left;white-space:nowrap}
@@ -15,7 +17,8 @@
 .wl td button{padding:2px 8px;margin-right:4px;background:none;color:var(--wl-acc);border:1px solid var(--wl-line)}.wl .now{margin:4px 0 8px}`;
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
   const dur = s => { const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`; };
-  const bars = r => r === undefined ? '<span class="m">not seen</span>' : `${r} dBm`;
+  const bars = r => r === undefined ? '<span class="m">' + L('not seen') + '</span>' : `${r} dBm`;
+  const L = s => (window.rdofT ? window.rdofT(s) : s);
 
   function mount(el) {
     if (el.dataset.wlMounted) return;
@@ -62,26 +65,26 @@ Moving a network renumbers the priorities in the new order. A blank password kee
     function render() {
       const s = st;
       $('now').innerHTML = s.connected
-        ? `<span class="ok">Connected</span> to <b>${esc(s.ssid)}</b>, ${s.rssi} dBm, channel ${s.channel}, ${esc(s.ip)} <span class="m">for ${dur(s.connected_s)} (${esc(s.bssid)})</span>`
-        : `<span class="bad">Not connected</span> <span class="m">(${esc(s.state)})</span>`;
-      if (s.ap_up) $('now').innerHTML += `<br><span class="m">Setup access point ${esc(s.ap_ssid)} is on (http://192.168.4.1/)</span>`;
-      $('nets').innerHTML = s.networks.map((n, i) => `<tr><td>${esc(n.ssid)}${n.hidden ? ' <span class="m">(hidden)</span>' : ''}` +
+        ? `<span class="ok">${L('Connected')}</span> ${L('to')} <b>${esc(s.ssid)}</b>, ${s.rssi} dBm, ${L('channel')} ${s.channel}, ${esc(s.ip)} <span class="m">${L('for ')}${dur(s.connected_s)} (${esc(s.bssid)})</span>`
+        : `<span class="bad">${L('Not connected')}</span> <span class="m">(${esc(s.state)})</span>`;
+      if (s.ap_up) $('now').innerHTML += `<br><span class="m">${L('Setup access point ')}${esc(s.ap_ssid)}${L(' is on (http://192.168.4.1/)')}</span>`;
+      $('nets').innerHTML = s.networks.map((n, i) => `<tr><td>${esc(n.ssid)}${n.hidden ? ' <span class="m">' + L('(hidden)') + '</span>' : ''}` +
         `${s.connected && n.ssid === s.ssid ? ' <span class="ok">●</span>' : ''}</td><td>${n.priority}</td><td>${bars(n.rssi)}</td>` +
-        `<td>${n.password_set ? 'set' : '<span class="m">open</span>'}</td><td><button type="button" data-a="up" data-i="${i}"${i ? '' : ' disabled'}>↑</button>` +
+        `<td>${n.password_set ? L('set') : '<span class="m">' + L('open') + '</span>'}</td><td><button type="button" data-a="up" data-i="${i}"${i ? '' : ' disabled'}>↑</button>` +
         `<button type="button" data-a="down" data-i="${i}"${i < s.networks.length - 1 ? '' : ' disabled'}>↓</button>` +
-        `<button type="button" data-a="edit" data-i="${i}">Edit</button><button type="button" data-a="del" data-i="${i}">Delete</button></td></tr>`).join('') ||
-        '<tr><td colspan="5" class="m">No networks yet: add one below</td></tr>';
-      $('seen').innerHTML = s.seen.map(a => `<tr><td>${esc(a.ssid)}</td><td>${a.rssi} dBm</td><td>${a.channel}</td><td>${a.open ? 'open' : 'secured'}</td>` +
-        `<td>${s.networks.some(n => n.ssid === a.ssid) ? '<span class="m">in the list</span>' : `<button type="button" data-a="pick" data-s="${esc(a.ssid)}">Add</button>`}</td></tr>`).join('') ||
-        `<tr><td colspan="5" class="m">${s.scans ? 'Nothing in sight' : 'No scan yet'}</td></tr>`;
+        `<button type="button" data-a="edit" data-i="${i}">${L('Edit')}</button><button type="button" data-a="del" data-i="${i}">${L('Delete')}</button></td></tr>`).join('') ||
+        `<tr><td colspan="5" class="m">${L('No networks yet: add one below')}</td></tr>`;
+      $('seen').innerHTML = s.seen.map(a => `<tr><td>${esc(a.ssid)}</td><td>${a.rssi} dBm</td><td>${a.channel}</td><td>${a.open ? L('open') : L('secured')}</td>` +
+        `<td>${s.networks.some(n => n.ssid === a.ssid) ? '<span class="m">' + L('in the list') + '</span>' : `<button type="button" data-a="pick" data-s="${esc(a.ssid)}">${L('Add')}</button>`}</td></tr>`).join('') ||
+        `<tr><td colspan="5" class="m">${s.scans ? L('Nothing in sight') : L('No scan yet')}</td></tr>`;
       document.getElementById('wl-seen').innerHTML = s.seen.map(a => `<option value="${esc(a.ssid)}">`).join('');
-      $('fails').innerHTML = s.fails.slice().reverse().map(x => `<tr><td>${dur(Math.max(0, s.uptime_s - x.t_s))} ago</td><td>${esc(x.ssid)}</td>` +
-        `<td>${x.lost ? 'lost: ' : ''}${esc(x.why)} <span class="m">(${x.reason})</span></td><td>${x.rssi ? x.rssi + ' dBm' : '--'}</td></tr>`).join('') ||
-        '<tr><td colspan="4" class="m">None</td></tr>';
+      $('fails').innerHTML = s.fails.slice().reverse().map(x => `<tr><td>${dur(Math.max(0, s.uptime_s - x.t_s))}${L(' ago')}</td><td>${esc(x.ssid)}</td>` +
+        `<td>${x.lost ? L('lost: ') : ''}${esc(x.why)} <span class="m">(${x.reason})</span></td><td>${x.rssi ? x.rssi + ' dBm' : '--'}</td></tr>`).join('') ||
+        `<tr><td colspan="4" class="m">${L('None')}</td></tr>`;
     }
 
     function resetForm() {
-      editing = null; f.reset(); f.priority.value = 0; $('add').textContent = 'Add'; $('cancel').hidden = true;
+      editing = null; f.reset(); f.priority.value = 0; $('add').textContent = L('Add'); $('cancel').hidden = true;
       f.password.placeholder = '';
     }
 
@@ -93,17 +96,17 @@ Moving a network renumbers the priorities in the new order. A blank password kee
       if (b.dataset.a === 'edit') {
         const n = st.networks[i];
         editing = n.ssid; f.ssid.value = n.ssid; f.password.value = ''; f.priority.value = n.priority; f.hidden.checked = n.hidden;
-        f.password.placeholder = n.password_set ? 'set (blank keeps it)' : 'open (blank)';
-        $('add').textContent = 'Save'; $('cancel').hidden = false; f.ssid.focus(); return;
+        f.password.placeholder = n.password_set ? L('set (blank keeps it)') : L('open (blank)');
+        $('add').textContent = L('Save'); $('cancel').hidden = false; f.ssid.focus(); return;
       }
       if (b.dataset.a === 'del') {
-        if (!confirm(`Delete ${st.networks[i].ssid}?`)) return;
-        list.splice(i, 1); await save(list, 'Deleted'); return;
+        if (!confirm(L('Delete ') + st.networks[i].ssid + '?')) return;
+        list.splice(i, 1); await save(list, L('Deleted')); return;
       }
       const j = b.dataset.a === 'up' ? i - 1 : i + 1;
       [list[i], list[j]] = [list[j], list[i]];
       list.forEach((n, k) => { n.priority = 10 * (list.length - k); });
-      await save(list, 'Moved');
+      await save(list, L('Moved'));
     });
 
     f.onsubmit = async ev => {
@@ -119,11 +122,13 @@ Moving a network renumbers the priorities in the new order. A blank password kee
         if (!e.password) e.password = '';
         list.push(e);
       }
-      if (await save(list, editing !== null ? 'Saved' : 'Added')) resetForm();
+      if (await save(list, editing !== null ? L('Saved') : L('Added'))) resetForm();
     };
     $('cancel').onclick = resetForm;
-    $('scan').onclick = async () => { await fetch(base + '/wifi/scan', {method: 'POST'}); msg('Scanning...'); setTimeout(load, 4000); };
+    $('scan').onclick = async () => { await fetch(base + '/wifi/scan', {method: 'POST'}); msg(L('Scanning...')); setTimeout(load, 4000); };
+    document.addEventListener('rdof-langchange', render);
     load();
+    if (window.rdofApplyLang) window.rdofApplyLang();
     setInterval(() => { if (!document.hidden && el.offsetParent !== null) load(); }, every);
   }
 
