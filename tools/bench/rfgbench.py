@@ -26,6 +26,7 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... tx fsk4 --freq MHz --dibits FILE|--hex HEX [--shape c4fm|rrc|rc|nrz|gauss] [--rolloff A] ...
     rfgbench.py ... tx fsk4 --freq MHz --carrier MHz:FILE[:start_s=S:level=L...] --carrier ...   several at once
     rfgbench.py ... tx iq --freq MHz --rate S/s --iq FILE.cs16|- [--carriers MHz...] [--ahead S] [--seconds S]
+    rfgbench.py ... tx noise --freq MHz --noise-bw HZ --seconds S --power-dbm DBM [--noise-offset HZ]
     rfgbench.py ... rx am --freq MHz --seconds S [--audio FILE.wav] [--env FILE.wav] [--records FILE] [--bw HZ] ...
 
 A tx fm or tx am SEGMENT is KIND:ARG:ARG..., with key=value arguments and @LEVEL anywhere (level 0-1 of the
@@ -36,6 +37,11 @@ the --pcm audio goes; without it the PCM is the program). --program JSON gives t
 AM's depth is the modulation at level 1 (0.3 by default: the receiver sensitivity test's 1 kHz at 30%); its peak is
 the transmitter's full power, the carrier 20 log10(1 + depth) dB under it. ACARS-like MSK is
 afsk:hex=...:baud=2400:hz=1200+2400.
+
+Any tx (and run's bench_tx.py jobs) takes noise on an SDR that sends complex baseband (info's features.noise):
+--noise-bw HZ with --cn-db DB (the carrier over the noise in that band) or --noise-dbm DBM (the noise's level there),
+--noise-offset HZ (its center from --freq), --noise-seed N. --power-dbm stays the carrier's level. tx noise sends the
+noise alone, --power-dbm its level in --noise-bw (bench-api.md 14.6).
 
 The gateway: --bench, else $RDOF_BENCH_LINE (HOST or HOST:PORT; port 7373 by default; or a gateway's name, which
 DNS-SD finds wherever DHCP put it). find lists them: the ones DNS-SD lists (_rfgbench._tcp) and, for a board too old
@@ -1019,6 +1025,45 @@ def read_pcm(path: str, rate: Optional[float]) -> Tuple[bytes, float]:
     return raw[:len(raw) & ~1], float(rate or 8000)
 
 
+NOISE_FIELDS = (("noise_bw", "noise_bw"), ("cn_db", "cn_db"), ("noise_dbm", "noise_dbm"),
+                ("noise_offset_hz", "noise_offset"), ("noise_seed", "noise_seed"))
+
+
+def noise_fields(a) -> list:
+    """A tx command's noise options as the request's fields (bench-api.md 14.6)."""
+    return [(k, getattr(a, attr, None)) for k, attr in NOISE_FIELDS]
+
+
+def add_noise_args(s, alone: bool = False) -> None:
+    """The noise options on a tx command: under the carrier, or alone (tx noise)."""
+    s.add_argument("--noise-bw", type=float, default=None, required=alone,
+                   help="Hz: the band the noise fills, around the carrier (1000-50000)")
+    if not alone:
+        g = s.add_mutually_exclusive_group()
+        g.add_argument("--cn-db", type=float, default=None, help="the carrier over the noise in --noise-bw, dB")
+        g.add_argument("--noise-dbm", type=float, default=None, help="the noise's level in --noise-bw, dBm")
+    s.add_argument("--noise-offset", type=float, default=None,
+                   help="Hz: the noise's center from --freq (0; up to +-200000)")
+    s.add_argument("--noise-seed", type=int, default=None, help="the noise's seed (1)")
+
+
+def cmd_tx_noise(a) -> int:
+    """tx noise: band-limited noise alone, no carrier (bench-api.md section 14.6)."""
+    req: dict = {"op": "tx", "mode": "noise", "freq": a.freq, "seconds": a.seconds, "power_dbm": a.power_dbm,
+                 "session": a.session, "wait_max": a.wait_max, "label": a.label}
+    for k, v in noise_fields(a):
+        if v is not None:
+            req[k] = v
+    check_reach(a, a.freq, tx=True)
+
+    def on(d, _):
+        print(json.dumps(d), flush=True)
+        if "done" in d:
+            return 1 if d["done"].get("cut") else 0
+        return None
+    return stream(a.where, req, on)
+
+
 def cmd_tx_sig(a) -> int:
     """tx fm, tx am: a signal mode's program (bench-api.md section 14.6)."""
     try:
@@ -1029,6 +1074,7 @@ def cmd_tx_sig(a) -> int:
     req: dict = {"op": "tx", "mode": a.mode_name, "freq": a.freq, "session": a.session, "wait_max": a.wait_max,
                  "label": a.label}
     fields = [("power_dbm", a.power_dbm), ("power", a.power), ("lead_s", a.lead), ("tail_s", a.tail), ("repeat", a.repeat), ("seed", a.seed)]
+    fields += noise_fields(a)
     if a.mode_name == "fm":
         fields += [("dev_hz", a.dev), ("ctcss", a.ctcss), ("dcs", a.dcs), ("sub_dev_hz", a.sub_dev),
                    ("sub_end_s", a.sub_end), ("preemph_us", a.preemph_us)]
@@ -1121,7 +1167,8 @@ def cmd_tx_fsk4(a) -> int:
     for k, v in (("baud", a.baud), ("shape", a.shape), ("rolloff", a.rolloff), ("bt", a.bt), ("bits", a.bits),
                  ("dev_hz", a.dev), ("dev_scale_pct", a.dev_scale),
                  ("offset_hz", a.offset), ("clip_hz", a.clip), ("repeat", a.repeat), ("gap_s", a.gap),
-                 ("lead_s", a.lead), ("tail_s", a.tail), ("power_dbm", a.power_dbm), ("power", a.power)):
+                 ("lead_s", a.lead), ("tail_s", a.tail), ("power_dbm", a.power_dbm), ("power", a.power),
+                 *noise_fields(a)):
         if v is not None:
             req[k] = v
     for mhz in [a.freq] + [c["freq"] for c in req.get("carriers", [])]:
@@ -1165,7 +1212,7 @@ def cmd_tx_iq(a) -> int:
                  "session": a.session, "wait_max": a.wait_max, "label": a.label}
     if a.carriers:
         req["carriers"] = a.carriers
-    for k, v in (("ahead_s", a.ahead), ("power_dbm", a.power_dbm), ("power", a.power)):
+    for k, v in (("ahead_s", a.ahead), ("power_dbm", a.power_dbm), ("power", a.power), *noise_fields(a)):
         if v is not None:
             req[k] = v
     for mhz in [a.freq] + (a.carriers or []):
@@ -1355,6 +1402,11 @@ def bench_tx_parser() -> argparse.ArgumentParser:
     ap.add_argument("--power", type=int, default=255)        # the older form: 0-255 on the transmitter's range
     ap.add_argument("--power-dbm", type=float)                # dBm at the antenna; the gateway takes it over --power
     ap.add_argument("--dev-scale", type=float)                # the DMR deviation, a fraction of nominal: 0.5-1.5
+    ap.add_argument("--noise-bw", type=float)                 # noise on the job (bench-api.md 14.6): its band, Hz,
+    ap.add_argument("--cn-db", type=float)                    # the carrier over it, dB,
+    ap.add_argument("--noise-dbm", type=float)                # or its level, dBm;
+    ap.add_argument("--noise-offset", dest="noise_offset_hz", type=float)   # its center from --freq, Hz
+    ap.add_argument("--noise-seed", type=int)
     ap.add_argument("--rx-offset", type=int)
     ap.add_argument("--tx-offset", type=int)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -1707,6 +1759,7 @@ def main(argv=None) -> int:
                                help="dBm at the antenna, capped by the gateway's bench.tx max_dbm")
                 s.add_argument("--power", type=int, default=None,
                                help="the older form: 0-255 on the transmitter's range, capped the same")
+                add_noise_args(s)
             else:
                 s.add_argument("--seconds", type=float, required=True)
                 s.add_argument("--audio", default=None, help="write the filtered audio to this WAV")
@@ -1786,6 +1839,7 @@ def main(argv=None) -> int:
             s.add_argument("--power-dbm", type=float, default=None,
                            help="dBm at the antenna, capped by the gateway's bench.tx max_dbm")
             s.add_argument("--power", type=int, default=None, help="0-255 on the transmitter's range, capped the same")
+            add_noise_args(s)
             s = modes.add_parser("iq", help="complex baseband (cs16) at its own rate: any modulation, several "
                                             "carriers at once")
             s.set_defaults(fn=cmd_tx_iq)
@@ -1803,6 +1857,17 @@ def main(argv=None) -> int:
             s.add_argument("--power-dbm", type=float, default=None,
                            help="dBm at the antenna, capped by the gateway's bench.tx max_dbm")
             s.add_argument("--power", type=int, default=None, help="0-255 on the transmitter's range, capped the same")
+            add_noise_args(s)
+            s = modes.add_parser("noise", help="band-limited noise alone, no carrier (an SDR's: info's features.noise)")
+            s.set_defaults(fn=cmd_tx_noise)
+            s.add_argument("--session", default=None)
+            s.add_argument("--wait-max", type=float, default=None, help="give up after this many seconds (exit 75)")
+            s.add_argument("--label", default=None)
+            s.add_argument("--freq", type=float, required=True, help="MHz")
+            s.add_argument("--seconds", type=float, required=True, help="how long it keys (at most 3600)")
+            s.add_argument("--power-dbm", type=float, required=True,
+                           help="the noise's level in --noise-bw, dBm at the antenna")
+            add_noise_args(s, alone=True)
         else:
             s = modes.add_parser("fsk4", help="4-level FSK as raw dibits: sync, dibits and each keying's levels")
             s.set_defaults(fn=cmd_rx_sig)
