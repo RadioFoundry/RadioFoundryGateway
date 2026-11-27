@@ -133,7 +133,7 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
     endif()
     # the version /api/status shows: RDOF_VERSION, else git describe, else "dev"
     if(NOT RDOF_VERSION)
-        execute_process(COMMAND git -C ${RDOF_CLI} describe --always --dirty OUTPUT_VARIABLE RDOF_GIT
+        execute_process(COMMAND git -C ${RDOF_CLI} describe --always --tags --dirty OUTPUT_VARIABLE RDOF_GIT
                         OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
         set(RDOF_VERSION "${RDOF_GIT}")
         if(NOT RDOF_VERSION)

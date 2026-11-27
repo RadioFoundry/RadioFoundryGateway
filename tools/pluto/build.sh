@@ -50,7 +50,7 @@ if [ ! -f "$OUT/libs/usr/include/iio.h" ]; then
     rm -rf "$OUT/libs/staging"
 fi
 
-VERSION=${RDOF_VERSION:-$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo dev)}
+VERSION=${RDOF_VERSION:-$(git -C "$ROOT" describe --always --tags --dirty 2>/dev/null || echo dev)}
 # The Rust at opt-level "z" here (the profile's "s" elsewhere): 12 KB less xz (2026-11-21: 611 KB against 624 KB)
 # for the same CPU on the Pluto (rdofradio 752 against 737 ticks in 20 s, receiving)
 docker run --rm -v "$ROOT":/src:ro -v "$OUT":/out -e RDOF_PLUTO_LIBS=/out/libs -e RDOF_VERSION="$VERSION" -e RDOF_PLUTO_WEB="${RDOF_PLUTO_WEB:-ON}" \

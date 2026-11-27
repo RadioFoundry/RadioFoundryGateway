@@ -12,7 +12,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 W=$ROOT/build/linux-arm64
-VER=${1:-$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo dev)}
+VER=${1:-$(git -C "$ROOT" describe --always --tags --dirty 2>/dev/null || echo dev)}
 mkdir -p $W/out $W/rust
 cat > $W/aarch64.cmake <<'T'
 set(CMAKE_SYSTEM_NAME Linux)

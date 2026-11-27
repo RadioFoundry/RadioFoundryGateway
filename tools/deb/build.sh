@@ -34,7 +34,7 @@ elif T=$(git -C "$ROOT" describe --tags --exact-match --match 'v[0-9]*' 2>/dev/n
 else
     VER=0~git$(git -C "$ROOT" log -1 --format=%cd --date=format:%Y%m%d).$(git -C "$ROOT" rev-parse --short=8 HEAD)
 fi
-RDOF_VERSION=$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo "$VER")
+RDOF_VERSION=$(git -C "$ROOT" describe --always --tags --dirty 2>/dev/null || echo "$VER")
 MOSQ_URL=https://mosquitto.org/files/source/mosquitto-2.1.2.tar.gz
 MOSQ_SHA=fd905380691ac65ea5a93779e8214941829e3d6e038d5edff9eac5fd74cbed02
 CJSON_URL=https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.18.tar.gz
