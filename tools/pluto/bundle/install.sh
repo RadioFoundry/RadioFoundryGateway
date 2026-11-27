@@ -278,4 +278,4 @@ fi
 sync
 start
 echo "installed $(cat $D/VERSION): settings $D/config.json, flags $D/flags, log /tmp/rdof/log;"
-echo "the web page at http://$(ip -4 addr show usb0 2>/dev/null | awk '/inet /{sub("/.*","",$2); print $2; exit}'):8080/"
+echo "the web page at$(ip -4 -o addr show 2> /dev/null | awk '$2 != "lo" {sub("/.*", "", $4); printf "%s http://%s:8080/", s, $4; s = ","}')"
