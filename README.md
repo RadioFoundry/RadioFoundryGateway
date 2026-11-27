@@ -1,5 +1,7 @@
 # RadioFoundry Gateway
 
+**English** · [简体中文](README.zh-CN.md)
+
 **Open-source DMR Tier II and Tier III infrastructure.**
 
 ![The W12's Radios page: six channels on its LR2021, with DMR calls in the waterfall](docs/img/w12-spectrum.png)
