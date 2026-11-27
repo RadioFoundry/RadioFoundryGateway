@@ -122,6 +122,13 @@ fi
 # xz: about 15 % smaller than gzip -9 (the Pluto's flash holds about 700 KB of program); crc32, no filter: busybox's
 # unxz decodes it. lp=1,pb=1 suit Thumb-2's 2-byte units: 3 KB less than lc=2,lp=2,pb=2
 xz --check=crc32 --lzma2=preset=9e,lc=3,lp=1,pb=1 -c "$OUT/rdofradio" > "$OUT/$B/rdofradio.xz"
+# install.sh puts it in the settings flash (896 KB), which needs about 70 KB free beside it and the settings: 600 KiB
+# at most (RDOF_PLUTO_MAX_XZ for a build that only runs from RAM)
+XZ=$(wc -c < "$OUT/$B/rdofradio.xz")
+if [ "$XZ" -gt "${RDOF_PLUTO_MAX_XZ:-614400}" ]; then
+    echo "rdofradio.xz is $XZ bytes, over ${RDOF_PLUTO_MAX_XZ:-614400}: too big for the Pluto's flash" >&2
+    exit 1
+fi
 echo "$VERSION" > "$OUT/$B/VERSION"
 chmod 755 "$OUT/$B/install.sh" "$OUT/$B/run.sh"
 tar -C "$OUT" -czf "$OUT/$B.tar.gz" "$B"

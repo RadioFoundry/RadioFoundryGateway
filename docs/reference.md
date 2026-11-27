@@ -1545,7 +1545,8 @@ step by step: [plutosdr.md](plutosdr.md).
 **Build:** `tools/pluto/build.sh` (an x86_64 host with Docker) builds in Debian 9, whose glibc is older than the
 firmware's, against ADI's v0.38 sysroot. It writes `build/pluto/rdof-pluto.tar.gz` (`rdofradio`, `rdofsdr`,
 `rdofchz`; they need only libiio, libad9361 and libc) and `build/pluto/rdof-pluto-bundle-VERSION.tar.gz` (the
-installer, below).
+installer, below; each GitHub release has it too). It fails when `rdofradio.xz` is over 600 KiB, the most the
+installer can put in the Pluto's settings flash with about 70 KB to spare.
 
 **Run** from `/tmp` (RAM):
 

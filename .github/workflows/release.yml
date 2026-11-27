@@ -1,7 +1,7 @@
 name: Release
 
-# A tag v1.2.3: the rdofradio packages (amd64, arm64, armhf), each installed and run on every release it's for, on
-# the GitHub release, and the apt repository at apt.radiofoundry.org (tools/deb/README.md) with this release's and the
+# A tag v1.2.3: the rdofradio packages (amd64, arm64, armhf), each installed and run on every release it's for, and
+# the PlutoSDR bundle (tools/pluto), on the GitHub release, and the apt repository at apt.radiofoundry.org (tools/deb/README.md) with this release's and the
 # two before it. A pull request that changes the packaging: the packages, built and tested only.
 #
 # Secrets: APT_SIGNING_KEY (the repository's private key, ASCII armored), CLOUDFLARE_API_TOKEN (Cloudflare Pages:
@@ -10,7 +10,7 @@ on:
   push:
     tags: ['v[0-9]*']
   pull_request:
-    paths: ['tools/deb/**', 'sdr/cli/tools.cmake', 'sdr/cli/rdofradio_soapydl.c', '.github/workflows/release.yml']
+    paths: ['tools/deb/**', 'tools/pluto/**', 'sdr/cli/tools.cmake', 'sdr/cli/rdofradio_soapydl.c', '.github/workflows/release.yml']
   workflow_dispatch:
 
 permissions:
@@ -39,12 +39,25 @@ jobs:
           name: deb-${{ matrix.arch }}
           path: build/deb/out/*.deb
 
+  pluto:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Build (it fails on a program too big for the Pluto's flash)
+        run: tools/pluto/build.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pluto
+          path: build/pluto/rdof-pluto-bundle-*.tar.gz
+
   publish:
-    needs: deb
+    needs: [deb, pluto]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
-      contents: write   # the GitHub release and its packages
+      contents: write   # the GitHub release, its packages and the Pluto bundle
     env:
       GH_TOKEN: ${{ github.token }}
       HAVE_KEY: ${{ secrets.APT_SIGNING_KEY != '' }}
@@ -56,11 +69,15 @@ jobs:
           pattern: deb-*
           merge-multiple: true
           path: debs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pluto
+          path: pluto
       - name: The GitHub release
         run: |
           pre=; case $GITHUB_REF_NAME in *-*) pre=--prerelease ;; esac   # v26.11-beta1
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $pre
-          gh release upload "$GITHUB_REF_NAME" debs/*.deb --clobber
+          gh release upload "$GITHUB_REF_NAME" debs/*.deb pluto/*.tar.gz --clobber
       - name: The two releases before it
         if: env.HAVE_KEY == 'true' && env.HAVE_CF == 'true'
         run: |
