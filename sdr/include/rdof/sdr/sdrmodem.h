@@ -98,12 +98,20 @@
 #include "rdof/sigmode.h"
 #include "rdof/slotgrid.h"
 #include "rdof/splitops.h"
+#include "rdof/txpower.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define RDOF_SDRMODEM_QUEUE 8      /* bursts a slot */
+/* A bench job's noise on the I/Q it sends (rdof_sdrmodem_noise): with the Rust, off the ESP32 (whose front ends send
+ * frequency) */
+#if defined(RDOF_RUST) && RDOF_RUST && !defined(ESP_PLATFORM)
+#define RDOF_SDRMODEM_NOISE 1
+#else
+#define RDOF_SDRMODEM_NOISE 0
+#endif
 #define RDOF_SDRMODEM_SENT 32      /* bursts sent, remembered (rdof_sdrmodem_sent_bits) */
 #define RDOF_SDRMODEM_SCHED 16     /* TX_SCHED bursts held */
 #if RDOF_FEATURE_REPEATER
@@ -286,6 +294,9 @@ typedef struct rdof_sdrmodem {
     int sig_k;                  /* the stream's samples into the source sample's interval (sig_pull) */
     float sig_h0, sig_h1, sig_e0, sig_e1; /* the interval's ends: frequency (I/Q: the phase step), envelope */
     rdof_cf_t sig_x0, sig_x1;   /* or I/Q */
+#if RDOF_SDRMODEM_NOISE
+    void *noise;                /* a bench job's noise (rdof/signoise.h), NULL none */
+#endif
 } rdof_sdrmodem_t;
 
 /* rx_fs: the receiver's wideband rate (a multiple of 48 kS/s); tx_fs: the modulator's; can_full: full duplex.
@@ -322,6 +333,12 @@ bool rdof_sdrmodem_signal(rdof_sdrmodem_t *m, uint32_t hz, const rdof_sig_src_t 
 /* The rate for a signal's source (its rate): tx_fs, or a fast stream's divided down to about 48 kS/s. The pulls spread
  * each of a slower source's samples over tx_fs / its rate of the stream's, linearly. */
 double rdof_sdrmodem_signal_rate(const rdof_sdrmodem_t *m);
+#if RDOF_SDRMODEM_NOISE
+/* A bench job's noise (rdof/signoise.h) on what pull_iq sends while keyed, around the carrier: a signal mode's until
+ * its source is done, DMR's while anything is queued. NULL (or no noise asked) takes it off. false: no memory, or
+ * noise_bw over a quarter of tx_fs. pull_freq sends none. */
+bool rdof_sdrmodem_noise(rdof_sdrmodem_t *m, const rdof_bench_noise_t *nz);
+#endif
 /* 0 none, 1 sending, 2 the source is done and a quarter second more has been pulled (what it keyed went out). */
 int rdof_sdrmodem_signal_state(const rdof_sdrmodem_t *m);
 /* A signal's transmission whose source renders I/Q only (no frequency): a front end that sends frequency pulls it

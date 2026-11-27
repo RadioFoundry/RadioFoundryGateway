@@ -17,6 +17,9 @@
 #include "rdof/duplex.h"
 #include "rdof/layer2.h"
 #include "rdof/pdu.h"
+#if RDOF_SDRMODEM_NOISE
+#include "rdof/signoise.h"
+#endif
 
 #define LEAD_SYMBOLS 24  /* how far ahead of the pull position a burst is queued: 5 ms */
 #define MUTE_48K 720     /* half a slot: a heard burst this close to one sent is ours */
@@ -135,6 +138,9 @@ int rdof_sdrmodem_init(rdof_sdrmodem_t *m, const rdof_sdrmodem_io_t *io, uint32_
 
 void rdof_sdrmodem_free(rdof_sdrmodem_t *m)
 {
+#if RDOF_SDRMODEM_NOISE
+    rdof_sdrmodem_noise(m, NULL);
+#endif
     if (m->mod_ok)
         rdof_mod_free(&m->mod);
     m->mod_ok = false;
@@ -1630,16 +1636,41 @@ static bool sig_pull(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, float *hz, 
     return keyed;
 }
 
+#if RDOF_SDRMODEM_NOISE
+bool rdof_sdrmodem_noise(rdof_sdrmodem_t *m, const rdof_bench_noise_t *nz)
+{
+    rdof_signoise_free(m->noise);
+    m->noise = nz && nz->bw_hz > 0 ? rdof_signoise_new(nz, (double)m->tx_fs) : NULL;
+    return !nz || nz->bw_hz <= 0 || m->noise;
+}
+#endif
+
 bool rdof_sdrmodem_pull_iq(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, int n)
 {
     if (!m->mod_ok)
         return false;
-    if (m->sig_on)
-        return sig_pull(m, pos, iq, NULL, NULL, n);
+    if (m->sig_on) {
+        bool keyed = sig_pull(m, pos, iq, NULL, NULL, n);
+#if RDOF_SDRMODEM_NOISE
+        /* the noise until the source is done (the noise mode's source is all zeros) */
+        const int64_t k = m->sig_done_at < 0 ? n : m->sig_done_at - pos;
+        if (m->noise && k > 0) {
+            rdof_signoise_add(m->noise, (float *)iq, k < n ? (int)k : n, m->sig_off_hz);
+            keyed = true;
+        }
+#endif
+        return keyed;
+    }
     advance(m, pos, n);
     const bool idle = rdof_mod_idle(&m->mod); /* nothing queued reaches past here: zeros, unkeyed */
     rdof_mod_iq(&m->mod, iq, n);
     m->pos = m->mod.pos;
+#if RDOF_SDRMODEM_NOISE
+    if (m->noise && !idle) {
+        rdof_signoise_add(m->noise, (float *)iq, n, m->mod.offset_hz + m->mod.pulled_off_hz);
+        return true;
+    }
+#endif
     return !idle && keyed_in(m, NULL, iq, n);
 }
 

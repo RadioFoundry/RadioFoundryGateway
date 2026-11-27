@@ -28,6 +28,7 @@
 #include "rdof/repeater.h"
 #include "rdof/rust.h"
 #include "rdof/sigmode.h"
+#include "rdof/signoise.h"
 #include "rdof/siteplan.h"
 #include "rdof/slotgrid.h"
 #include "rdof/status.h"
@@ -83,6 +84,7 @@ static const rdof_rust_layout_t c_layouts[] = {
     L(rdof_modem_port_t),
     L(rdof_sig_src_t),
     L(rdof_sig_mode_t),
+    L(rdof_bench_noise_t),
     L(rdof_modem_t),
     L(rdof_mrelay_t),
     L(rdof_mrelay_heard_t),

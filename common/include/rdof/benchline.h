@@ -375,6 +375,10 @@ typedef struct {
     /* The repeater jobs' modes besides DMR, each as bit (1u << mode): RDOF_MODE_P25, RDOF_MODE_NXDN (an MMDVM modem's
      * own modes). 0: DMR only. */
     unsigned rpt_modes;
+    /* Its transmitter adds noise to a job (rdof/signoise.h: noise_bw with cn_db or noise_dbm on tx, bench_tx and
+     * outbound jobs, and the noise mode if it lists it): an SDR that sends complex baseband. false: such a job is
+     * unsupported. */
+    bool tx_noise;
     /* A raw capture (optional): the ADC's own samples, int16 I, Q, for a capture with "raw": a receiver that has to stop
      * listening to hand them over does it for this long. raw_start begins one in the background: 0 begun, 1 another is
      * running (try again), -1 it can't (why in err). raw_state: 0 still running, 1 ready (*info), -1 failed (why in err).

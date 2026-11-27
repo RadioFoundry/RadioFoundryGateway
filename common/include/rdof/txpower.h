@@ -15,6 +15,7 @@
 #define RDOF_TXPOWER_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -59,11 +60,21 @@ void rdof_txpower_range(const rdof_txpower_fe_t *fe, bool pa_ok, double *min_dbm
 /* A bench job's power (bench_tx's power_dbm or power): dbm, at the antenna, when not NAN; else level, the older
    0..255 on the transmitter's range (255: the most). It carries the job's other transmitter setting too: dev_scale,
    its DMR 4FSK deviation as a fraction of nominal (bench_tx's --dev-scale, 0.5-1.5; 0 is nominal, as 1.0, so a
-   {dbm, level} initializer keeps it). */
+   {dbm, level} initializer keeps it). And its noise (rdof/signoise.h; none when bw_hz is 0): dbm stays the carrier's
+   level, or with alone (the noise mode) the noise's. */
+typedef struct {
+    double bw_hz; /* the band the noise fills, around the carrier (0: no noise) */
+    double cn_db; /* the carrier over the noise in bw_hz (NAN with alone) */
+    double offset_hz; /* the noise's center from the carrier's frequency */
+    uint32_t seed;
+    bool alone;   /* no carrier: the noise mode */
+} rdof_bench_noise_t;
+
 typedef struct {
     double dbm;
     int level;
     double dev_scale;
+    rdof_bench_noise_t noise;
 } rdof_bench_power_t;
 
 #define RDOF_BENCH_DEV_SCALE_MIN 0.5

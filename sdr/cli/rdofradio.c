@@ -137,6 +137,7 @@
 #include "rdof/modem.h"
 #if RDOF_RUST
 #include "rdof/mrelay.h"
+#include "rdof/signoise.h"
 #endif
 #include "rdof/mssim.h"
 #include "rdof/parrot.h"
@@ -2468,11 +2469,39 @@ static int bench_level(rdof_bench_power_t p)
     const int k = rdof_bench_power_level(&lim, p, &bench_map);
     return k > mm_rf_level ? mm_rf_level : k;
 }
-/* A job's power_dbm on the SDR: dB under --tx-power (rdof_bench_sdr_atten_db). An MMDVM modem takes its RF level. */
+/* A job's noise (rdof/signoise.h): its samples sit noise_db under full scale, and the attenuator takes that much less
+ * off. bench_noise_atten: the attenuation for its power_dbm (under bench.tx's max_dbm), false with why when the noise
+ * doesn't fit the stream, reaches past room_hz from the carrier (0: not checked) or the level is out of reach. */
+static double bench_noise_db(rdof_bench_power_t p)
+{
+#if RDOF_RUST
+    return rdof_signoise_scale_db(&p.noise);
+#else
+    return 0;
+#endif
+}
+static bool bench_noise_atten(rdof_bench_power_t p, double room_hz, double *a, char *why, size_t cap)
+{
+#if RDOF_RUST
+    if (dev && !R.mmdvm) {
+        const double lvl = bench_cfg_lim.has_max_dbm && bench_cfg_lim.max_dbm < p.dbm ? bench_cfg_lim.max_dbm : p.dbm;
+        return rdof_signoise_atten(&p.noise, lvl, gain_dbm(txg_full), txg_full - dev->tx_gain_min, R.tx_rate, room_hz,
+                                   a, why, cap);
+    }
+#endif
+    if (why && cap)
+        snprintf(why, cap, "this transmitter adds no noise");
+    return false;
+}
+/* A job's power_dbm on the SDR: dB under --tx-power (rdof_bench_sdr_atten_db; with noise, bench_noise_atten). An
+ * MMDVM modem takes its RF level. */
 static double bench_atten_db(rdof_bench_power_t p)
 {
     if (R.mmdvm || !dev)
         return 0;
+    double a = 0;
+    if (p.noise.bw_hz > 0 && bench_noise_atten(p, 0, &a, NULL, 0))
+        return a;
     return rdof_bench_sdr_atten_db(&bench_cfg_lim, p, gain_dbm(txg_full), txg_full - dev->tx_gain_min);
 }
 /* A job's deviation on the SDR's modulator, from its next sample on. Only the main loop sets it, and the main loop
@@ -2494,10 +2523,19 @@ static void bench_dev_settle(void)
  * let it go */
 static void bench_power_on(rdof_bench_power_t p)
 {
-    const double a = bench_atten_db(p), ds = rdof_bench_dev_scale(p);
+    const double a = bench_atten_db(p), ds = rdof_bench_dev_scale(p), nd = bench_noise_db(p);
     atomic_store(&bench_atten_cdb, (int)lround(100 * a));
-    if (a > 0)
-        say("bench: the job transmits %.1f dB under --tx-power: %.1f dBm\n", a, gain_dbm(txg_full) - a);
+    if (a > 0 || nd > 0)
+        say("bench: the job transmits %.1f dB under --tx-power: %.1f dBm\n", a + nd, gain_dbm(txg_full) - a - nd);
+#if RDOF_SDRMODEM_NOISE
+    if (!R.mmdvm && R.m.mod_ok) {
+        if (!rdof_sdrmodem_noise(&R.m, &p.noise))
+            say("bench: no memory for the job's noise: it goes out without\n");
+        else if (p.noise.bw_hz > 0)
+            say("bench: noise %.0f Hz wide, the samples %.1f dB under full scale (the gain makes it up)\n",
+                p.noise.bw_hz, nd);
+    }
+#endif
     bench_dev_scale(ds);
     if (ds != 1.0 && !R.mmdvm)
         say("bench: the job's DMR deviation is %.2f of nominal\n", ds);
@@ -2505,6 +2543,10 @@ static void bench_power_on(rdof_bench_power_t p)
 static void bench_power_off(void)
 {
     atomic_store(&bench_atten_cdb, -1);
+#if RDOF_SDRMODEM_NOISE
+    if (R.m.mod_ok)
+        rdof_sdrmodem_noise(&R.m, NULL);
+#endif
     bench_dev_reset = !R.mmdvm && R.m.mod_ok;
 }
 /* info's "tx": the key-up limit, and bench.tx's dBm cap (an SDR's; with none, --tx-power) or the modem's RF level. */
@@ -2535,6 +2577,15 @@ static bool bench_gates(double seconds, char *why, size_t cap)
     }
     return true;
 }
+/* A job's noise reaches its level here (bench_noise_atten): false with why. No noise: true. placed: a signal job,
+ * whose source's span takes the noise in and places the TX LO for it (the bench line refuses one past its reach);
+ * a DMR job's carrier may be as far from the LO as io_tune lets it, so its noise has the rest of the stream's half. */
+static bool bench_noise_gate(rdof_bench_power_t p, bool placed, char *why, size_t cap)
+{
+    double a;
+    const double room = placed ? 0 : R.tx_rate * 0.5 - (R.tx_rate * 0.4 - 12.5e3);
+    return p.noise.bw_hz <= 0 || bench_noise_atten(p, room, &a, why, cap);
+}
 /* The note for a job's power; "" when it's what's sent. */
 static void bench_note(rdof_bench_power_t p, char *why, size_t cap)
 {
@@ -2553,7 +2604,7 @@ static void bench_note(rdof_bench_power_t p, char *why, size_t cap)
                      ? " (bench.tx.rf_level)"
                      : "");
     else if (!isnan(p.dbm)) {
-        const double a = bench_atten_db(p), d = gain_dbm(txg_full) - a;
+        const double a = bench_atten_db(p), d = gain_dbm(txg_full) - a - bench_noise_db(p);
         if (fabs(d - p.dbm) > 0.05)
             snprintf(why, cap, "%s: the SDR transmits at %.1f dBm (%s)", asked, d,
                      d > p.dbm ? "its least gain" : "--tx-power, its most");
@@ -2637,6 +2688,8 @@ static const char *bl_cannot(void *ctx, const char *what)
     if (!strcmp(what, "signal_tx"))
         return "an MMDVM modem's serial protocol sends DMR bursts: no FM, AM or arbitrary I/Q, and the SDR beside it "
                "only receives";
+    if (!strcmp(what, "noise"))
+        return "an MMDVM modem's serial protocol sends DMR bursts: no complex baseband to add noise to";
     if (!dev && !strcmp(what, "mssim"))
         return "an MMDVM modem with no SDR: the responder hears through an SDR's channel";
     if (!dev && !strcmp(what, "outbound"))
@@ -2698,7 +2751,7 @@ static void last_job_closes(void);
 static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why,
                        size_t cap)
 {
-    if (!bench_gates(0, why, cap)) /* its key time: the job's own clock, at bench_max_key_s */
+    if (!bench_gates(0, why, cap) || !bench_noise_gate(power, false, why, cap)) /* its key time: the job's own clock */
         return false;
     last_job_closes();
     pthread_mutex_lock(&BT.mu);
@@ -2859,7 +2912,7 @@ static void last_job_closes(void)
 static int bl_sig_open(void *ctx, uint32_t freq, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src,
                        char *why, size_t cap)
 {
-    if (!bench_gates(seconds, why, cap))
+    if (!bench_gates(seconds, why, cap) || !bench_noise_gate(power, true, why, cap))
         return -1;
     last_job_closes();
     pthread_mutex_lock(&BS.mu);
@@ -2921,7 +2974,7 @@ static const char *bl_ob_can(void *ctx) { return bl_can_tx(ctx); }
 
 static bool bl_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t cap)
 {
-    if (!bench_gates(cfg->seconds, why, cap))
+    if (!bench_gates(cfg->seconds, why, cap) || !bench_noise_gate(cfg->power, false, why, cap))
         return false;
     last_job_closes();
     pthread_mutex_lock(&BS.mu);
@@ -4022,13 +4075,16 @@ static void bench_start(void)
                                           .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .tx_event = bl_tx_event, .rpt_open = bl_rpt_open,
                                           .rpt_state = bl_rpt_state, .rpt_event = bl_rpt_event,
                                           .rpt_wake = bl_rpt_wake, .rpt_close = bl_rpt_close,
-                                          .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
+                                          .modes = rdof_sdr_modes_noise, .sig_open = bl_sig_open,
                                           .sig_state = bl_sig_state, .sig_close = bl_sig_close,
                                           .sig_rate = bl_sig_rate, .ob_open = bl_ob_open, .ob_state = bl_ob_state,
                                           .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close, .ob_can = bl_ob_can,
                                           .ob_push = bl_ob_push, .tune = bl_tune, .tune_state = bl_tune_state,
                                           .untune = bl_untune};
     rdof_bl_platform_t p = pf;
+    p.tx_noise = RDOF_SDRMODEM_NOISE && dev && !R.mmdvm; /* I/Q to the SDR: noise on a job (rdof/signoise.h) */
+    if (!p.tx_noise)
+        p.modes = rdof_sdr_modes;
     if (R.mmdvm) { /* the modem transmits DMR only: no signal modes */
         p.sig_open = NULL, p.sig_state = NULL, p.sig_close = NULL;
         p.station = bl_station, p.cannot = bl_cannot;

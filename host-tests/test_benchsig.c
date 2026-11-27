@@ -62,6 +62,7 @@ static struct {
     uint32_t freq;
     int power;
     double power_dbm;
+    rdof_bench_noise_t noise;
     rdof_sig_src_t src;
 } tx;
 static int busy_n; /* sig_open says not yet this many times first */
@@ -74,6 +75,7 @@ static int f_sig_open(void *ctx, uint32_t hz, rdof_bench_power_t power, double s
         return 0;
     }
     tx.open = true, tx.closed = tx.done = false, tx.freq = hz, tx.power = power.level, tx.power_dbm = power.dbm;
+    tx.noise = power.noise;
     tx.src = *src;
     snprintf(why, cap, "power %d as 21 dBm", power.level);
     return 1;
@@ -739,6 +741,114 @@ static void test_refusals(void)
     rdof_bl_free(bl);
 }
 
+/* Noise on a job (section 14.6): unsupported where the transmitter adds none; where it does, the noise mode listed
+ * to transmit, the fields reaching the transmitter, the span covering the noise, the levels in the header, and the
+ * refusals. */
+static void test_noise(void)
+{
+    static const struct {
+        const char *req, *code, *has;
+    } R[] = {
+        {"{\"op\":\"tx\",\"mode\":\"fm\",\"freq\":438.075,\"power_dbm\":0,\"noise_bw\":12500,\"cn_db\":20,"
+         "\"noise_dbm\":-20,\"program\":[{\"kind\":\"tone\",\"hz\":1000,\"s\":1}]}", "bad_request", "not both"},
+        {"{\"op\":\"tx\",\"mode\":\"fm\",\"freq\":438.075,\"power_dbm\":0,\"cn_db\":20,"
+         "\"program\":[{\"kind\":\"tone\",\"hz\":1000,\"s\":1}]}", "bad_request", "need noise_bw"},
+        {"{\"op\":\"tx\",\"mode\":\"fm\",\"freq\":438.075,\"noise_bw\":12500,\"cn_db\":20,"
+         "\"program\":[{\"kind\":\"tone\",\"hz\":1000,\"s\":1}]}", "bad_request", "power_dbm"},
+        {"{\"op\":\"tx\",\"mode\":\"noise\",\"freq\":438.075,\"power_dbm\":-20,\"noise_bw\":12500,\"cn_db\":3,"
+         "\"seconds\":1}", "bad_request", "cn_db and noise_dbm are for"},
+        {"{\"op\":\"tx\",\"mode\":\"noise\",\"freq\":438.075,\"power_dbm\":-20,\"seconds\":1}", "bad_request",
+         "noise_bw"},
+        /* the noise 60 kHz off, out to 68.75 kHz: the span over twice the 32 kHz the transmitter reaches */
+        {"{\"op\":\"tx\",\"mode\":\"fm\",\"freq\":438.075,\"power_dbm\":0,\"noise_bw\":12500,\"cn_db\":20,"
+         "\"noise_offset_hz\":60000,\"program\":[{\"kind\":\"tone\",\"hz\":1000,\"s\":1}]}", "refused",
+         "reaches now"},
+    };
+    static const char *fm = "{\"op\":\"tx\",\"mode\":\"fm\",\"freq\":438.075,\"power_dbm\":10,\"noise_bw\":12500,"
+                            "\"noise_dbm\":-10,\"noise_offset_hz\":-5000,\"noise_seed\":4,"
+                            "\"program\":[{\"kind\":\"tone\",\"hz\":1000,\"s\":0.2}]}";
+    rdof_bl_platform_t pl = PLAT;
+    {
+        rdof_bl_t *bl = rdof_bl_new(&pl);
+        ntext = 0;
+        int c = ask(bl, "{\"op\":\"info\"}");
+        take(bl, c);
+        CHECK(strstr(text, "\"noise\":false") && !strstr(text, "\"noise\"]"), "no noise: %.300s", text);
+        rdof_bl_closed(bl, c, clock_s);
+        ntext = 0;
+        c = ask(bl, fm);
+        take(bl, c);
+        CHECK(strstr(text, "\"code\":\"unsupported\"") && strstr(text, "adds no noise"), "%s", text);
+        rdof_bl_closed(bl, c, clock_s);
+        rdof_bl_free(bl);
+    }
+    if (!rdof_sig_find(rdof_sdr_modes_noise, "noise")) {
+        printf("benchsig: no noise in this build (the C modules): the rest skipped\n");
+        return;
+    }
+    pl.tx_noise = true;
+    pl.modes = rdof_sdr_modes_noise;
+    rdof_bl_t *bl = rdof_bl_new(&pl);
+    ntext = 0;
+    int c = ask(bl, "{\"op\":\"info\"}");
+    take(bl, c);
+    CHECK(strstr(text, "\"noise\":true") &&
+              strstr(text, "\"signal_modes\":{\"tx\":[\"fm\",\"am\",\"fsk4\",\"iq\",\"noise\"],\"rx\":[\"fm\",\"am\","
+                           "\"fsk4\"]}"),
+          "%.300s", text);
+    rdof_bl_closed(bl, c, clock_s);
+    for (size_t i = 0; i < sizeof R / sizeof R[0]; i++) {
+        ntext = 0;
+        c = ask(bl, R[i].req);
+        take(bl, c);
+        char code[80];
+        snprintf(code, sizeof code, "\"code\":\"%s\"", R[i].code);
+        CHECK(strstr(text, code) && strstr(text, R[i].has) && !tx.open, "%s -> %s", R[i].req, text);
+        rdof_bl_closed(bl, c, clock_s);
+    }
+    /* a carrier under noise: what the transmitter gets, the span, the header and the summary */
+    tx = (typeof(tx)){0}, ntext = 0, text[0] = 0;
+    c = ask(bl, fm);
+    for (int i = 0; i < 400 && !strstr(text, "{\"done\""); i++) {
+        rdof_bl_tick(bl, clock_s);
+        air(1920, true);
+        take(bl, c);
+    }
+    static const char *members = "\"noise_bw\":12500,\"noise_offset_hz\":-5000,\"cn_db\":20.0,\"noise_dbm\":-10.0,"
+                                 "\"carrier_dbm\":10.0";
+    char l[1024] = "";
+    lines("{\"tx\":", l, sizeof l);
+    CHECK(strstr(l, members), "the header: %s", l);
+    lines("{\"done\":", l, sizeof l);
+    CHECK(strstr(l, members), "the summary: %s", l);
+    CHECK(tx.noise.bw_hz == 12500 && tx.noise.cn_db == 20 && tx.noise.offset_hz == -5000 && tx.noise.seed == 4 &&
+              !tx.noise.alone && tx.power_dbm == 10,
+          "the transmitter's: %.0f Hz, %.1f dB, %+.0f Hz, seed %u, at %.1f dBm", tx.noise.bw_hz, tx.noise.cn_db,
+          tx.noise.offset_hz, (unsigned)tx.noise.seed, tx.power_dbm);
+    CHECK(tx.src.span_lo_hz == -5000 - 0.7 * 12500 && tx.src.span_hi_hz == 6250, "the span %.0f to %.0f",
+          tx.src.span_lo_hz, tx.src.span_hi_hz);
+    rdof_bl_closed(bl, c, clock_s);
+    /* the noise alone */
+    tx = (typeof(tx)){0}, ntext = 0, text[0] = 0;
+    c = ask(bl, "{\"op\":\"tx\",\"mode\":\"noise\",\"freq\":438.075,\"power_dbm\":-20,\"noise_bw\":25000,"
+                "\"seconds\":0.2}");
+    for (int i = 0; i < 400 && !strstr(text, "{\"done\""); i++) {
+        rdof_bl_tick(bl, clock_s);
+        air(1920, true);
+        take(bl, c);
+    }
+    lines("{\"done\":", l, sizeof l);
+    CHECK(strstr(l, "\"mode\":\"noise\"") &&
+              strstr(l, "\"noise_bw\":25000,\"noise_offset_hz\":0,\"cn_db\":null,\"noise_dbm\":-20.0,"
+                        "\"carrier_dbm\":null"),
+          "the noise mode's summary: %s", l);
+    CHECK(tx.noise.alone && tx.noise.bw_hz == 25000 && tx.power_dbm == -20, "the noise mode's transmitter");
+    rdof_bl_closed(bl, c, clock_s);
+    rdof_bl_free(bl);
+    printf("benchsig: noise on a job: the fields, the span, the levels reported, %zu refusals\n",
+           sizeof R / sizeof R[0]);
+}
+
 int main(void)
 {
     if (!rdof_bl_ring_init(&ring, (long)(FS * 4))) {
@@ -755,6 +865,7 @@ int main(void)
     test_iq();
     test_refusals();
     test_am();
+    test_noise();
     rdof_bl_ring_free(&ring);
     printf("benchsig: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

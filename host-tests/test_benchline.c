@@ -665,7 +665,7 @@ static void test_ops(void)
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":false,\"bursts_raw\":false,\"dev_scale\":true}"), "info names the features: %.300s", out);
+    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":false,\"bursts_raw\":false,\"dev_scale\":true,\"noise\":false}"), "info names the features: %.300s", out);
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.6}", now);
     drain(bl, c, out, sizeof out);

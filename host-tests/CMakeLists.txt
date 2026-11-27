@@ -217,6 +217,18 @@ if(RDOF_COMMON_IS_RUST MATCHES "RDOF_RUST=1")
     set_target_properties(rdof_tests_c PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(rdof_tests_c PRIVATE -Wall -Wno-unused-parameter)
     add_test(NAME rdof_tests_c COMMAND rdof_tests_c)
+
+    # Noise on a bench transmit job (rust's signoise.rs, rdof/signoise.h; Rust only): the fields, the attenuation,
+    # what the SDR modem sends (C/N, band, offset, the noise mode) and the generator's cost.
+    add_executable(rdof_signoise_tests test_signoise.c)
+    target_link_libraries(rdof_signoise_tests PRIVATE rdof_common rdof_sdr m)
+    set_target_properties(rdof_signoise_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_signoise_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(rdof_signoise_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_signoise_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME signoise COMMAND rdof_signoise_tests)
 endif()
 
 # The trunked site controller (rust's t3 feature, rdof/t3.h): its own tests (cargo test: the PDU codec and the

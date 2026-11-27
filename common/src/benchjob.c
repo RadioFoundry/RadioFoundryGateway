@@ -68,6 +68,19 @@ static const rdof_jnode_t *node(const rdof_jdoc_t *d, int obj, const char *key)
     return n && n->type != RDOF_JNULL ? n : NULL;
 }
 
+/* A transmit job's noise fields: the bench line reads them (rdof/signoise.h), with the Rust; without it they are
+ * fields this gateway doesn't apply (unread_field). */
+static void noise_seen(void)
+{
+#if defined(RDOF_RUST) && RDOF_RUST
+    seen_add("noise_bw");
+    seen_add("cn_db");
+    seen_add("noise_dbm");
+    seen_add("noise_seed");
+    seen_add("noise_offset_hz");
+#endif
+}
+
 static double num(const rdof_jdoc_t *d, int obj, const char *key, double dflt)
 {
     const rdof_jnode_t *n = node(d, obj, key);
@@ -252,6 +265,7 @@ static bool parse_outbound(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint
 {
     char s[16];
     j->cmd = RDOF_BJ_OUTBOUND;
+    noise_seen();
     j->freq_mhz = num(d, obj, "freq", 0);
     j->cc = (int)num(d, obj, "cc", 1);
     j->power = (int)num(d, obj, "power", 255);
@@ -523,6 +537,8 @@ static bool parse_job(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *
         snprintf(error, ecap, "bench_tx %s isn't done here (voice, csbk, data, raw, listen, outbound)", s);
         return false;
     }
+    if (j->cmd != RDOF_BJ_LISTEN)
+        noise_seen();
     j->freq_mhz = num(d, obj, "freq", 438.5);
     j->cc = (int)num(d, obj, "cc", 2);
     j->power = (int)num(d, obj, "power", 255);

@@ -184,6 +184,12 @@ for name, kind, sdr in (("standalone-mmdvm-simplex.json", "mmdvm_hs", ()),
             out = b.job(438.75, "csbk", dev_scale=0.9)
             check(out and out[-1].get("code") == "unsupported" and "deviation" in out[-1]["error"],
                   f"{name}: --dev-scale on a modem: {out[-2:]}")
+        # a modem sends DMR bursts: no complex baseband to add noise to, refused before anything keys
+        check(info["features"]["noise"] is False and "noise" not in info["signal_modes"]["tx"],
+              f"{name}: noise {info['features']} {info['signal_modes']}")
+        out = b.job(438.75, "csbk", power_dbm=-40, noise_bw=12500, cn_db=10)
+        check(out and out[-1].get("code") == "unsupported" and "noise" in out[-1]["error"],
+              f"{name}: noise on a modem: {out[-2:]}")
         modem = read(b.log)
         check(re.search(r"TX s[12] ", modem), f"{name}: the modem sent the jobs' bursts: {modem[-300:]}")
         if duplex and has_sdr:
@@ -247,6 +253,28 @@ for name in ("standalone-pluto-simplex.json", "standalone-pluto-duplex.json"):
             out = b.job(146.52, "voice", superframes=1, dev_scale=1.6)
             check(out and out[-1].get("code") == "unsupported" and "--dev-scale 1.6" in out[-1]["error"],
                   f"{name}: --dev-scale 1.6: {out[-2:]}")
+            # noise (bench-api.md 14.6): the carrier stays at power_dbm, the samples' room taken off the attenuation
+            check(info["features"]["noise"] is True and "noise" in info["signal_modes"]["tx"],
+                  f"{name}: noise {info['features']} {info['signal_modes']}")
+            out = b.ask(dict(tone(0.5), power_dbm=-40, noise_bw=12500, cn_db=20))
+            done = out[-1].get("done", {}) if out else {}
+            check(done.get("cn_db") == 20.0 and done.get("carrier_dbm") == -40.0 and done.get("noise_dbm") == -60.0
+                  and "noise 12500 Hz wide, the samples 2.9 dB under full scale" in read(b.err),
+                  f"{name}: an FM tone under noise: {out[-2:]} {read(b.err)[-400:]}")
+            out = b.ask(dict(tone(0.5), power_dbm=-1, noise_bw=12500, cn_db=20))  # 2.9 dB over the SDR's 0 dBm
+            check(out and out[-1].get("code") == "unavailable" and "over its most" in out[-1]["error"],
+                  f"{name}: noise past the transmitter's most: {out[-2:]}")
+            out = b.ask({"op": "tx", "mode": "noise", "freq": 446.0, "power_dbm": -50, "noise_bw": 25000,
+                         "noise_offset_hz": 5000, "seconds": 0.3})
+            done = out[-1].get("done", {}) if out else {}
+            check(done.get("mode") == "noise" and done.get("noise_dbm") == -50.0 and done.get("cn_db") is None,
+                  f"{name}: the noise mode: {out[-2:]}")
+            out = b.job(146.52, "voice", superframes=1, power_dbm=-40, noise_bw=12500, noise_dbm=-55)
+            check(exited(out) and "noise: 12500 Hz wide" in json.dumps(out), f"{name}: a voice call under noise: "
+                  f"{out[-3:]}")
+            out = b.job(146.52, "voice", superframes=1, power_dbm=-40, noise_bw=12500, cn_db=15,
+                        noise_offset_hz=100000)    # past 288 kS/s's room around a DMR carrier
+            check(exited(out, 1) and "past the" in json.dumps(out), f"{name}: noise past the room: {out[-3:]}")
         if "duplex" in name:
             out = b.job(438.75, "outbound", seconds=12)
             check(out and "max_key_s 10.0" in json.dumps(out), f"{name}: a 12 s outbound: {out[-2:]}")

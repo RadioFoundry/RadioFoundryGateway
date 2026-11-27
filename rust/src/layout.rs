@@ -32,6 +32,7 @@ use crate::repeater::{
 };
 use crate::sigiq::RdofSigSrc;
 use crate::sigmulti::RdofSigMode;
+use crate::signoise::RdofBenchNoise;
 use crate::slotgrid::{RdofSampleClock, RdofSlotGate, RdofSlotTiming};
 use crate::status::{RdofRepeaterStatus, RdofRoamerStatus};
 use crate::tracker::{RdofBurst, RdofCall, RdofFrame, RdofSink, RdofSlotState, RdofTracker};
@@ -92,6 +93,7 @@ static LAYOUTS: &[Layout] = &layouts![
     ("rdof_modem_port_t", RdofModemPort),
     ("rdof_sig_src_t", RdofSigSrc),
     ("rdof_sig_mode_t", RdofSigMode),
+    ("rdof_bench_noise_t", RdofBenchNoise),
     ("rdof_modem_t", RdofModem),
     ("rdof_mrelay_t", RdofMrelay),
     ("rdof_mrelay_heard_t", RdofMrelayHeard),

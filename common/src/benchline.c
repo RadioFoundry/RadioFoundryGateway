@@ -30,6 +30,12 @@
 #else
 #define STX_MULTI 0
 #endif
+#if defined(RDOF_RUST) && RDOF_RUST && !defined(ESP_PLATFORM)
+#include "rdof/signoise.h"
+#define BL_NOISE 1 /* a job's noise (rust's signoise.rs): host builds; the W12 sends frequency, not I/Q */
+#else
+#define BL_NOISE 0
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -978,6 +984,50 @@ static const char *cannot(const rdof_bl_t *bl, const char *what)
     return bl->p.cannot ? bl->p.cannot(bl->p.ctx, what) : NULL;
 }
 
+/* A job's noise (noise_bw, cn_db or noise_dbm, noise_offset_hz, noise_seed: section 14.6) into nz, none when it asks
+ * none; alone: the noise mode's. false after the refusal: unsupported where the transmitter adds none, bad_request
+ * for the fields. */
+static bool noise_of(rdof_bl_t *bl, conn_t *c, int obj, double power_dbm, bool alone, rdof_bench_noise_t *nz)
+{
+    static const char *const KEYS[] = {"noise_bw", "cn_db", "noise_dbm", "noise_seed", "noise_offset_hz"};
+    memset(nz, 0, sizeof *nz);
+    bool asked = alone;
+    for (int i = 0; i < 5 && !asked; i++)
+        asked = jhas(bl, obj, KEYS[i]);
+    if (!asked)
+        return true;
+    if (!bl->p.tx_noise || !BL_NOISE) {
+        const char *no = cannot(bl, "noise");
+        fail(bl, c, "unsupported", "noise: %s",
+             no ? no : "this bench's transmitter adds no noise (that takes an SDR that sends complex baseband)");
+        return false;
+    }
+#if BL_NOISE
+    char why[200];
+    if (!rdof_signoise_parse(&bl->doc, obj, power_dbm, alone, nz, why, sizeof why)) {
+        fail(bl, c, "bad_request", "%s", why);
+        return false;
+    }
+#endif
+    return true;
+}
+
+/* A job's noise as JSON members (",\"noise_bw\":..."), "" with none. level: the carrier's dBm (alone: the noise's),
+ * under the bench's max_dbm. */
+static void noise_json(rdof_bl_t *bl, const rdof_bench_power_t *p, char *out, size_t cap)
+{
+    out[0] = 0;
+#if BL_NOISE
+    double mk = 0, md = NAN;
+    int pw = -1;
+    if (bl->p.tx_limits)
+        bl->p.tx_limits(bl->p.ctx, &mk, &md, &pw);
+    rdof_signoise_json(&p->noise, !isnan(md) && md < p->dbm ? md : p->dbm, out, cap);
+#else
+    (void)bl, (void)p, (void)cap;
+#endif
+}
+
 /* info's "jobs": each kind of job, null where the bench runs it, else why not, so a client can skip beforehand (the
  * same reasons the requests are refused with). */
 static void jobs_json(rdof_bl_t *bl, const char *notx, char *out, size_t cap)
@@ -1119,12 +1169,13 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
                               "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"jobs\":%s,"
-                              "\"repeater_modes\":%s,\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":%s,\"bursts_raw\":%s,\"dev_scale\":%s},\"default_caps\":[]}",
+                              "\"repeater_modes\":%s,\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":%s,\"bursts_raw\":%s,\"dev_scale\":%s,\"noise\":%s},\"default_caps\":[]}",
                               txl, bands, st_kind ? st_kind : "sdrmodem", qmodel, notx ? "false" : "true",
                               notx ? "false" : "true", why, modes, held, wq, held, wq, eta, eta, stx, srx, jobs,
                               bl->p.rpt_open ? modes : "[]", bl->p.raw_start ? "true" : "false",
                               bl->p.raw_start && bl->p.raw_demod ? "true" : "false",
-                              cannot(bl, "dev_scale") ? "false" : "true");
+                              cannot(bl, "dev_scale") ? "false" : "true",
+                              bl->p.tx_noise && BL_NOISE ? "true" : "false");
     if (k >= line_cap) {
         fail(bl, c, "internal", "info doesn't fit");
         return;
@@ -2146,6 +2197,10 @@ static void dev_note(rdof_bl_t *bl, conn_t *c, double now, const rdof_bj_job_t *
     if (j->dev_scale != 1.0)
         run_log(bl, c, now, "--dev-scale %.2f: the DMR deviation is %.2f of nominal (+-%.0f / +-%.0f Hz)",
                 j->dev_scale, j->dev_scale, 1944 * j->dev_scale, 648 * j->dev_scale);
+    if (j->noise.bw_hz > 0)
+        run_log(bl, c, now, "noise: %.0f Hz wide, %+.0f Hz from the carrier, %.1f dB under it (%.1f dBm against "
+                "power_dbm %.1f)", j->noise.bw_hz, j->noise.offset_hz, j->noise.cn_db, j->power_dbm - j->noise.cn_db,
+                j->power_dbm);
 }
 
 static void run_exit(rdof_bl_t *bl, conn_t *c, int code, const char *killed)
@@ -2431,6 +2486,11 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
         fail(bl, c, "unsupported", "--dev-scale: %s", cannot(bl, "dev_scale"));
         return;
     }
+    if (j->cmd != RDOF_BJ_LISTEN && j->cmd != RDOF_BJ_REPEATER &&
+        !noise_of(bl, c, jo, j->power_dbm, false, &J->job.noise)) {
+        free(J);
+        return;
+    }
     if (j->cmd == RDOF_BJ_REPEATER) {
         rpt_run(bl, c, J, root, now);
         return;
@@ -2598,8 +2658,8 @@ static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
     switch (J->state) {
     case J_OPEN: {
         const rdof_bl_rpt_cfg_t cfg = {(uint32_t)lround(j->rx_mhz * 1e6), (uint32_t)lround(j->tx_mhz * 1e6), j->cc,
-                                       {j->power_dbm, j->power, j->dev_scale}, j->hang, j->call_hang, j->slots,
-                                       j->rpt_mode};
+                                       {.dbm = j->power_dbm, .level = j->power, .dev_scale = j->dev_scale},
+                                       j->hang, j->call_hang, j->slots, j->rpt_mode};
         J->rpt.mode = j->rpt_mode;
         if (!bl->p.rpt_open(bl->p.ctx, &cfg, why, sizeof why)) {
             run_log(bl, c, now, "can't run the repeater: %s", why[0] ? why : "the transmitter is busy");
@@ -2852,7 +2912,7 @@ static void tick_ob(rdof_bl_t *bl, conn_t *c, double now)
     char why[200] = "", line[512];
     if (J->state == J_OPEN) {
         const rdof_bl_ob_cfg_t cfg = {(uint32_t)lround(j->freq_mhz * 1e6), j->cc,
-                                      {j->power_dbm, j->power, j->dev_scale}, j->seconds};
+                                      {j->power_dbm, j->power, j->dev_scale, j->noise}, j->seconds};
         if (!bl->p.ob_open(bl->p.ctx, &cfg, why, sizeof why)) {
             run_log(bl, c, now, "can't transmit: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
@@ -2974,7 +3034,7 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
             run_exit(bl, c, 1, NULL);
             return;
         }
-        const rdof_bench_power_t pw = {j->power_dbm, j->power, j->dev_scale};
+        const rdof_bench_power_t pw = {j->power_dbm, j->power, j->dev_scale, j->noise};
         if (!bl->p.tx_open(bl->p.ctx, (uint32_t)lround(j->freq_mhz * 1e6), j->cc, pw, as_built(j), why, sizeof why)) {
             run_log(bl, c, now, "can't transmit: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
@@ -3423,6 +3483,13 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
             }
         }
     }
+    rdof_bench_noise_t nz;
+    if (!noise_of(bl, c, root, jnum(bl, root, "power_dbm", NAN), !strcmp(m->name, "noise"), &nz))
+        return;
+    if (nz.bw_hz > 0 && ca >= 0) {
+        fail(bl, c, "bad_request", "noise with carriers: one carrier, freq");
+        return;
+    }
     sigtx_t *t = RDOF_BL_CALLOC(1, sizeof *t);
     if (!t) {
         fail(bl, c, "busy", "no memory for the job");
@@ -3453,8 +3520,27 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
         t->src.rate = fs;
     t->src.span_lo_hz = span_lo;
     t->src.span_hi_hz = span_hi;
+#if BL_NOISE
+    if (nz.bw_hz > 0) { /* the span takes the noise in, so the TX LO is placed for it too (a channel's half beside) */
+        const double e = rdof_signoise_reach_hz(&nz) - fabs(nz.offset_hz);
+        const double lo = nz.offset_hz - e < -6250 ? nz.offset_hz - e : -6250;
+        const double hi = nz.offset_hz + e > 6250 ? nz.offset_hz + e : 6250;
+        rdof_bl_window_t w;
+        get_window(bl, &w);
+        if (w.tx_reach_hz > 0 && (hi - lo) / 2 > w.tx_reach_hz) {
+            t->m->tx_free(t->tx);
+            free(t);
+            fail(bl, c, "refused", "the noise and the carrier span %.1f to %+.1f kHz from freq, over the %.1f kHz the "
+                 "transmitter reaches now (twice %.1f kHz)", lo / 1e3, hi / 1e3, 2 * w.tx_reach_hz / 1e3,
+                 w.tx_reach_hz / 1e3);
+            return;
+        }
+        t->src.span_lo_hz = lo;
+        t->src.span_hi_hz = hi;
+    }
+#endif
     t->freq_hz = (uint32_t)lround(mhz * 1e6);
-    t->power = (rdof_bench_power_t){jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0), 1.0};
+    t->power = (rdof_bench_power_t){jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0), 1.0, nz};
     t->max_s = jnum(bl, root, "max_s", t->seconds + STX_TAIL_S);
     t->id = ++bl->next_seq;
     c->stx = t;
@@ -3467,8 +3553,10 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
         n += snprintf(cl + n, sizeof cl - (size_t)n, ",%.6f", more[i]);
     }
     const uint64_t want = t->m->tx_in_want ? t->m->tx_in_want(t->tx) : 0;
+    char nj[160];
+    noise_json(bl, &t->power, nj, sizeof nj);
     emit(bl, c, "{\"tx\":{\"mode\":\"%s\",\"freq\":%.6f,\"carriers\":[%.6f%s],\"rate\":%.1f,\"seconds\":%.3f,"
-         "\"input_bytes\":%llu}}", m->name, mhz, mhz, cl, t->src.rate, t->seconds, (unsigned long long)want);
+         "\"input_bytes\":%llu%s}}", m->name, mhz, mhz, cl, t->src.rate, t->seconds, (unsigned long long)want, nj);
     wait_start(bl, c, W_MODEM, root, now);
     if (c->expect_s <= 0)
         c->expect_s = t->seconds + 3.0;
@@ -3547,8 +3635,11 @@ static void tick_tx(rdof_bl_t *bl, conn_t *c, double now)
     get_window(bl, &w);
     char pp[256];
     put_ppm_at(pp, sizeof pp, &w, t->freq_hz);
-    emit(bl, c, "{\"done\":{\"mode\":\"%s\",\"freq\":%.6f,\"on_air_s\":%.3f,\"input_bytes\":%llu,\"cut\":%s,%s%s}}",
-         t->name, t->freq_hz / 1e6, now - t->started, (unsigned long long)t->taken, late ? "true" : "false", pp, rep);
+    char nj[160];
+    noise_json(bl, &t->power, nj, sizeof nj);
+    emit(bl, c, "{\"done\":{\"mode\":\"%s\",\"freq\":%.6f,\"on_air_s\":%.3f,\"input_bytes\":%llu,\"cut\":%s,%s%s%s}}",
+         t->name, t->freq_hz / 1e6, now - t->started, (unsigned long long)t->taken, late ? "true" : "false", pp, rep,
+         nj);
     c->state = C_DONE;
 }
 
@@ -3925,7 +4016,8 @@ static void op_mssim(rdof_bl_t *bl, conn_t *c, int root, double now)
         fail(bl, c, "bad_request", "action is arm, disarm or status");
         return;
     }
-    const rdof_bench_power_t power = {jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0), 1.0};
+    const rdof_bench_power_t power = {.dbm = jnum(bl, root, "power_dbm", NAN), .level = (int)jnum(bl, root, "power", 0),
+                                      .dev_scale = 1.0};
     const double seconds = jnum(bl, root, "seconds", 300.0);
     /* a responder where no channel decodes DMR (or past the transmitter's reach): a tune there, held while armed */
     if (!strcmp(action, "arm") && reach_tune(bl, c, root, mhz, true, true, now))
@@ -4394,7 +4486,8 @@ static void ig_arm(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
     I->freq_hz = (uint32_t)lround(mhz * 1e6);
     I->cc = cc;
     I->ch = bl->f[k].ch;
-    I->power = (rdof_bench_power_t){jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0), 1.0};
+    I->power = (rdof_bench_power_t){.dbm = jnum(bl, root, "power_dbm", NAN), .level = (int)jnum(bl, root, "power", 0),
+                                    .dev_scale = 1.0};
     I->until = now + seconds;
     I->now = now;
     I->port = port;
