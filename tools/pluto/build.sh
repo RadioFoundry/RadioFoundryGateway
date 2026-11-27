@@ -27,9 +27,10 @@ SYSROOT_SHA=b99b9c9c833bd7e44037cc97b3670a578b21636f244657be9f338a17cabd8223
 CMAKE_URL=https://github.com/Kitware/CMake/releases/download/v3.27.9/cmake-3.27.9-linux-x86_64.tar.gz
 MOSQ_URL=https://mosquitto.org/files/source/mosquitto-2.1.2.tar.gz
 MOSQ_SHA=fd905380691ac65ea5a93779e8214941829e3d6e038d5edff9eac5fd74cbed02
-# Rust (stable, minimal) for rust/: the modules that run in place of their C. Installed once, into build/pluto/rust
+# Rust (stable, minimal) for rust/: the modules that run in place of their C. Installed once, into build/pluto/rust;
+# Thumb-2, as the C (tools/pluto/armhf.cmake)
 RUSTUP_URL=https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
-RUST_TARGET=armv7-unknown-linux-gnueabihf
+RUST_TARGET=thumbv7neon-unknown-linux-gnueabihf
 CJSON_URL=https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.18.tar.gz
 CJSON_SHA=3aa806844a03442c00769b83e99970be70fbef03735ff898f4811dd03b9f5ee5
 [ -f "$DL/sysroot.tar.gz" ] || curl -fL -o "$DL/sysroot.tar.gz" "$SYSROOT_URL"
@@ -53,7 +54,7 @@ VERSION=${RDOF_VERSION:-$(git -C "$ROOT" describe --always --dirty 2>/dev/null |
 # The Rust at opt-level "z" here (the profile's "s" elsewhere): 12 KB less xz (2026-11-21: 611 KB against 624 KB)
 # for the same CPU on the Pluto (rdofradio 752 against 737 ticks in 20 s, receiving)
 docker run --rm -v "$ROOT":/src:ro -v "$OUT":/out -e RDOF_PLUTO_LIBS=/out/libs -e RDOF_VERSION="$VERSION" -e RDOF_PLUTO_WEB="${RDOF_PLUTO_WEB:-ON}" \
-    -e CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+    -e CARGO_PROFILE_RELEASE_OPT_LEVEL=z -e CARGO_TARGET_THUMBV7NEON_UNKNOWN_LINUX_GNUEABIHF_RUSTFLAGS="-C relocation-model=static" \
     -e RUST_TARGET="$RUST_TARGET" -e RUSTUP_HOME=/out/rust/rustup -e CARGO_HOME=/out/rust/cargo debian:stretch bash -euo pipefail -c '
 echo "deb http://archive.debian.org/debian stretch main" > /etc/apt/sources.list
 apt-get -qq -o Acquire::Check-Valid-Until=false update
@@ -64,6 +65,7 @@ if [ ! -x /out/rust/cargo/bin/cargo ]; then
     apt-get -qq install -y --no-install-recommends ca-certificates >/dev/null
     /out/dl/rustup-init -y -q --no-modify-path --profile minimal --default-toolchain stable --target "$RUST_TARGET"
 fi
+rustup target list --installed | grep -qx "$RUST_TARGET" || rustup target add "$RUST_TARGET"
 if [ ! -f /out/libs/usr/lib/libmosquitto_static.a ]; then
     # cJSON (MIT), which the 2.1 build needs found, then the client library alone, static, without TLS
     T=/out/thirdparty && rm -rf $T && mkdir -p $T/cjson $T/mosquitto
@@ -118,8 +120,8 @@ if ls "$ROOT"/tools/pluto/fpga/*.bit.bin > /dev/null 2>&1; then
     cp "$ROOT"/tools/pluto/fpga/* "$OUT/$B/fpga/"
 fi
 # xz: about 15 % smaller than gzip -9 (the Pluto's flash holds about 700 KB of program); crc32, no filter: busybox's
-# unxz decodes it. lc=2,lp=2 suit ARM's 4-byte instructions: 7 KB less than plain -9e
-xz --check=crc32 --lzma2=preset=9e,lc=2,lp=2,pb=2 -c "$OUT/rdofradio" > "$OUT/$B/rdofradio.xz"
+# unxz decodes it. lp=1,pb=1 suit Thumb-2's 2-byte units: 3 KB less than lc=2,lp=2,pb=2
+xz --check=crc32 --lzma2=preset=9e,lc=3,lp=1,pb=1 -c "$OUT/rdofradio" > "$OUT/$B/rdofradio.xz"
 echo "$VERSION" > "$OUT/$B/VERSION"
 chmod 755 "$OUT/$B/install.sh" "$OUT/$B/run.sh"
 tar -C "$OUT" -czf "$OUT/$B.tar.gz" "$B"

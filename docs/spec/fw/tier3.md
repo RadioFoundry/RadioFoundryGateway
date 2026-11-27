@@ -1958,7 +1958,7 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   `sdr/cli/rdofradio_simext.h`.
 - Rust in the Linux build: `rust.cmake` has `FEATURES`; `sdr/cli/tools.cmake` builds `rdof_rust` with only the `t3`
   feature (so the C modules stay C) when cargo is found and `RDOF_TIER3` is on, for `RDOF_RUST_TARGET` when cross
-  building; the Pluto container installs rustup with `armv7-unknown-linux-gnueabihf`.
+  building; the Pluto container installs rustup with `thumbv7neon-unknown-linux-gnueabihf`.
 - Provisioning: each `cfg/tg` document's `hang_s` (1-60 s; else the site's) and `priority` (0-3) go to the controller
   (`rdof_t3_tg_policy`, 64 talkgroups): a group call's channel hangs for its talkgroup's time, and a group request's
   priority is the most of its own, the MS's and the talkgroup's. A deleted document's entry goes.

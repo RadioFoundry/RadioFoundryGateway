@@ -8,7 +8,7 @@
 #   RDOF_HOST_WEB: rdofradio --web
 #   RDOF_VERSION: the version rdofradio reports (default: git describe at configure time)
 #   RDOF_TIER3 (ON) with cargo: rdofradio runs a trunked site and --sim-air (the controller is rust's t3 feature, in
-#   rdof_common's Rust library, or alone with the C modules); RDOF_RUST_TARGET is cargo's target for a cross build (armv7-unknown-linux-gnueabihf on a PlutoSDR)
+#   rdof_common's Rust library, or alone with the C modules); RDOF_RUST_TARGET is cargo's target for a cross build (thumbv7neon-unknown-linux-gnueabihf on a PlutoSDR)
 set(RDOF_CLI ${CMAKE_CURRENT_LIST_DIR})
 find_package(Threads REQUIRED)
 
