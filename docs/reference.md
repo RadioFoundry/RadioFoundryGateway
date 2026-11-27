@@ -118,6 +118,7 @@ What runs:
 | `sdr_selftest_tests`, `rdof_power_tests`, `rdof_txseam_tests` | the firmware's self-test check, its power key and battery numbers, where a long key-up's seams fall on the LR2021 |
 | `rdof_hostweb_tests`, `rdof_webapi_tests`, `rdof_radiocfg_tests` | the host web server, the shared web API (byte for byte against the firmware's status), `rdofradio --config` |
 | `rdof_benchline_tests`, `benchsig`, `benchenv`, `benchramp`, `rdof_fm_tests`, `rdof_am_tests`, `rdof_fsk4_tests` | the bench line protocol, signal modes, the carrier envelope, PA ramps, the FM, AM and 4FSK generators and receivers |
+| `signoise` | noise on a bench transmit job (Rust only): the fields and refusals, the attenuation, C/N, band and offset as the SDR modem sends them, the noise mode, the generator's cost |
 | `rdof_radio_utc_tests`, `pluto_bundle`, `pluto_usb_serial_tests` | rdofradio's UTC slot timing; the Pluto bundle's `run.sh` and `install.sh` (needs `xz`); `run.sh` giving a USB radio to the generic usb-serial driver |
 | `rdof_memplan_tests`, `rdof_parrot_tests`, `rdof_mssim_tests`, `rdof_lastheard_tests`, `rdof_pffft_tests` | the memory plan, the parrot, the confirmed-data responder, Last heard, pffft against the built-in FFT |
 | `js_netclock`, `js_wifilist` | the page scripts parse (Node) |
@@ -280,7 +281,7 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `json` | a compact JSON writer, byte for byte stable for the golden tests |
 | `webapi` | the web API shared by the firmware and the host tools: `/api/status`'s shared parts and `caps`, the settings, `/api/log`, `/api/lastheard`, `/api/restart` |
 | `jitter`, `lastheard`, `memplan` | the network jitter buffer; Last heard; the board's memory plan ([memory.md](spec/fw/memory.md)) |
-| `bench*`, `sigmode` | the bench line protocol, its jobs, its guard and its route through the pool; signal modes ([bench-api.md](spec/bench-api.md) §14; Rust only: `sigiq`, the `iq` mode, and `sigmulti`, several carriers in one job) |
+| `bench*`, `sigmode` | the bench line protocol, its jobs, its guard and its route through the pool; signal modes ([bench-api.md](spec/bench-api.md) §14; Rust only: `sigiq`, the `iq` mode, `sigmulti`, several carriers in one job, and `signoise`, noise on a job and the `noise` mode) |
 
 `sdr/` modules (headers in `include/rdof/sdr/`):
 
@@ -1114,9 +1115,12 @@ a private test network. Code: `bench_api.c`, `bench_radio.c`, `bench_tx.c`; the 
 - `tx` and `rx` in a signal mode (spec §14.6): FM (`fm`); AM for airband (`am`; `rfgbench.py tx am` / `rx am`:
   1 kHz at 30% by default; the receiver gives depth, SINAD, THD, the carrier's level and offset, residual FM, and
   the audio and envelope as PCM); raw 4-level FSK symbols (`fsk4`: any 4FSK air interface, P25 phase 1, DMR, NXDN,
-  dPMR); and the client's complex baseband (`iq`, transmit only). Several carriers of one mode can go out in one job
-  on a transmitter that sends I/Q (a Pluto). Receive is in software on any front end; AM transmit needs I/Q (a Pluto)
-  or polar I/Q (the W12). `info`'s `signal_modes` lists what this bench takes (spec §14.9).
+  dPMR); the client's complex baseband (`iq`, transmit only); and band-limited noise alone (`noise`, transmit only).
+  Several carriers of one mode can go out in one job on a transmitter that sends I/Q (a Pluto). There, too, any
+  transmit job (a signal mode's or a `bench_tx` job's) can carry noise at a C/N or a level (`noise_bw`, `cn_db` or
+  `noise_dbm`, `noise_offset_hz`; spec §14.6), the carrier kept at `power_dbm`; the W12 and an MMDVM modem refuse it.
+  Receive is in software on any front end; AM transmit needs I/Q (a Pluto) or polar I/Q (the W12). `info`'s
+  `signal_modes` lists what this bench takes (spec §14.9).
 
 Memory and throughput:
 
@@ -1449,8 +1453,8 @@ LO powered down throughout.
 `--bench [ADDR:]PORT` serves [bench-api.md](spec/bench-api.md) §14 for `tools/bench/rfgbench.py`: the channels'
 bursts, wideband cs8 captures from a 2.5 s history, level-triggered channel captures, `bench_tx` jobs (`voice`,
 `csbk`, `data`, `raw`, `listen`, `outbound`), `bench_repeater` jobs (DMR; P25 and NXDN on a duplex MMDVM modem),
-`mssim`, and `tx` and `rx` in the signal modes (`fm`, `am`, `fsk4`, `iq`; spec §14.6). What each front end can do:
-spec §14.9.
+`mssim`, and `tx` and `rx` in the signal modes (`fm`, `am`, `fsk4`, `iq`, `noise`; spec §14.6), noise on any
+transmit job on an SDR that sends I/Q. What each front end can do: spec §14.9.
 
 - **Transmit jobs** need `--bench-tx MHZ[,MHZ...]` (up to 32 frequencies) or bands, and the half duplex transceiver.
   A job takes the SDR modem for its length, at `--tx-power`, or at the job's `power_dbm` (bench_tx's `--power-dbm`)

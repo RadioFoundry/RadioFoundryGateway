@@ -51,6 +51,7 @@ Modules with no C twin (new code is written in Rust only; its C callers build wi
 | `mrelay.rs` | `rdof/mrelay.h`: a P25 or NXDN repeater on a duplex MMDVM modem (`bench_repeater` `mode`) |
 | `sigmulti.rs` | `rdof/sigmulti.h`: several carriers in one bench transmit job, any signal mode's transmitter once a carrier |
 | `sigiq.rs` | `rdof/sigiq.h`: the bench's `iq` transmit mode, the client's cs16 baseband (`sdr/src/modes.c`) |
+| `signoise.rs` | `rdof/signoise.h`: noise on a bench transmit job (its fields, levels and generator) and the `noise` mode |
 
 The Tier III trunked site ([tier3.md](../docs/spec/fw/tier3.md) sections 8 and 9) is Rust only, behind two
 features: `t3`, the controller (`t3site.rs`, `t3tscc.rs` and the other `t3*.rs`, with the MS simulator `t3ms.rs` and

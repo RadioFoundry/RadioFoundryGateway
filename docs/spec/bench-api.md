@@ -766,6 +766,10 @@ tool's own `ambe` (its bytes come as `ambe_hex`), `port` and `verbose` pass.
 - An option the gateway can't honor is `unsupported` with the option named, before anything keys. `power_dbm`
   (dBm at the antenna; `power`, 0-255, the older form) is clamped to `bench.tx.max_dbm` or `rf_level`, and the
   refusal or note says the dBm (rdofradio: see 14.4).
+- Noise on a transmitting job (`voice`, `csbk`, `data`, `raw`, `outbound`): `noise_bw` (`--noise-bw`) with `cn_db`
+  (`--cn-db`) or `noise_dbm` (`--noise-dbm`), `noise_offset_hz` (`--noise-offset`), `noise_seed` (`--noise-seed`),
+  as section 14.6's noise; `power_dbm` is the carrier's level and required with it. A bench without noise
+  (`info.features.noise` false) refuses the run (`unsupported`); `listen` and `bench_repeater` refuse the fields.
 - `dev_scale` (`--dev-scale`, a number, default 1.0) sets a transmitting job's DMR 4FSK deviation as a fraction of
   nominal (ETSI's +-1944 / +-648 Hz): 0.9 sends +-1750 / +-583 Hz, to check a receiver against a transmitter off
   nominal. It applies to `voice`, `csbk`, `data` and `outbound` (its voice calls and idle bursts) and to
@@ -849,12 +853,13 @@ connection, which cancels it. `rfgbench.py stop JOB [--session ID]` ends a job f
 ### 14.6 Signal modes: tx and rx
 
 A signal mode is a modulation other than DMR, as one table (`rdof/sigmode.h`; the list in `rdof/sdr/modes.h`): analog
-FM (`fm`), analog AM (`am`), raw 4-level FSK (`fsk4`) and the client's complex baseband (`iq`, transmit only). `info`'s `signal_modes` lists them: `{"tx": [names], "rx": [names]}`. The fields
-after the op's own are the mode's.
+FM (`fm`), analog AM (`am`), raw 4-level FSK (`fsk4`), the client's complex baseband (`iq`, transmit only) and
+band-limited noise alone (`noise`, transmit only, where the transmitter adds noise: below). `info`'s `signal_modes`
+lists them: `{"tx": [names], "rx": [names]}`. The fields after the op's own are the mode's.
 
 | op | request | replies |
 |---|---|---|
-| `tx` | `session`, `mode`, `freq`, `carriers` (`iq`), `power_dbm` (or `power`), `max_s`, `wait_max`, the mode's fields; input bytes after the line | `{"tx": {"mode", "freq", "carriers", "rate", "seconds", "input_bytes"}}`, queued / granted, `{"started": ID, "t"}`, `{"done": {"mode", "freq", "on_air_s", "input_bytes", "cut", ...}}` |
+| `tx` | `session`, `mode`, `freq`, `carriers` (`iq`), `power_dbm` (the carrier's level; or `power`), `noise_bw` with `cn_db` or `noise_dbm`, `noise_offset_hz`, `noise_seed` (noise, below), `max_s`, `wait_max`, the mode's fields; input bytes after the line | `{"tx": {"mode", "freq", "carriers", "rate", "seconds", "input_bytes"}}` (with noise: `noise_bw`, `noise_offset_hz`, `cn_db`, `noise_dbm`, `carrier_dbm`), queued / granted, `{"started": ID, "t"}`, `{"done": {"mode", "freq", "on_air_s", "input_bytes", "cut", ...}}` (the noise's fields too) |
 | `rx` | `session`, `mode`, `freq`, `seconds`, `bw`, `squelch_dbfs`, `squelch_over_db`, the mode's fields | `{"rx": header}`, `{"rec": record}`, `{"pcm": {"stream", "seq", "n"}, "bytes": 2n}` + int16 LE, `{"gap": ...}`, `{"done": {"mode", "freq", "seconds", "samples", "gap_samples", "cpu_s", "summary"}}` |
 
 - `tx` is a transmit job: it waits for the modem as `run` does (`expect_s` its length plus 3 s), on a frequency of
@@ -1181,6 +1186,65 @@ Checked 2026-11-23, rdofradio on a simulated SDR (2.4 MS/s): two C4FM carriers 5
 `level` 0.4, through `rfgbench.py tx fsk4 --carrier`: each demodulated from the transmitted samples with 0 of 3072
 symbols wrong, outer deviation 1792-1794 Hz. Not yet on the air.
 
+#### Noise
+
+A transmit job can carry noise: complex Gaussian noise, band-limited to `noise_bw` around its center, added to the
+job's complex baseband before the transmitter. It tests a receiver's sensitivity, or its decoding against C/N, with
+no noise source on the bench. It needs a transmitter that sends complex baseband: rdofradio on an SDR (a Pluto, SoapySDR,
+the simulated SDR). `info`'s `features` says `noise`; where it's false (a W12, which sends frequency, and an MMDVM
+modem) a job with any noise field is `unsupported`, before anything keys.
+
+- Fields, on `tx` in any mode that transmits and on `run`'s `bench_tx` jobs (`voice`, `csbk`, `data`, `raw`,
+  `outbound`: `--noise-bw` and the rest, section 14.3): `noise_bw` (Hz, 1000-50000, at most a quarter of the
+  transmit stream's rate; it turns the noise on), and one of `cn_db` (the carrier over the noise in `noise_bw`, -20
+  to 80 dB) or `noise_dbm` (the noise's level in `noise_bw`, dBm at the antenna). `noise_offset_hz` (0) puts the
+  noise's center that far from `freq`, -200000 to 200000, with or without a carrier there. `noise_seed` (1, a whole
+  number up to 2^32 - 1) picks the noise: the same seed, the same samples.
+- `power_dbm` stays the carrier's level and is required with noise (a job that names only `power` is refused).
+  `noise_dbm` is `power_dbm` less `cn_db`. Both `cn_db` and `noise_dbm` is `bad_request`, as is either one, the
+  offset or the seed without `noise_bw`, and a value out of range.
+- Levels: the transmitter adds the noise to the carrier's samples and scales the sum so the carrier and the
+  noise's 4-sigma peaks stay within full scale (the samples sit `20 log10(1 + 4 sigma)` dB under it, sigma the
+  noise's in-band RMS against the carrier, `10^(-cn_db/20)`); the attenuator then takes off that many dB less, so
+  the carrier goes out at `power_dbm`. At C/N 20 dB that's 2.9 dB, at 0 dB 14 dB. A `tx` that would need more than
+  the transmitter's most ends before `started` (`unavailable`, `can't transmit: ...`, naming the level it would
+  need); a `run` job, which has `started` once it has the modem, logs `can't transmit` with the same and exits 1
+  before anything keys.
+- Reach: the noise needs room around the carrier. A signal mode's span (the source's band, the LO placed for it)
+  takes in the noise out to its filter's stop band (`noise_offset_hz` ± 0.7 `noise_bw`), so a span past what the
+  transmitter reaches is `refused` as a carrier's would be. A DMR job keeps its LO where the modem put it; one whose
+  noise reaches past the modulator's room (on rdofradio, 0.1 of the transmit rate plus 12.5 kHz from the carrier)
+  can't transmit, as above.
+- The `tx` header and `done` add `noise_bw`, `noise_offset_hz`, `cn_db`, `noise_dbm` and `carrier_dbm` (the levels
+  as sent, under `bench.tx.max_dbm`); a `run` job's log has a line with the same. The noise lasts as long as the
+  keying: a signal mode's until its source ends, a DMR job's while anything is queued (not between its key-ups).
+- The noise is made at about 4 `noise_bw` (the transmit stream's rate divided by a whole number), through a Kaiser
+  low-pass (flat to `noise_bw`/2, 60 dB down from 0.7 `noise_bw`), then spread over the stream's samples linearly
+  and turned to its place there; its level is set in `noise_bw` with that interpolation counted. The interpolation
+  leaves images around multiples of the noise's rate: about 35 dB under the band's density at their peak, about 37
+  dB in all under the band's power. Between the band and the first image the floor is over 70 dB down.
+
+The noise mode (`noise`, transmit only, where `features.noise` is true) sends the noise with no carrier: `seconds`
+(required, at most 3600), `noise_bw`, `noise_offset_hz`, `noise_seed`, and `power_dbm` (required), the noise's level
+in `noise_bw`; `cn_db` and `noise_dbm` are `bad_request` there. The noise alone sits 12 dB under full scale (its
+4-sigma peaks at full scale). Its header and `done` give `noise_dbm` and null `cn_db` and `carrier_dbm`.
+
+```json
+{"op":"tx","mode":"fm","freq":438.5,"power_dbm":-60,"noise_bw":12500,"cn_db":12,"program":[{"kind":"tone","hz":1000,"s":5}]}
+{"op":"tx","mode":"noise","freq":438.5,"power_dbm":-70,"noise_bw":25000,"noise_offset_hz":12500,"seconds":10}
+```
+
+```sh
+rfgbench.py --bench HOST tx fm --freq 438.5 --power-dbm -60 --noise-bw 12500 --cn-db 12 tone:1000:5
+rfgbench.py --bench HOST tx noise --freq 438.5 --power-dbm -70 --noise-bw 25000 --noise-offset 12500 --seconds 10
+rfgbench.py --bench HOST run -- bench_tx.py --freq 438.5 --power-dbm -60 --noise-bw 12500 --noise-dbm -75 voice
+```
+
+Measured on the host (`rdof_signoise_tests`): C/N as asked within 0.1 dB from -10 to 30 dB, the noise mode 12.00 dB
+under full scale (12.04 asked). The cost on an M1 Pro (an assumed 3.2 GHz) is 17-41 Mcycles/s on a 192 kS/s stream
+(`--fpga-duc`) and 21-72 Mcycles/s from 864 kS/s to 2.4 MS/s, the most with `noise_bw` 50 kHz at 2.4 MS/s; a
+narrower band costs less (the filter runs at about 4 `noise_bw`), the offset nothing. Not yet measured on a Pluto.
+
 ### 14.7 Frequency correction
 
 The bench's measurements find radios whose frequency is off, so the gateway takes its own crystal's error out of
@@ -1365,6 +1429,7 @@ each job's reason when it can't run. A client skips on those; a refused job's er
 | `mssim` (confirmed-data responder) | yes | yes | yes: timing the serial port's and a key-up's, learned from what's heard back | no: it hears through an SDR's channel |
 | `ipgw` (IP gateway) | yes | yes | yes | no: it hears through an SDR's channel |
 | `tx`: FM, AM (signal modes) | yes | yes | no: the MMDVM serial protocol carries DMR bursts only, and an RTL-SDR doesn't transmit | no |
+| Noise on a transmit job, the `noise` mode (`features.noise`) | no: it sends frequency, not I/Q | yes | no: no I/Q to add it to | no |
 
 What the last two columns can't do, and why:
 
