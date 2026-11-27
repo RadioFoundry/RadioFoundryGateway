@@ -229,7 +229,9 @@ from this browser" button. One exchange at a time.
 Page section: `<div data-netclock></div><script src="/netclock.js" defer></script>`. Div options: `data-base`
 (default `/api`), `data-auto-time="0"`, `data-refresh` (s, default 5; reloads only while the page and the element
 are visible). Colors from the page's `--mute`, `--line`, `--ok`, `--bad`, `--warn`, `--accent`.
-`window.netclock.mount(el)` mounts it on another element.
+`window.netclock.mount(el)` mounts it on another element. Display text goes through `window.rdofT(s)` when the
+page defines it (the page's Chinese layer; English otherwise), the section re-renders on the page's
+`rdof-langchange` event, and `window.rdofApplyLang()` after mount translates the static template.
 
 ### `GET /api/clock` JSON
 

@@ -295,7 +295,9 @@ Mounts on every `[data-wifilist]` (also `window.wifilist.mount(el)`), polls `GET
 `was` = its current name and no `password`, so passwords stay on the board. Up/down swaps two entries and
 renumbers all priorities `10·(N−k)` for position k = 0..N−1 (top = 10·N, bottom = 10). Add sends `password`
 (`""` for open); edit sends it only when typed. Colors use the page's `--mute`, `--line`, `--ok`, `--bad`,
-`--accent` when defined.
+`--accent` when defined. Display text goes through `window.rdofT(s)` when the page defines it (the page's Chinese
+layer; English otherwise), the section re-renders on the page's `rdof-langchange` event, and
+`window.rdofApplyLang()` after mount translates the static template.
 
 ## Kconfig (`Kconfig`, menu "wifilist (prioritized Wi-Fi networks)")
 

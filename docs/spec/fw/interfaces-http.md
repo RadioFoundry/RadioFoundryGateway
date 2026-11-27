@@ -410,7 +410,7 @@ its stored password; no `password`: keep it), or one network to add, `{"ssid", "
 | `mini.html` | `CONFIG_RDOF_WEB_FULL=n` | the last ten calls from `/api/lastheard` every 3 s; links to `/api/status`, `/api/resolved`, `/api/log`, `/api/coredump`, `/api/config?download`; the config editor (`GET`/`POST /api/config`); `/wifilist.js`, `/netclock.js` |
 
 The full page has a header (the board's name, a health pill counting problems and warnings, the board's UTC
-clock and uptime) and six tabs, by URL hash:
+clock and uptime, and the language button) and six tabs, by URL hash:
 
 | Tab | Shows |
 |---|---|
@@ -431,3 +431,18 @@ settings editor is read only without `settings_edit` (it then says where the set
 
 The page uses only the endpoints above. It holds no state of its own beyond what the board returns. A rewrite that
 serves the same endpoints can serve the same page.
+
+### Language
+
+Both pages are bilingual: English is the source text, Chinese a layer switched at runtime. The header's button
+(`#langbtn`, `中` / `EN`) flips `localStorage.rdof_lang` (`en` default, `zh`) and calls `applyLang()`; the choice
+survives reloads, and `document.documentElement.lang` follows (`en` / `zh-CN`). Each page carries its own i18n core:
+a `ZH` dictionary keyed by the English string, `t(s)` (unknown strings come back unchanged), and `applyLang()`,
+which walks the text nodes and the `title` and `placeholder` attributes, keeps the original text in a WeakMap (so
+the nodes `render()` replaces can be collected) and restores them exactly on switching back. The core publishes
+`window.rdofT(s)` and `window.rdofApplyLang()` for the components and dispatches `rdof-langchange` on `document`,
+which makes `/wifilist.js` and `/netclock.js` re-render.
+
+Only display text is translated. Object keys, CSS classes, `data-*` values and API field names are not. Brand
+names (`HBlink4`, `MQTT`, `SCTP`, `RTL-SDR`, `LR2021`, `GNSS PPS`, `NTP`) and units (`MHz`, `dBm`, `ms`, `ppm`,
+`kB/s`, `s`) stay as they are.
