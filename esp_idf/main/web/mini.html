@@ -129,9 +129,10 @@ const ZH = {
 const I18N = { lang: (function () { try { return localStorage.getItem('rdof_lang') || 'en'; } catch (e) { return 'en'; } })() };
 const t = s => (I18N.lang === 'zh' && ZH[s] != null) ? ZH[s] : s;
 window.rdofT = t;
-const _origText = new Map();
+const _origText = new WeakMap();
 function applyLang() {
   if ($('langbtn')) $('langbtn').textContent = I18N.lang === 'zh' ? 'EN' : '中';
+  document.documentElement.lang = I18N.lang === 'zh' ? 'zh-CN' : 'en';
   const accept = n => n.parentNode && !n.parentNode.closest('script,style,textarea') ?
     NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
   const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {acceptNode: accept});

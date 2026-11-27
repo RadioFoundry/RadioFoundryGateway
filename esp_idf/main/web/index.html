@@ -417,9 +417,10 @@ const I18N = {
 const t = s => (I18N.lang === 'zh' && ZH[s] != null) ? ZH[s] : s;
 window.rdofT = t;
 window.rdofLang = () => I18N.lang;
-const _origText = new Map();
+const _origText = new WeakMap();
 function applyLang() {
   if ($('langbtn')) $('langbtn').textContent = I18N.lang === 'zh' ? 'EN' : '中';
+  document.documentElement.lang = I18N.lang === 'zh' ? 'zh-CN' : 'en';
   // Translate static text nodes (the dynamic DOM is rebuilt by render() with t()).
   const accept = n => n.parentNode && !n.parentNode.closest('script,style,textarea') ?
     NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
