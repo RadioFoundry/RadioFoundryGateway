@@ -1,8 +1,10 @@
 name: Release
 
-# A tag v1.2.3: the rdofradio packages (amd64, arm64, armhf), each installed and run on every release it's for, and
-# the PlutoSDR bundle (tools/pluto), on the GitHub release, and the apt repository at apt.radiofoundry.org (tools/deb/README.md) with this release's and the
-# two before it. A pull request that changes the packaging: the packages, built and tested only.
+# A tag v1.2.3: the rdofradio packages (amd64, arm64, armhf), each installed and run on every release it's for, the
+# PlutoSDR bundle (tools/pluto) and the W12 firmware (a full image for USB at 0x0, an app image for /api/ota), on the
+# GitHub release, and the apt repository at apt.radiofoundry.org (tools/deb/README.md) with this release's and the
+# two before it. A pull request that changes the packaging: the packages built and tested, the bundle and the firmware
+# built; nothing published.
 #
 # Secrets: APT_SIGNING_KEY (the repository's private key, ASCII armored), CLOUDFLARE_API_TOKEN (Cloudflare Pages:
 # Edit) and CLOUDFLARE_ACCOUNT_ID. Without them a release still gets its packages; the repository isn't published.
@@ -52,12 +54,50 @@ jobs:
           name: pluto
           path: build/pluto/rdof-pluto-bundle-*.tar.gz
 
+  firmware:
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v5.5.4
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Rust for Xtensa (the firmware builds rust/)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # espup asks GitHub's API for the toolchain: the runners share the anonymous limit
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          . "$HOME/.cargo/env"
+          curl -sSfL https://github.com/esp-rs/espup/releases/latest/download/espup-x86_64-unknown-linux-gnu -o /usr/local/bin/espup
+          chmod +x /usr/local/bin/espup
+          espup install --targets esp32s3 --std
+      - name: Build the W12 image (as ci.yml's firmware job; never the lab overlay)
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"   # git describe names the version
+          . "$IDF_PATH/export.sh"
+          . "$HOME/.cargo/env"
+          cd esp_idf
+          idf.py -B ../build/w12 -D SDKCONFIG=../build/w12/sdkconfig \
+            -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.16mb;sdkconfig.defaults.w12" build
+          grep -qx '# CONFIG_RDOF_LR2021_LAB is not set' ../build/w12/sdkconfig
+          v=$(git describe --always --tags --dirty)
+          mkdir -p ../build/fw
+          # the full image (bootloader, partition table, OTA data, app) to flash at 0x0; the app alone for /api/ota
+          idf.py -B ../build/w12 merge-bin -f raw -o "$PWD/../build/fw/rdof-w12-$v-full.bin"
+          cp ../build/w12/radiofoundry_gateway.bin "../build/fw/rdof-w12-$v-ota.bin"
+          ls -l ../build/fw
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: firmware-w12
+          path: build/fw/*.bin
+
   publish:
-    needs: [deb, pluto]
+    needs: [deb, pluto, firmware]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
-      contents: write   # the GitHub release, its packages and the Pluto bundle
+      contents: write   # the GitHub release, its packages, the Pluto bundle and the W12 firmware
     env:
       GH_TOKEN: ${{ github.token }}
       HAVE_KEY: ${{ secrets.APT_SIGNING_KEY != '' }}
@@ -73,11 +113,15 @@ jobs:
         with:
           name: pluto
           path: pluto
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: firmware-w12
+          path: firmware
       - name: The GitHub release
         run: |
           pre=; case $GITHUB_REF_NAME in *-*) pre=--prerelease ;; esac   # v26.11-beta1
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $pre
-          gh release upload "$GITHUB_REF_NAME" debs/*.deb pluto/*.tar.gz --clobber
+          gh release upload "$GITHUB_REF_NAME" debs/*.deb pluto/*.tar.gz firmware/*.bin --clobber
       - name: The two releases before it
         if: env.HAVE_KEY == 'true' && env.HAVE_CF == 'true'
         run: |
