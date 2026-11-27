@@ -11,6 +11,33 @@ The firmware runs on an ESP32-S3 with PSRAM. Three boards have profiles:
 The W12 is the one tested most. `16mb` and `4mb` aren't built in CI for now and may not build. What each runs, and
 the limits: [reference.md](reference.md), "Firmware builds" and "Boards".
 
+## Flash a release
+
+Each release has the W12 firmware, ready to flash: download it from
+<https://github.com/RadioFoundry/RadioFoundryGateway/releases/latest>. The other boards need a build (sections 1 and 2).
+
+| File | For |
+|---|---|
+| `rdof-w12-VERSION-full.bin` | a first install over USB: bootloader, partition table and app, at 0x0 |
+| `rdof-w12-VERSION-ota.bin` | an upgrade over Wi-Fi: the app alone |
+
+A first install: put the W12 in download mode (section 3, W12, step 1; read out the factory firmware first if you want
+to keep it, step 2), then:
+
+```sh
+esptool.py --chip esp32s3 -p <port> write_flash 0x0 rdof-w12-VERSION-full.bin
+```
+
+Tap RST to start it, and go on with section 4. `esptool.py` comes with ESP-IDF, or `pip install esptool`.
+
+An upgrade: the page's Logs & maintenance tab, Firmware update, with the ota image. Or:
+
+```sh
+curl -X POST --data-binary @rdof-w12-VERSION-ota.bin http://<board>/api/ota
+```
+
+Section 6 has the rest. To build it yourself instead, read on.
+
 ## 1. Install the tools
 
 **ESP-IDF v5.5** (built with v5.5.4):
@@ -158,7 +185,8 @@ The HTTP API has no login and no TLS: keep the board on a network you trust. Eve
 
 ## 6. Updates over Wi-Fi
 
-The page's Logs & maintenance tab, Firmware update: pick `radiofoundry_gateway.bin`. Or:
+The page's Logs & maintenance tab, Firmware update: pick `radiofoundry_gateway.bin` (from a release,
+`rdof-w12-VERSION-ota.bin`). Or:
 
 ```sh
 curl -X POST --data-binary @../build/w12/radiofoundry_gateway.bin http://<board>/api/ota

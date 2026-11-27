@@ -93,6 +93,9 @@ The web page is on port 8080. On Pi-Star, run `rpi-rw` first, and stop MMDVMHost
 | ESP32-S3 board | [esp32-boards.md](docs/esp32-boards.md) |
 | Linux or macOS | [linux-macos.md](docs/linux-macos.md) |
 
+Each [release](https://github.com/RadioFoundry/RadioFoundryGateway/releases/latest) also has the PlutoSDR bundle and
+the W12 firmware, ready to install; the guides say how.
+
 Configuration: [settings.md](docs/settings.md) and [examples](config/examples/README.md).
 
 ## Status

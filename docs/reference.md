@@ -199,7 +199,9 @@ idf.py -B ../build/16mb -D SDKCONFIG=../build/16mb/sdkconfig size
 curl -X POST --data-binary @../build/16mb/radiofoundry_gateway.bin http://<board>/api/ota
 ```
 
-Flashing each board for the first time: [esp32-boards.md](esp32-boards.md).
+Flashing each board for the first time: [esp32-boards.md](esp32-boards.md). Each GitHub release has the W12 image
+(the `w12` profile, no lab overlay): `rdof-w12-VERSION-full.bin` for USB at 0x0, `rdof-w12-VERSION-ota.bin` for
+`/api/ota`.
 
 | Profile | Board | Partitions | Features |
 |---|---|---|---|

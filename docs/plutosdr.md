@@ -12,9 +12,13 @@ A Pluto on a PC's USB, driven from the PC, is the host tools' job instead: [linu
 | Channels | about 10 (at 1.296 MS/s) | 15 |
 | Tested | a Rev.C and a Pluto+, firmware v0.38: full and half duplex with handhelds; a Tier III site with a radio | the Pluto+: 15 channels in loopback |
 
-## 1. Build
+## 1. Get the bundle
 
-On an x86_64 machine with Docker:
+Each release has the installer, `rdof-pluto-bundle-VERSION.tar.gz`: download it from
+<https://github.com/RadioFoundry/RadioFoundryGateway/releases/latest> and go on with section 3. To try it from RAM
+first (section 2), the bundle's `rdofradio.xz` is the program: `xz -d` it.
+
+Or build it, on an x86_64 machine with Docker:
 
 ```sh
 tools/pluto/build.sh
@@ -43,6 +47,9 @@ cd /tmp && gunzip -c rdof-pluto.tar.gz | tar -xf -
     --parrot 9990 --web 0.0.0.0:8080
 ```
 
+From a release bundle instead: `scp -O rdof-pluto-bundle-VERSION/rdofradio.xz root@192.168.2.1:/tmp`, then on the
+Pluto `cd /tmp && unxz rdofradio.xz && chmod +x rdofradio` and the same `./rdofradio` line.
+
 Then open `http://192.168.2.1:8080/`. **It transmits whenever it hears a call: use frequencies you're licensed for.**
 
 - `--iio` runs at 768 kS/s by default; up to 2.4 MS/s on the Pluto's ARM.
@@ -52,10 +59,10 @@ Then open `http://192.168.2.1:8080/`. **It transmits whenever it hears a call: u
 ## 3. Install
 
 The bundle puts `rdofradio` in the Pluto's flash and starts it at every boot. From a computer the Pluto is plugged
-into:
+into, with the bundle from a release (or `build/pluto/` after a build):
 
 ```sh
-tar -xzf build/pluto/rdof-pluto-bundle-VERSION.tar.gz && cd rdof-pluto-bundle-VERSION
+tar -xzf rdof-pluto-bundle-VERSION.tar.gz && cd rdof-pluto-bundle-VERSION
 ./install.sh --config my.json      # or --example: config.example.json, a repeater with the parrot
 ```
 
