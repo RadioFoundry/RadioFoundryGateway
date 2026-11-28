@@ -1533,6 +1533,8 @@ network is left off and `/api/status` `settings_warning` (the page's banner) say
 a host tool ([hostweb/README.md](../hostweb/README.md)). Build with `-DRDOF_HOST_WEB=ON`, run with `--web
 [ADDR:]PORT` (127.0.0.1 unless ADDR is given).
 
+- The page's Chinese layer works there too: the choice is the browser's `localStorage.rdof_lang`, so the tool needs
+  nothing for it.
 - The tool publishes a status snapshot, log lines and calls (`rdof/hostweb.h`), and may give settings hooks.
   Publishing never waits on the server.
 - The API is the firmware's code (`rdof/webapi.h`): `/api/status`, `/api/lastheard`, `/api/log`, with the hooks

@@ -29,7 +29,7 @@ The setup access point is `radiofoundry-<suffix>` (format `"radiofoundry-%s"`), 
 
 | Method | Path | Built when | Request | Response | Side effects |
 |---|---|---|---|---|---|
-| GET | `/` | always | none | the page, gzipped (`Content-Encoding: gzip`, `text/html`): `index.html` with `CONFIG_RDOF_WEB_FULL` (default y), else `mini.html` | none |
+| GET | `/` | always | none | the page, gzipped (`Content-Encoding: gzip`, `text/html; charset=utf-8`): `index.html` with `CONFIG_RDOF_WEB_FULL` (default y), else `mini.html` | none |
 | GET | `/api/status` | always | none | `application/json`, `Cache-Control: no-store`, at most 6144 bytes (§3) | none |
 | GET | `/api/config` | always | `?download` (any value) adds `Content-Disposition: attachment; filename="<name>.json"` | `application/json`: `settings_export()`, the stored JSONC text with `wifi` and `ntp` added (§4) | none |
 | POST | `/api/config` | always | body: the settings JSON(C), 1 to 16384 bytes (`RDOF_WEBAPI_MAX_CONFIG`) | 200 `saved; restarting` | stores the settings in NVS, then restarts after 1 s (`web.c:restart_task`, `vTaskDelay(1000 ms)`) |
@@ -54,11 +54,11 @@ The setup access point is `radiofoundry-<suffix>` (format `"radiofoundry-%s"`), 
 | POST | `/api/time` | always (netclock) | `{"utc_ms": n}` | `{"applied": bool, "source": "<clock source>"}`; 400 if the body is too long | sets the clock from the browser when `1.6e12 < n < 4.1e12` (2020 to 2100) and no better source holds it |
 | GET | `/api/clock/settings` | always (netclock) | none | `{"servers": [...], "poll_s": n}` | none |
 | POST | `/api/clock/settings` | always (netclock) | the same object, or a string | the settings; 400 + error text | stores them (netclock's NVS namespace); takes effect at once |
-| GET | `/netclock.js` | always (netclock) | none | gzipped JS, `no-cache` | none |
+| GET | `/netclock.js` | always (netclock) | none | gzipped JS (`text/javascript; charset=utf-8`), `no-cache` | none |
 | GET | `/api/wifi` | always (wifilist) | none | JSON (§8.2) | none |
 | POST | `/api/wifi/networks` | always (wifilist) | 1 to 4096 bytes (§8.2) | the `/api/wifi` status; 400 + error text | stores the list (wifilist's NVS namespace), reconnects if the current network went |
 | POST | `/api/wifi/scan` | always (wifilist) | none | `{"scanning": true}` | starts a scan; results in `/api/wifi` `seen` |
-| GET | `/wifilist.js` | always (wifilist) | none | gzipped JS | none |
+| GET | `/wifilist.js` | always (wifilist) | none | gzipped JS (`text/javascript; charset=utf-8`) | none |
 
 The netclock and wifilist paths sit under `CONFIG_NETCLOCK_HTTP_BASE` / `CONFIG_WIFILIST_HTTP_BASE` (both default
 `/api`).
@@ -410,7 +410,7 @@ its stored password; no `password`: keep it), or one network to add, `{"ssid", "
 | `mini.html` | `CONFIG_RDOF_WEB_FULL=n` | the last ten calls from `/api/lastheard` every 3 s; links to `/api/status`, `/api/resolved`, `/api/log`, `/api/coredump`, `/api/config?download`; the config editor (`GET`/`POST /api/config`); `/wifilist.js`, `/netclock.js` |
 
 The full page has a header (the board's name, a health pill counting problems and warnings, the board's UTC
-clock and uptime) and six tabs, by URL hash:
+clock and uptime, and the language button) and six tabs, by URL hash:
 
 | Tab | Shows |
 |---|---|
@@ -431,3 +431,18 @@ settings editor is read only without `settings_edit` (it then says where the set
 
 The page uses only the endpoints above. It holds no state of its own beyond what the board returns. A rewrite that
 serves the same endpoints can serve the same page.
+
+### Language
+
+Both pages are bilingual: English is the source text, Chinese a layer switched at runtime. The header's button
+(`#langbtn`, `中` / `EN`) flips `localStorage.rdof_lang` (`en` default, `zh`) and calls `applyLang()`; the choice
+survives reloads, and `document.documentElement.lang` follows (`en` / `zh-CN`). Each page carries its own i18n core:
+a `ZH` dictionary keyed by the English string, `t(s)` (unknown strings come back unchanged), and `applyLang()`,
+which walks the text nodes and the `title` and `placeholder` attributes, keeps the original text in a WeakMap (so
+the nodes `render()` replaces can be collected) and restores them exactly on switching back. The core publishes
+`window.rdofT(s)` and `window.rdofApplyLang()` for the components and dispatches `rdof-langchange` on `document`,
+which makes `/wifilist.js` and `/netclock.js` re-render.
+
+Only display text is translated. Object keys, CSS classes, `data-*` values and API field names are not. Brand
+names (`HBlink4`, `MQTT`, `SCTP`, `RTL-SDR`, `LR2021`, `GNSS PPS`, `NTP`) and units (`MHz`, `dBm`, `ms`, `ppm`,
+`kB/s`, `s`) stay as they are.

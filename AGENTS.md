@@ -30,7 +30,9 @@ before touching the LR2021 front end.
   Clear BSD) and TheClams/lr2021 (MIT). Keep the license's notice in the file and in `PROVENANCE.md` / `LICENSES/`.
   Never copy the LR2021's ROM: it has no license; take only facts from it.
 - US English in code, docs and UI text. Prose in docs and comments: plain, direct, short sentences; match the
-  surrounding text.
+  surrounding text. The web pages carry a Chinese layer switched at runtime (`localStorage.rdof_lang`, English by
+  default), and `README.zh-CN.md` is the Chinese README: English stays the source text, and code, comments, keys
+  and settings stay English.
 - Builds go under `build/` only; delete experiment builds when done.
 
 ## Tests

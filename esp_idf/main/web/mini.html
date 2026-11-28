@@ -3,12 +3,14 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RadioFoundry Gateway</title>
 <style>body{font:15px system-ui,sans-serif;padding:16px;max-width:700px}textarea{width:100%;height:320px;font:12px monospace}
-@media (prefers-color-scheme:dark){body{background:#141416;color:#ececf0}a{color:#6aa9f0}}#h{font:13px monospace;white-space:pre-wrap}</style>
+@media (prefers-color-scheme:dark){body{background:#141416;color:#ececf0}a{color:#6aa9f0}}#h{font:13px monospace;white-space:pre-wrap}
+#langbtn{font-size:13px;padding:2px 10px}</style>
 </head>
 <body>
 <h1>RadioFoundry Gateway</h1>
 <p><a href="/api/status">status</a> · <a href="/api/resolved">settings as resolved</a> · <a href="/api/log">log</a> ·
-<a href="/api/coredump">core dump</a> · <a href="/api/config?download=1">export</a> · <a href="/api/lastheard">last heard</a></p>
+<a href="/api/coredump">core dump</a> · <a href="/api/config?download=1">export</a> · <a href="/api/lastheard">last heard</a> ·
+<button id="langbtn" onclick="toggleLang()" title="中文 / English">中</button></p>
 <h2>Last heard</h2><div id="h">-</div>
 <h2>Wi-Fi networks</h2><div data-wifilist></div>
 <h2>Clock</h2><div data-netclock></div>
@@ -16,16 +18,157 @@
 <textarea id="c"></textarea><br><button id="s">Save and restart</button>
 <p id="m"></p>
 <script>
-const c = document.getElementById('c');
-fetch('/api/config').then(r => r.text()).then(t => c.value = t);
-document.getElementById('s').onclick = () => fetch('/api/config', {method: 'POST', body: c.value})
-  .then(r => r.text()).then(t => document.getElementById('m').textContent = t);
+const $ = id => document.getElementById(id);
+const c = $('c');
+fetch('/api/config').then(r => r.text()).then(txt => c.value = txt);
+$('s').onclick = () => fetch('/api/config', {method: 'POST', body: c.value})
+  .then(r => r.text()).then(txt => $('m').textContent = txt);
+
+// ── i18n: bilingual toggle, default English; choice persisted in localStorage. ──
+const ZH = {
+  ' + ': ' + ',
+  ' ago': '前',
+  ' ago; ': ' 前；',
+  ' is on (http://192.168.4.1/)': ' 已开启 (http://192.168.4.1/)',
+  ' more': ' 更多',
+  ' ms after the pulse': ' ms（脉冲后）',
+  ' ms)': ' ms）',
+  ' numbered by GNSS': ' 个由 GNSS 编号',
+  ' out of step, ': ' 个失步，',
+  ' outlier ': ' 离群值 ',
+  ' pulses, last ': ' 个脉冲，最后一次 ',
+  ' references': ' 次参考',
+  ' unnumbered': ' 个未编号',
+  '(hidden)': '（隐藏）',
+  '(min ': '（最小 ',
+  ', ': '，',
+  '; ': '；',
+  'Add': '添加',
+  'Added': '已添加',
+  'Clock': '时钟',
+  'Connected': '已连接',
+  'Delete': '删除',
+  'Delete ': '删除 ',
+  'Deleted': '已删除',
+  'Die temperature': '芯片温度',
+  'Edit': '编辑',
+  'Failed: ': '失败：',
+  'Frequency': '频率',
+  'GNSS NMEA time (no pulse)': 'GNSS NMEA 时间（无脉冲）',
+  'GNSS pulse per second': 'GNSS 秒脉冲',
+  'Holdover, 1 h': '保持 1 小时',
+  'Last heard': '最近通话',
+  'Last offset': '上次偏移',
+  'Learned at': '学习于',
+  'Moved': '已移动',
+  'NTP (no server selected)': 'NTP（未选择服务器）',
+  'No NTP servers yet (no network, or none set)': '尚无 NTP 服务器（无网络或未设置）',
+  'No calls yet.': '暂无通话。',
+  'No networks yet: add one below': '尚无网络：请在下方添加',
+  'No references yet': '尚无参考',
+  'No scan yet': '尚未扫描',
+  'None': '无',
+  'Not applied: the clock follows NTP': '未应用：时钟跟随 NTP',
+  'Not connected': '未连接',
+  'Nothing in sight': '视野内无网络',
+  'Outliers ignored': '忽略的离群值',
+  'Poll interval': '轮询间隔',
+  'Polls / no majority': '轮询 / 无多数',
+  'RMS offset': 'RMS 偏移',
+  'Reference': '参考源',
+  'References / span': '参考数 / 跨度',
+  'Residuals show once the rate is fitted (about 10 min of references)': '速率拟合后显示残差（约需 10 分钟参考）',
+  'Root delay': '根延迟',
+  'Root dispersion': '根离散',
+  'Save': '保存',
+  'Save and restart': '保存并重启',
+  'Saved': '已保存',
+  'Scanning...': '扫描中……',
+  'Set from this browser (±': '已通过本浏览器设置（±',
+  'Setup access point ': '设置接入点 ',
+  'Since last reference': '距上次参考',
+  'Skew': '频偏抖动',
+  'Slewing': '跳变',
+  'Stored frequency': '存储频率',
+  'Stratum': '层级',
+  'Temperature correction': '温度校正',
+  'Wi-Fi networks': 'Wi-Fi 网络',
+  'browser clock': '浏览器时钟',
+  'channel': '信道',
+  'core dump': '核心转储',
+  'fast': '快',
+  'for ': ' ',
+  'from a browser': '来自浏览器',
+  'in the list': '在列表中',
+  'last ': '最后 ',
+  'lost: ': '丢失：',
+  'no pulses': '无脉冲',
+  'none': '无',
+  'none yet': '尚无',
+  'not seen': '未发现',
+  'not set': '未设置',
+  'open': '开放',
+  'open (blank)': '开放（留空）',
+  'secured': '已加密',
+  'set': '已设置',
+  'set (blank keeps it)': '已设置（留空保持）',
+  'slow': '慢',
+  'to': '到',
+  'unresolved': '未解析',
+  // mini.html own labels (units and acronyms like ms / GNSS PPS / NTP stay English on purpose)
+  'status': '状态',
+  'settings as resolved': '已解析的设置',
+  'log': '日志',
+  'export': '导出',
+  'last heard': '最近收听',
+  'live': '通话中',
+  ' s ago': ' 秒前',
+  'Settings: a box config in JSON, version 3: every unit it makes runs (see docs/spec/fw/config-v3.md).':
+    '设置：JSON 格式的盒子配置，版本 3：它生成的每个单元都会运行（参见 docs/spec/fw/config-v3.md）。',
+};
+const I18N = { lang: (function () { try { return localStorage.getItem('rdof_lang') || 'en'; } catch (e) { return 'en'; } })() };
+const t = s => (I18N.lang === 'zh' && ZH[s] != null) ? ZH[s] : s;
+window.rdofT = t;
+const _origText = new WeakMap();
+function applyLang() {
+  if ($('langbtn')) $('langbtn').textContent = I18N.lang === 'zh' ? 'EN' : '中';
+  document.documentElement.lang = I18N.lang === 'zh' ? 'zh-CN' : 'en';
+  const accept = n => n.parentNode && !n.parentNode.closest('script,style,textarea') ?
+    NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+  const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {acceptNode: accept});
+  let n;
+  while ((n = tw.nextNode())) {
+    if (!_origText.has(n)) _origText.set(n, n.nodeValue);
+    const raw = _origText.get(n), s = raw.trim().replace(/\s+/g, ' ');
+    if (!s) continue;
+    const lead = raw.match(/^\s*/)[0], trail = raw.match(/\s*$/)[0];
+    n.nodeValue = (I18N.lang === 'zh' && ZH[s] != null) ? lead + ZH[s] + trail : raw;
+  }
+  document.querySelectorAll('[title]').forEach(el => {
+    if (el.dataset.tTitle == null) el.dataset.tTitle = el.getAttribute('title');
+    el.setAttribute('title', t(el.dataset.tTitle));
+  });
+  document.querySelectorAll('[placeholder]').forEach(el => {
+    if (el.dataset.tPh == null) el.dataset.tPh = el.getAttribute('placeholder');
+    el.setAttribute('placeholder', t(el.dataset.tPh));
+  });
+  if (typeof lh === 'function') lh();
+  document.dispatchEvent(new CustomEvent('rdof-langchange'));
+}
+window.rdofApplyLang = applyLang;
+function toggleLang() {
+  I18N.lang = I18N.lang === 'zh' ? 'en' : 'zh';
+  try { localStorage.setItem('rdof_lang', I18N.lang); } catch (e) {}
+  applyLang();
+}
+
 // the last ten calls: age, RF or NET, from > to, where, length
-const lh = () => document.hidden || fetch('/api/lastheard').then(r => r.json()).then(d => document.getElementById('h').textContent =
-  d.calls.slice(0, 10).map(x => (x.active ? 'live' : Math.round(x.age_s) + ' s ago').padEnd(10) + x.dir.toUpperCase().padEnd(4) +
+const lh = () => document.hidden || fetch('/api/lastheard').then(r => r.json()).then(d => $('h').textContent =
+  d.calls.slice(0, 10).map(x => (x.active ? t('live') : Math.round(x.age_s) + t(' s ago')).padEnd(10) + x.dir.toUpperCase().padEnd(4) +
     x.src + ' > ' + (x.group ? 'TG ' : '') + x.dst + '  ' + x.radio + (x.channel ? '/' + x.channel : '') +
-    (x.duration != null ? '  ' + x.duration.toFixed(1) + ' s' : '')).join('\n') || 'No calls yet.').catch(() => {});
-lh(); setInterval(lh, 3000);
+    (x.duration != null ? '  ' + x.duration.toFixed(1) + ' s' : '')).join('\n') || t('No calls yet.')).catch(() => {});
+applyLang();
+setInterval(lh, 3000);
 </script>
 <script src="/wifilist.js" defer></script>
 <script src="/netclock.js" defer></script>

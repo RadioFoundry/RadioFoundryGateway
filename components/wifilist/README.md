@@ -263,7 +263,7 @@ compatible security, 211 no AP within the auth threshold, 212 no AP within the R
 | `GET <base>/wifi` | 200 `application/json`, `Cache-Control: no-store`: status JSON; 500 `too big` / `no memory` |
 | `POST <base>/wifi/networks` | body 1 to 4096 bytes of [edit JSON](#edits) (else 400). 200: status JSON; 400 `text/plain`: the error text; 500 `read failed` / `no memory` |
 | `POST <base>/wifi/scan` | 200 `{"scanning":true}`; the result shows in `GET <base>/wifi` a few seconds later |
-| `GET /wifilist.js` | 200 `text/javascript`, `Content-Encoding: gzip`, `Cache-Control: no-cache`: `web/wifilist.js`, gzip level 9, mtime 0, embedded at build |
+| `GET /wifilist.js` | 200 `text/javascript; charset=utf-8`, `Content-Encoding: gzip`, `Cache-Control: no-cache`: `web/wifilist.js`, gzip level 9, mtime 0, embedded at build |
 
 No authentication: protect the server if it needs it.
 
@@ -295,7 +295,9 @@ Mounts on every `[data-wifilist]` (also `window.wifilist.mount(el)`), polls `GET
 `was` = its current name and no `password`, so passwords stay on the board. Up/down swaps two entries and
 renumbers all priorities `10·(N−k)` for position k = 0..N−1 (top = 10·N, bottom = 10). Add sends `password`
 (`""` for open); edit sends it only when typed. Colors use the page's `--mute`, `--line`, `--ok`, `--bad`,
-`--accent` when defined.
+`--accent` when defined. Display text goes through `window.rdofT(s)` when the page defines it (the page's Chinese
+layer; English otherwise), the section re-renders on the page's `rdof-langchange` event, and
+`window.rdofApplyLang()` after mount translates the static template.
 
 ## Kconfig (`Kconfig`, menu "wifilist (prioritized Wi-Fi networks)")
 
