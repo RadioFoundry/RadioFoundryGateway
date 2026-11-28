@@ -28,6 +28,11 @@ fail=0
 check() {
     grep -q "$1" "$D/log" || { echo "FAIL: $2"; fail=1; }
 }
+awk '
+    /calibration: the pulse wasn.t heard/ { calibrated = 1 }
+    /tier3: carrier 1: (on|off) the slot grid/ { keyed = 1; exit !calibrated }
+    END { if (!keyed) exit 1 }
+' "$D/log" || { echo "FAIL: calibration times out before the TSCC keys"; fail=1; }
 check "air MS 1000001: idle, registered" "1000001 registers"
 check "air MS 1000002: idle, registered" "1000002 registers"
 check "air MS 1000002: payload, registered on ch 1; .* heard 1000001 -> 1$" "1000002 follows 1000001's group call"
@@ -47,4 +52,4 @@ check "air MS 1000001: idle, registered on ch 0; calls 6 done" "1000001's rate 3
 check 'air MS 1000001: packet data from 1000002, UDP 12.15.66.66:5016 to 12.15.66.65:5016, 16 octets, UTF-16BE text: "rate one"' "1000001 takes the rate 1 packet data"
 check 'air MS 1000002: packet data from 1000001, UDP 12.15.66.65:5016 to 12.15.66.66:5016, 1200 octets, UTF-16BE text: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123.*" (the first 80; all of it the \*N pattern)' "1000002 takes a 124-block confirmed message whole"
 check "air MS 1000001: idle, registered on ch 0; calls 7 done" "1000001's long message acknowledged"
-[ $fail = 0 ] && echo "air MSs: all passed" || { grep "air MS\|tier3" "$D/log" | head -40; exit 1; }
+[ $fail = 0 ] && echo "air MSs: all passed" || { grep "calibration:\|air MS\|tier3" "$D/log" | head -40; exit 1; }

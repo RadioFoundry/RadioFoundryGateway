@@ -1975,7 +1975,8 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   (`rdof_t3split_utc`, measured each minute). Carrier A's modem sits on the same grid through rdofradio's slot timing
   (`sdr/cli/rdofradio_utc.c`): each read of the receive stream stamped with its arrival on the host's clock, the
   sample clock on the earliest arrival of every 2 s and its rate from anchors two minutes apart, the map handed to the
-  modem before every pull. The site keys carrier A once the map exists (the modem snaps to the grid at key-up, then
+  modem before every pull. An SDR site waits for startup duplex calibration to finish or time out before keying
+  the TSCC. The site keys carrier A once the map exists (the modem snaps to the grid at key-up, then
   steers a sample a slot at most), or after 10 s without one, on its own count as before. The host's clock is the
   reference even when nothing disciplines it ("own time": a PlutoSDR runs no NTP client); one site needs its carriers
   on one clock, not on UTC. A step in the host's clock moves both carriers' grids; carrier A steers there at 21 us a

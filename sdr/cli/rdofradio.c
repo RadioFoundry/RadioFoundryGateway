@@ -8161,7 +8161,9 @@ int main(int argc, char **argv)
             net_poll(now);
             mq_poll(now);
 #ifdef RDOF_TIER3
-            rdofradio_t3_poll();
+            /* Leave TX unkeyed for the calibration pulse before starting the TSCC. */
+            if (R.cal == 0)
+                rdofradio_t3_poll();
 #endif
         }
         /* as many transmit samples as were read (one for every txr), at the modem's position for them */
